@@ -1,0 +1,14 @@
+{
+  "tool": "documents.transform",
+  "input": {
+    "skill": "document_comparison",
+    "output_format": "xlsx",
+    "input": {
+      "title": "Agreement Comparison",
+      "left_title": "Baseline Agreement",
+      "left_text": "Shared scope line.\n\nLegacy pricing remains in effect.\n\nTermination notice requires 30 days.",
+      "right_title": "Revised Agreement",
+      "right_text": "Shared scope line.\n\nUpdated pricing schedule applies.\n\nTermination notice requires 30 days.\n\nSecurity review is now mandatory."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+site_name: LewLM
+site_description: Published documentation for LewLM's local-first CLI, API, runtimes, and operator workflows.
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+nav:
+  - Home: index.md
+  - Getting started:
+      - Overview: getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+  - Guides:
+      - Configuration: guides/configuration.md
+      - Models and routing: guides/models-and-routing.md
+      - App readiness: guides/app-readiness.md
+      - Host-app integration: guides/host-app-integration.md
+      - Chat and responses: guides/chat-and-responses.md
+      - Prompting and MCP-style tools: guides/prompting-and-mcp-tools.md
+      - Documents: guides/documents.md
+      - Tools and skills: guides/tools-and-skills.md
+      - Sessions and events: guides/sessions-and-events.md
+      - Benchmarking and autotune: guides/benchmarking-and-autotune.md
+      - Cluster workflows: guides/cluster.md
+  - Reference:
+      - CLI reference: reference/cli.md
+      - HTTP API reference: reference/http-api.md
+      - Integration bundle: reference/integration-bundle.md
+      - Python API reference: reference/python-api.md
+      - Configuration reference: reference/configuration.md
+      - Scope matrix: reference/scope-matrix.md
+      - Runtime and capability matrix: reference/runtime-capability-matrix.md
+      - Document formats and skills: reference/document-formats-and-skills.md
+      - Release and validation: reference/release-and-validation.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Runtime routing and serving: architecture/runtime-routing-and-serving.md
+      - Storage and state: architecture/storage-and-state.md
+  - Operations:
+      - Security: security.md
+      - Troubleshooting: operations/troubleshooting.md

@@ -1,0 +1,57 @@
+{
+  "skill": "ocr_assisted_extraction",
+  "output_format": "markdown",
+  "input": {
+    "title": "Scanned Invoice Extraction",
+    "source_title": "Scanned Vendor Invoice",
+    "document_type": "invoice",
+    "ocr_text": "Invoice No: INV-2048\nInvoice Date: 2026-04-12\nDue Date: 2026-05-12\nVendor: Northwind Supplies\nBill To: Acme Corp\nTotal Due: USD 1,240.00\nPO Number: PO-7781\nNotes\nUrgent handling for April restock.",
+    "expected_fields": [
+      {
+        "field": "Invoice Number",
+        "aliases": [
+          "invoice no"
+        ],
+        "required": true
+      },
+      {
+        "field": "Invoice Date",
+        "required": true
+      },
+      {
+        "field": "Due Date",
+        "required": true
+      },
+      {
+        "field": "Vendor",
+        "required": true
+      },
+      {
+        "field": "Bill To",
+        "aliases": [
+          "bill to"
+        ],
+        "required": true
+      },
+      {
+        "field": "Total Due",
+        "aliases": [
+          "total due"
+        ],
+        "required": true
+      },
+      {
+        "field": "PO Number",
+        "aliases": [
+          "po number"
+        ]
+      },
+      {
+        "field": "Payment Terms",
+        "aliases": [
+          "terms"
+        ]
+      }
+    ]
+  }
+}

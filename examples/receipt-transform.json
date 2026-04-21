@@ -1,0 +1,28 @@
+{
+  "skill": "receipt_extraction",
+  "output_format": "csv",
+  "input": {
+    "title": "Cafe Receipt",
+    "vendor": "Downtown Cafe",
+    "receipt_number": "R-1001",
+    "purchased_at": "2026-04-14",
+    "currency": "USD",
+    "subtotal": "12.50",
+    "tax": "1.00",
+    "total": "13.50",
+    "items": [
+      {
+        "description": "Coffee",
+        "quantity": "2",
+        "unit_price": "4.00",
+        "total": "8.00"
+      },
+      {
+        "description": "Bagel",
+        "quantity": "1",
+        "unit_price": "4.50",
+        "total": "4.50"
+      }
+    ]
+  }
+}

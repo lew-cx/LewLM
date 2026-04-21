@@ -1,0 +1,9 @@
+{
+  "skill": "speech_transcript_cleanup",
+  "output_format": "markdown",
+  "input": {
+    "title": "Customer Call Cleanup",
+    "language": "en",
+    "transcript_text": "agent: thanks everyone for joining today\ncustomer: i have two questions about rollout timing\nagent: we can confirm the friday deployment window\nfollow up with legal for the final notice"
+  }
+}

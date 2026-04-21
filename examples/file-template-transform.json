@@ -1,0 +1,12 @@
+{
+  "skill": "file_template",
+  "output_format": "xlsx",
+  "template_path": "file-template.json",
+  "input": {
+    "replacements": {
+      "client": "Acme Corp",
+      "owner": "LewLM",
+      "status": "On Track"
+    }
+  }
+}

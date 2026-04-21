@@ -1,0 +1,39 @@
+{
+  "title": "Engagement Summary for {{client}}",
+  "metadata": {
+    "owner": "{{owner}}"
+  },
+  "style_tokens": [],
+  "sections": [
+    {
+      "heading": "Overview",
+      "level": 1,
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Prepared by {{owner}}.",
+          "style_tokens": []
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Value"
+          ],
+          "rows": [
+            [
+              "Client",
+              "{{client}}"
+            ],
+            [
+              "Status",
+              "{{status}}"
+            ]
+          ],
+          "caption": "Project status snapshot"
+        }
+      ]
+    }
+  ],
+  "citations": []
+}

@@ -1,0 +1,14 @@
+{
+  "skill": "meeting_transcript_notes",
+  "output_format": "markdown",
+  "input": {
+    "title": "Project Kickoff Notes",
+    "meeting_date": "2026-04-15",
+    "participants": [
+      "Maya",
+      "Jon",
+      "Priya"
+    ],
+    "transcript_text": "Maya: We need the beta timeline locked by Friday.\nJon: Agreed, we will keep scope focused on the API and CLI polish.\nPriya: Decision: postpone OCR improvements to the next sprint.\nACTION: Maya | Send revised delivery timeline | 2026-04-20\nACTION: Jon | Prepare rollout checklist | 2026-04-22\nPriya: I will draft the stakeholder update once the timeline is approved."
+  }
+}

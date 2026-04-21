@@ -1,0 +1,13 @@
+{
+  "skill": "contract_text_replacement",
+  "output_format": "docx",
+  "input": {
+    "title": "Service Agreement",
+    "template_text": "This agreement is between {{vendor}} and {{client}}.\n\nPayment terms are [[terms]].",
+    "replacements": {
+      "vendor": "LewLM",
+      "client": "Acme Corp",
+      "terms": "Net 30 days"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "skill": "long_document_memo",
+  "output_format": "markdown",
+  "input": {
+    "title": "Platform Readiness Memo",
+    "source_title": "Quarterly Platform Review",
+    "source_text": "The platform review confirmed that document workflows are stable across the API and CLI. Adoption increased after the team added inspectable session and tool surfaces.\n\nThe remaining delivery risk is mostly tied to OCR depth and broader backend validation on non-Darwin hosts. The current roadmap keeps those items in later milestones to avoid destabilizing the core serving path.\n\nWhat operator guidance is still missing for Linux and Windows rollouts?\n\nThe review recommended keeping future milestone slices narrow and evidence-backed so each increment can land with complete tests and docs."
+  }
+}

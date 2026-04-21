@@ -1,0 +1,48 @@
+{
+  "skill": "branded_document_template",
+  "output_format": "json",
+  "input": {
+    "title": "LewLM Product Launch Brief",
+    "settings": {
+      "organization_name": "LewLM",
+      "subtitle": "Spring launch overview for cross-functional stakeholders.",
+      "audience": "Leadership Team",
+      "issued_on": "2026-05-01",
+      "contact_line": "ops@lewlm.local",
+      "header_text": "Product Launch Brief",
+      "footer_text": "Internal planning use only",
+      "logo_path": "assets/company-logo.png",
+      "hero_image_path": "assets/overview-chart.png"
+    },
+    "summary": "This brief packages launch status, rollout themes, and follow-up ownership into a branded document artifact.",
+    "key_points": [
+      "Keep API and CLI rollout dates aligned.",
+      "Use the same launch messaging across docs and support channels.",
+      "Track onboarding questions in the first-week operations review."
+    ],
+    "sections": [
+      {
+        "heading": "Launch Priorities",
+        "paragraphs": [
+          "The initial release focuses on a stable local-first workflow across chat, tool execution, and document transforms."
+        ],
+        "bullets": [
+          "Finalize onboarding examples.",
+          "Validate operator guidance for customer pilots."
+        ],
+        "callout_title": "Owner Note",
+        "callout_body": "Platform operations owns the final go-live checklist."
+      },
+      {
+        "heading": "Customer Readiness",
+        "paragraphs": [
+          "Support and product teams will use the same release brief so external messaging stays consistent."
+        ],
+        "bullets": [
+          "Publish updated docs.",
+          "Share the migration FAQ with the customer success team."
+        ]
+      }
+    ]
+  }
+}

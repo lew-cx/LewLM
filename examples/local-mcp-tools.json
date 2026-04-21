@@ -1,0 +1,20 @@
+{
+  "mcp_tools": [
+    {
+      "server": "roadmap",
+      "name": "search_milestones",
+      "description": "Searches locally indexed milestone notes from an MCP-compatible catalog.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "title": "Quarterly Operations Summary",
+  "metadata": {
+    "department": "Operations"
+  },
+  "header": {
+    "left": "LewLM",
+    "center": "Quarterly Summary",
+    "right": null
+  },
+  "footer": {
+    "left": null,
+    "center": null,
+    "right": "Internal"
+  },
+  "style_tokens": [],
+  "sections": [
+    {
+      "heading": "Summary",
+      "level": 1,
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Operations remained on track throughout the quarter.",
+          "style_tokens": []
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Closed onboarding backlog",
+            "Improved SLA response times"
+          ]
+        },
+        {
+          "type": "callout",
+          "kind": "info",
+          "title": "Status",
+          "body": "All milestones stayed within budget."
+        }
+      ]
+    },
+    {
+      "heading": "Budget",
+      "level": 1,
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Category",
+            "Amount"
+          ],
+          "rows": [
+            [
+              "Hosting",
+              "1200"
+            ],
+            [
+              "Licenses",
+              "800"
+            ]
+          ],
+          "caption": "Quarterly spend by category"
+        }
+      ]
+    }
+  ],
+  "citations": [
+    {
+      "label": "1",
+      "text": "Internal finance worksheet",
+      "url": null
+    }
+  ]
+}
