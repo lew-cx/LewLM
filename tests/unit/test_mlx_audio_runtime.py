@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from lewlm.core.contracts import (
     AudioSpeechRequest,
@@ -18,6 +21,8 @@ from lewlm.core.contracts import (
 )
 from lewlm.runtime.mlx_audio.runtime import MLXAudioRuntime
 from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache
+
+pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
 def test_mlx_audio_runtime_supports_stt_submodule_layout(monkeypatch, sample_audio_bytes: bytes) -> None:

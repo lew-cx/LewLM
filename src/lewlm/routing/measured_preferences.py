@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lewlm.core.contracts import RuntimeAffinity
+from lewlm.runtime.support_strategy import external_adapter_demotion_reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,9 @@ def assess_runtime_preference(payload: Mapping[str, Any] | None) -> RuntimePrefe
         preserved_features = tuple(_string_list(feature_preservation, "preserved"))
         degraded_features = tuple(_string_list(feature_preservation, "degraded"))
         rejected_features = tuple(_string_list(feature_preservation, "rejected"))
+        bridge_boundary_reason = external_adapter_demotion_reason(
+            baseline_runtime_affinity=baseline_runtime_affinity,
+        )
         if rejected_features:
             notes.append(
                 "Measured external-adapter comparison rejected native feature coverage for "
@@ -84,6 +88,9 @@ def assess_runtime_preference(payload: Mapping[str, Any] | None) -> RuntimePrefe
             elif not preserved_features:
                 adopted = False
                 downgrade_reason = "the measured comparison did not record feature-preservation evidence for the adapter path"
+            elif bridge_boundary_reason is not None:
+                adopted = False
+                downgrade_reason = bridge_boundary_reason
             if not adopted:
                 effective_runtime_name = baseline_runtime_name
                 effective_runtime_affinity = baseline_runtime_affinity
@@ -92,6 +99,11 @@ def assess_runtime_preference(payload: Mapping[str, Any] | None) -> RuntimePrefe
                         "LewLM downgraded the adapter-backed routing winner and kept "
                         f"`{effective_runtime_name or effective_runtime_affinity}` as the safe measured default."
                     )
+                    if bridge_boundary_reason is not None:
+                        notes.append(
+                            "LewLM keeps the first-class local runtime as the productized default and records the "
+                            "external-adapter result as bridge evidence instead of promoting it to the default path."
+                        )
                 else:
                     notes.append(
                         "LewLM downgraded the adapter-backed routing winner because no measured safe baseline runtime was recorded."

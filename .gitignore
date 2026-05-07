@@ -14,3 +14,5 @@ Development_Guide.md
 Development_Progress.md
 4_18_review.md
 src/lewlm/models/
+.venv311/*
+.github/copilot-instructions.md

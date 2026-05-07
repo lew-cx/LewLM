@@ -99,6 +99,16 @@ Built-in feature pack names: `documents`.
 | `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` | unset | adapter endpoint |
 | `LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS` | `10` | adapter timeout |
 
+Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
+`openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, and `sglang_local`.
+
+`LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` must point to a loopback-only local server such as
+`http://127.0.0.1:8000`; remote/cloud endpoints are intentionally rejected.
+
+Use this path when LewLM should front a loopback-only OpenAI-compatible local server instead of importing a runtime package directly.
+
+On Linux and Windows, including NVIDIA-backed local servers, this is the intended bridge path when you already run a compatible local endpoint. LewLM does not bundle that server, and this path remains bridge-only even when benchmarks are favorable, so keep the bridge/runtime distinction explicit in operator docs and deployments.
+
 ## File access, sandboxing, and persistence
 
 | Environment variable | Default | Purpose |

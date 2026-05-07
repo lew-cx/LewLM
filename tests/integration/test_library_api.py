@@ -117,6 +117,9 @@ def test_library_facade_supports_embeddable_workflows(
     assert health["status"] == "ok"
     assert health["install_profiles"]["active_profile_ids"][0] == "core_only"
     assert "readiness" in health
+    assert "total_memory_mb" in health["readiness"]["host_platform"]
+    assert "total_memory_source" in health["readiness"]["host_platform"]
+    assert "total_memory_reason" in health["readiness"]["host_platform"]
     assert health["storage"]["model_count"] == 3
 
     runtime_stats = lewlm.runtime_stats_sync()

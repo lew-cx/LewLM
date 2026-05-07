@@ -4,11 +4,23 @@ Thanks for contributing.
 
 ## Getting started
 
+**macOS / Linux**
+
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev,documents]"
 ```
+
+**Windows PowerShell**
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev,documents]"
+```
+
+If you prefer not to activate the environment, install with `.venv\Scripts\python -m pip install -e ".[dev,documents]"` on Windows or `.venv/bin/python -m pip install -e ".[dev,documents]"` on macOS/Linux.
 
 ## Development workflow
 
@@ -20,7 +32,7 @@ python -m pip install -e ".[dev,documents]"
 Run the test suite before opening a pull request:
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
 ## Documentation

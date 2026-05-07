@@ -49,10 +49,11 @@ class PerformanceFeatureStatus(BaseModel):
     feature: PerformanceFeatureName
     supported: bool
     active: bool = False
+    ownership_modes: list[str] = Field(default_factory=list)
     supported_capabilities: list[str] = Field(default_factory=list)
     runtime_names: list[str] = Field(default_factory=list)
     reason: str
-    metrics: dict[str, int | float | str | bool] = Field(default_factory=dict)
+    metrics: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
     fallback_guidance: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -240,7 +241,7 @@ class MeasuredCapabilityRegistrySummary(BaseModel):
 class BenchmarkScenarioSample(BaseModel):
     model_id: str | None = None
     runtime: str | None = None
-    metrics: dict[str, int | float | str | bool] = Field(default_factory=dict)
+    metrics: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
 
 
 class BenchmarkScenarioReport(BaseModel):
@@ -249,7 +250,7 @@ class BenchmarkScenarioReport(BaseModel):
     feature: PerformanceFeatureName | None = None
     status: str
     reason: str
-    metrics: dict[str, int | float | str | bool] = Field(default_factory=dict)
+    metrics: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
     samples: list[BenchmarkScenarioSample] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -389,6 +390,27 @@ class OptimizationDefaultsSummary(BaseModel):
     models: list[ModelOptimizationDefaults] = Field(default_factory=list)
 
 
+class RuntimeSupportPathSummary(BaseModel):
+    path_id: str
+    label: str
+    role: str
+    install_profile: str | None = None
+    host_scope: str
+    runtime_affinities: list[str] = Field(default_factory=list)
+    benchmark_backed_defaults: bool = False
+    lewlm_managed_layers: list[str] = Field(default_factory=list)
+    backend_native_layers: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RuntimeSupportStrategy(BaseModel):
+    format: str = "lewlm-runtime-support-strategy-v1"
+    primary_path_id: str
+    first_class_non_apple_path_id: str | None = None
+    paths: list[RuntimeSupportPathSummary] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class RuntimeStats(BaseModel):
     platform: HostPlatformSnapshot
     readiness: ServiceReadinessSummary
@@ -413,6 +435,7 @@ class RuntimeStats(BaseModel):
     cluster: dict[str, Any] | None = None
     performance_features: list[PerformanceFeatureStatus] = Field(default_factory=list)
     optimization_defaults: OptimizationDefaultsSummary | None = None
+    runtime_support_strategy: RuntimeSupportStrategy | None = None
 
 
 RuntimeStats.model_rebuild()
@@ -475,7 +498,7 @@ class ServingProfileRecommendation(BaseModel):
     reason: str
     settings_overrides: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
     effective_settings: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
-    metrics: dict[str, int | float | str | bool] = Field(default_factory=dict)
+    metrics: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
     quantization_profile: str | None = None
     selected_speculation_mode: str | None = None
     active_kernel_path: str | None = None

@@ -1463,7 +1463,12 @@ class MetadataStore:
 
     @staticmethod
     def _host_signature(host_platform: dict[str, Any]) -> str:
-        return hashlib.sha256(json.dumps(host_platform, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        normalized_payload = {
+            key: host_platform.get(key)
+            for key in ("system", "release", "machine", "python_version")
+            if key in host_platform
+        }
+        return hashlib.sha256(json.dumps(normalized_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
     def snapshot(self) -> dict[str, Any]:
         with self.connection() as connection:

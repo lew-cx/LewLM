@@ -72,6 +72,8 @@ Examples of feature-level reporting include:
 - request scheduling and prefill isolation
 - multimodal feature and encoder caching
 
+For the portable performance-core features, benchmark results and runtime stats also carry `ownership_modes`. That lets LewLM distinguish LewLM-owned behavior from backend-native preservation, partial adapter preservation, and outright unsupported paths without flattening everything into an MLX-shaped claim.
+
 ## Performance-core prove-out
 
 Milestone 81 proof lives in the release-artifact flow rather than a separate hidden checklist. `scripts/generate_release_manifest.py` now captures:
@@ -92,6 +94,10 @@ Milestone 81 proof lives in the release-artifact flow rather than a separate hid
 - measured registry/default adoption
 
 Use that summary when you need to answer "what does LewLM truly own on this host today?" without overclaiming parity across every backend.
+
+Milestone 103 now chooses **GGUF via llama.cpp** as LewLM's first-class non-Apple path. On that path, benchmark-backed defaults come from serving-profile/autotune artifacts plus runtime-local evidence LewLM can package and report directly.
+
+`--compare-external-adapter` artifacts still matter, but they now stay in the bridge-evidence bucket: LewLM uses them for fallback honesty and preservation reporting instead of promoting the external adapter over a first-class packaged runtime.
 
 ## Related operator endpoints
 

@@ -109,9 +109,13 @@ def _sandbox_worker(
             workspace_path = Path(workspace_root)
             workspace_path.mkdir(parents=True, exist_ok=True)
             workspace_dir = str(workspace_path)
+        original_cwd = os.getcwd()
         with TemporaryDirectory(prefix="lewlm-sandbox-", dir=workspace_dir) as sandbox_dir:
-            os.chdir(sandbox_dir)
-            connection.send({"kind": "result", "value": target(*args, **kwargs)})
+            try:
+                os.chdir(sandbox_dir)
+                connection.send({"kind": "result", "value": target(*args, **kwargs)})
+            finally:
+                os.chdir(original_cwd)
     except LewLMError as exc:
         connection.send({"kind": "lewlm_error", "error": exc})
     except Exception as exc:  # noqa: BLE001 - returned to parent as structured sandbox failure

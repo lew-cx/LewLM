@@ -76,6 +76,7 @@ class ModelRouter:
     _consumer_readiness_capabilities: tuple[CapabilityName, ...] = (
         CapabilityName.CHAT,
         CapabilityName.STREAMING,
+        CapabilityName.VISION,
         CapabilityName.EMBEDDINGS,
         CapabilityName.RERANK,
         CapabilityName.AUDIO_TRANSCRIPTION,
@@ -313,7 +314,7 @@ class ModelRouter:
                     runtime_reason = f"{runtime_reason[:-1]} with benchmark-backed local routing preference."
                 elif runtime_preference is not None and runtime_preference.downgrade_reason is not None:
                     runtime_reason = (
-                        f"{runtime_reason[:-1]} after measured routing downgraded a partial-support path "
+                        f"{runtime_reason[:-1]} after measured routing downgraded an adapter-backed path "
                         f"because {runtime_preference.downgrade_reason}."
                     )
                 modality_path, modality_path_reason = self._modality_routing_details(
@@ -516,6 +517,7 @@ class ModelRouter:
     def capability_readiness_summary(self) -> ServiceReadinessSummary:
         manifests = self.model_registry.list_manifests()
         runnable_model_count = sum(1 for manifest in manifests if manifest.conversion_status == ConversionStatus.RUNNABLE)
+        host_platform = self.runtime_catalog.host_platform_snapshot()
         capabilities = [self.capability_readiness(capability) for capability in self._consumer_readiness_capabilities]
         ready_capability_count = sum(1 for capability in capabilities if capability.ready)
         if ready_capability_count == len(capabilities):
@@ -531,9 +533,12 @@ class ModelRouter:
             notes.append("Discovered models exist, but none are runnable yet on this host.")
         if any(item.readiness_state == CapabilityReadinessState.CONVERSION_REQUIRED for item in capabilities):
             notes.append("Some capabilities are one conversion step away from becoming ready.")
+        if host_platform.total_memory_mb is None:
+            reason = host_platform.total_memory_reason or "Host total memory could not be determined."
+            notes.append(f"Host memory telemetry is unavailable: {reason} Memory-fit routing stays estimate-based.")
         return ServiceReadinessSummary(
             status=status,
-            host_platform=self.runtime_catalog.host_platform_snapshot(),
+            host_platform=host_platform,
             discovered_model_count=len(manifests),
             runnable_model_count=runnable_model_count,
             capability_count=len(capabilities),

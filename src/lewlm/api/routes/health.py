@@ -26,7 +26,7 @@ def health(request: Request) -> HealthResponse:
         service=settings.app_name,
         version=settings.version,
         time=utc_now(),
-        install_profiles=summarize_install_profiles(),
+        install_profiles=summarize_install_profiles(settings),
         readiness=services.model_router.capability_readiness_summary(),
         storage=StorageHealth(
             healthy=True,

@@ -98,7 +98,14 @@ class LewLMSettings(BaseSettings):
     moe_bounded_memory_mode: Literal["off", "partial_load", "expert_streaming"] = "off"
     moe_resident_expert_count: int = 4
     external_accelerator_enabled: bool = False
-    external_accelerator_profile: Literal["openai_compatible", "vmlx", "omlx", "vllm_mlx"] = "openai_compatible"
+    external_accelerator_profile: Literal[
+        "openai_compatible",
+        "vmlx",
+        "omlx",
+        "vllm_mlx",
+        "vllm_local",
+        "sglang_local",
+    ] = "openai_compatible"
     external_accelerator_base_url: str | None = None
     external_accelerator_timeout_seconds: int = 10
     file_access_roots: tuple[Path, ...] = ()

@@ -1038,6 +1038,13 @@ class FakeMLXVisionRuntime(ManagedTextRuntime):
         ModelModality.VISION,
         ModelModality.MULTIMODAL,
     )
+    supported_capabilities = frozenset(
+        {
+            CapabilityName.CHAT,
+            CapabilityName.STREAMING,
+            CapabilityName.VISION,
+        },
+    )
 
     def __init__(self, *, multimodal_encoder_cache: MultimodalEncoderCache | None = None) -> None:
         super().__init__()
@@ -1163,6 +1170,12 @@ class UnavailableMLXTextRuntime(FakeMLXSemanticRuntime):
 
     def performance_feature_snapshot(self) -> dict[str, object]:
         return {}
+
+
+class FakeExternalSemanticRuntime(FakeMLXSemanticRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF)
 
 
 class FakeMLXConversionBackend:
@@ -1675,6 +1688,30 @@ def services_with_fake_attachment_runtime(temp_settings: LewLMSettings, sample_c
 @pytest.fixture
 def app_with_fake_attachment_runtime(temp_settings: LewLMSettings, services_with_fake_attachment_runtime):
     return create_app(temp_settings, services=services_with_fake_attachment_runtime)
+
+
+@pytest.fixture
+def services_with_fake_external_semantic_runtime(
+    temp_settings: LewLMSettings,
+    sample_multimodal_models_root: Path,
+):
+    return bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalSemanticRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
+        },
+    )
+
+
+@pytest.fixture
+def app_with_fake_external_semantic_runtime(
+    temp_settings: LewLMSettings,
+    services_with_fake_external_semantic_runtime,
+):
+    return create_app(temp_settings, services=services_with_fake_external_semantic_runtime)
 
 
 @pytest.fixture

@@ -128,7 +128,7 @@ class AccelerationBenchmarkRuntime(ManagedTextRuntime):
                 },
             },
         }
-        await asyncio.sleep(0.001 if graph_compile or effective_kernel != "stock" else 0.005)
+        await asyncio.sleep(0.002 if graph_compile or effective_kernel != "stock" else 0.03)
         output = f"Echo: {request.messages[-1].content}"
         return GenerateResponse(
             model_id=request.model_id,

@@ -24,7 +24,7 @@ LewLM now keeps an explicit scope matrix in the codebase so the project can dist
 | Telemetry and capability reporting | `core` | `telemetry/`, `utils/validation_manifests.py` | base install | Runtime stats, readiness, and measured capability truth. |
 | Serving-control layers | `performance_core` | `core/serving_core.py`, `core/speculation.py`, scheduler/cache modules, `serving_profiles.py` | base install | The selectively owned optimization layer LewLM is prepared to stand behind. |
 | Benchmark and acceptance artifacts | `performance_core` | `benchmarking/` | base install | Evidence for defaults, claims, and prove-out work. |
-| Concrete runtime packs | `optional_module` | `runtime/mlx_*`, `runtime/llamacpp`, `runtime/adapters`, `runtime/metal` | `mlx`, `llamacpp` | Runtime contracts are core; concrete backend packs stay install-selectable. |
+| Concrete runtime packs | `optional_module` | `runtime/mlx_*`, `runtime/llamacpp`, `runtime/adapters`, `runtime/metal` | base install + config, `mlx`, `llamacpp` | Runtime contracts are core; concrete backend packs stay install-selectable, including the loopback external-accelerator bridge. |
 | Documents and local tooling | `optional_module` | `documents/`, `tools/` | `documents` | Deterministic ingest/render/skills and document-oriented local tools. |
 | Frontier architecture diagnostics | `experimental` | `runtime/experimental/architectures.py`, `runtime/experimental/frontier.py` | none | Planning and diagnostics only. |
 | Distributed cluster workflows | `experimental` | `runtime/experimental/distributed.py`, `api/routes/cluster.py` | none | Pipeline-parallel proof surface, not a production tensor-parallel engine. |

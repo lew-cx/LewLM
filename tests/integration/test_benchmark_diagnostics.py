@@ -132,7 +132,7 @@ class AccelerationDiagnosticRuntime(ManagedTextRuntime):
                 },
             },
         }
-        await asyncio.sleep(0.001 if graph_compile or effective_kernel != "stock" else 0.005)
+        await asyncio.sleep(0.002 if graph_compile or effective_kernel != "stock" else 0.03)
         output = f"Echo: {request.messages[-1].content}"
         return GenerateResponse(
             model_id=request.model_id,
@@ -385,7 +385,9 @@ def test_cli_benchmark_diagnostics_text_cache_batching_and_prefill(
     assert _feature(payload, "serving_core")["supported"] is True
     assert "total_sequences_started" in _feature(payload, "serving_core")["metrics"]
     assert _feature(payload, "continuous_batching")["supported"] is True
+    assert _feature(payload, "continuous_batching")["ownership_modes"] == ["backend_native"]
     assert _feature(payload, "prefix_cache")["active"] is True
+    assert "ownership_modes" in _feature(payload, "prefix_cache")
     assert _feature(payload, "persistent_multi_context_cache")["supported"] is True
     assert _feature(payload, "paged_kv_cache")["supported"] is True
     assert _feature(payload, "kv_cache_quantization")["supported"] is True
@@ -687,6 +689,7 @@ def test_cli_benchmark_stdout_omits_internal_acceleration_diagnostics(
             "moe",
         ),
     ),
+    ids=("hybrid-ssm", "moe"),
 )
 def test_cli_benchmark_diagnostics_frontier_architecture_modes(
     temp_settings,

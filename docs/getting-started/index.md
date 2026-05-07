@@ -11,9 +11,10 @@ LewLM is a middleware-first backend package designed to be usable in three ways:
 LewLM is optimized first for:
 
 - **Apple Silicon + MLX** for text, vision, and audio runtimes
-- **GGUF + llama.cpp** as the main fallback path
+- **GGUF + llama.cpp** as the packaged cross-platform runtime path
+- **loopback external accelerators** as the bridge path when another local server owns low-level execution
 
-The package code does **not** bundle model weights. By default LewLM stores state under `~/.lewlm` and scans `~/.lewlm/models`.
+The package code does **not** bundle model weights. By default LewLM stores state under `~/.lewlm` and scans `~/.lewlm/models` (`%USERPROFILE%\.lewlm` and `%USERPROFILE%\.lewlm\models` on Windows).
 
 ## Start here
 
@@ -25,8 +26,8 @@ The package code does **not** bundle model weights. By default LewLM stores stat
 
 | Setting | Default |
 | --- | --- |
-| Data directory | `~/.lewlm` |
-| Default model roots | `~/.lewlm/models` |
+| Data directory | `~/.lewlm` (`%USERPROFILE%\.lewlm` on Windows) |
+| Default model roots | `~/.lewlm/models` (`%USERPROFILE%\.lewlm\models` on Windows) |
 | API host | `127.0.0.1` |
 | API port | `8080` |
 | OpenAPI document | `/v1/openapi.json` |

@@ -20,13 +20,14 @@ This is enough to confirm:
 
 Core-only does **not** enable chat or generation.
 
-## MLX local app backend
+On Linux and Windows, this remains a diagnostics-only setup until you add a runtime profile such as `.[llamacpp]`.
+
+## Apple MLX local backend
 
 Use this on Apple Silicon when you want the preferred local runtime path.
 
 ```bash
 lewlm doctor
-mkdir -p ~/.lewlm/models
 # put compatible MLX or other supported local bundles there
 lewlm scan
 lewlm list-models
@@ -36,13 +37,14 @@ lewlm chat "Hello from LewLM"
 lewlm serve
 ```
 
-## GGUF fallback backend
+If `lewlm doctor` reports the MLX profile as host-blocked, stop here and switch to the Cross-platform GGUF backend instead. MLX remains Apple Silicon macOS only.
 
-Use this when you want the main cross-platform fallback path.
+## Cross-platform GGUF backend
+
+Use this on Linux, Windows, and non-MLX Mac hosts when you want the documented local runtime path. It is LewLM's first-class non-Apple runtime family.
 
 ```bash
 lewlm doctor
-mkdir -p ~/.lewlm/models
 # put GGUF files there
 lewlm scan
 lewlm list-models
@@ -52,7 +54,39 @@ lewlm chat "Hello from LewLM"
 lewlm serve
 ```
 
-## Documents-enabled backend
+After `lewlm doctor`, confirm the recommended runtime profile matches this install and note the `host memory` line. If LewLM cannot determine total host memory, it reports that explicitly instead of implying a precise budget.
+
+## Cross-platform external accelerator bridge
+
+Use this when LewLM should front a loopback-only local OpenAI-compatible server instead of importing a runtime package directly.
+
+This is where Linux/Windows operators with NVIDIA-backed local servers fit conceptually. LewLM does **not** install that server for you, and this bridge does **not** replace the first-class packaged GGUF runtime path for LewLM-managed execution. Treat it as an adapter-backed path: embeddings require a compatible local `/v1/embeddings` endpoint, and rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension.
+
+**macOS / Linux**
+
+```bash
+export LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true
+export LEWLM_EXTERNAL_ACCELERATOR_BASE_URL=http://127.0.0.1:8000
+export LEWLM_EXTERNAL_ACCELERATOR_PROFILE=vllm_local
+```
+
+**Windows PowerShell**
+
+```powershell
+$env:LEWLM_EXTERNAL_ACCELERATOR_ENABLED="true"
+$env:LEWLM_EXTERNAL_ACCELERATOR_BASE_URL="http://127.0.0.1:8000"
+$env:LEWLM_EXTERNAL_ACCELERATOR_PROFILE="vllm_local"
+```
+
+Then run:
+
+```bash
+lewlm doctor
+lewlm scan
+lewlm list-models
+```
+
+## Documents add-on
 
 Use this when you want local document ingest, render, or transform workflows, with or without model execution.
 
@@ -62,7 +96,11 @@ lewlm list-skills
 lewlm transform --input examples/receipt-transform.json --output ./receipt.md
 ```
 
-If you also want chat or responses work, pair `.[documents]` with `.[mlx]` or `.[llamacpp]`.
+If you also want chat or responses work, pair `.[documents]` with Apple MLX, cross-platform GGUF, or the external accelerator bridge.
+
+The documents extra installs LewLM's Python dependencies, but OCR-style flows still need a working local OCR engine such as `tesseract`.
+
+LewLM creates the default model root on first use, so you can copy local models into `~/.lewlm/models` or `%USERPROFILE%\.lewlm\models` on Windows before or after the first `lewlm scan`.
 
 ## Shared follow-up checks
 

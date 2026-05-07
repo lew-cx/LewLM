@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
@@ -24,6 +27,8 @@ from lewlm.runtime.mlx_vision.runtime import (
     load_mlx_vlm_backend_client,
 )
 from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache
+
+pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
 def test_mlx_vision_runtime_supports_real_mlx_vlm_signatures(monkeypatch) -> None:

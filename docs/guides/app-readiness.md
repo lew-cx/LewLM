@@ -37,6 +37,7 @@ Use this route when your app needs a low-cost answer to "what did this LewLM ins
 - per-runtime `readiness_state`
 - loaded-model and scheduler state
 - benchmark, cache, and target-platform diagnostics
+- `runtime_support_strategy` so host apps can see which runtime family is first-class on the current product line, which non-Apple path LewLM now productizes, and which paths remain bridge-only
 
 Use this route when your app needs to choose a degraded mode, show a diagnostics screen, or capture startup telemetry.
 

@@ -175,6 +175,16 @@ class ManagedRuntime(ABC):
     def supports_capability(self, capability: CapabilityName) -> bool:
         return self.is_available() and capability in self.supported_capabilities
 
+    def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool:
+        return self.supports_manifest(manifest) and self.supports_capability(capability)
+
+    def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None:
+        if not self.supports_manifest(manifest):
+            return "manifest unsupported"
+        if not self.supports_capability(capability):
+            return self.availability_reason() or f"{self.name} does not support `{capability.value}`."
+        return None
+
     def candidate_report(self, manifest: ModelManifest | None = None) -> RuntimeCandidateReport:
         return RuntimeCandidateReport(
             runtime_name=self.name,

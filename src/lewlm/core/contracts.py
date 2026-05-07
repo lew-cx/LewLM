@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -296,6 +296,9 @@ class HostPlatformSnapshot(BaseModel):
     release: str
     machine: str
     python_version: str
+    total_memory_mb: int | None = None
+    total_memory_source: str | None = None
+    total_memory_reason: str | None = None
 
 
 class RuntimeCandidateReport(BaseModel):
@@ -426,6 +429,130 @@ class MeasuredCapabilitySummary(BaseModel):
     runtime_names: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     probes: list[MeasuredCapabilityProbeRecord] = Field(default_factory=list)
+
+
+class PerformanceFeatureOwnership(str, Enum):
+    """Truthful ownership mode for one performance-core feature surface."""
+
+    LEWLM_OWNED = "lewlm_owned"
+    BACKEND_NATIVE = "backend_native"
+    PARTIAL = "partial"
+    UNSUPPORTED = "unsupported"
+
+
+class RuntimePerformanceFeatureReport(BaseModel):
+    """Portable runtime-facing report for one performance feature."""
+
+    supported: bool
+    active: bool = False
+    ownership: PerformanceFeatureOwnership = PerformanceFeatureOwnership.UNSUPPORTED
+    reason: str | None = None
+    metrics: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+    modes: list[str] = Field(default_factory=list)
+
+
+def normalize_performance_feature_ownership(
+    *,
+    ownership: PerformanceFeatureOwnership | str | None = None,
+    supported: bool | None = None,
+    support_level: str | None = None,
+) -> PerformanceFeatureOwnership:
+    """Normalize legacy or partial feature payloads onto one ownership enum."""
+
+    if isinstance(ownership, PerformanceFeatureOwnership):
+        return ownership
+    if isinstance(ownership, str):
+        normalized = ownership.casefold()
+        for candidate in PerformanceFeatureOwnership:
+            if candidate.value == normalized:
+                return candidate
+    if isinstance(support_level, str):
+        normalized_support_level = support_level.casefold()
+        if normalized_support_level == PerformanceFeatureOwnership.PARTIAL.value:
+            return PerformanceFeatureOwnership.PARTIAL
+        if normalized_support_level == PerformanceFeatureOwnership.UNSUPPORTED.value:
+            return PerformanceFeatureOwnership.UNSUPPORTED
+        if normalized_support_level == "supported":
+            return (
+                PerformanceFeatureOwnership.BACKEND_NATIVE
+                if supported is not False
+                else PerformanceFeatureOwnership.UNSUPPORTED
+            )
+    return (
+        PerformanceFeatureOwnership.BACKEND_NATIVE
+        if supported
+        else PerformanceFeatureOwnership.UNSUPPORTED
+    )
+
+
+def performance_feature_support_level(ownership: PerformanceFeatureOwnership | str) -> str:
+    """Return the legacy support-level label derived from ownership."""
+
+    normalized = normalize_performance_feature_ownership(ownership=ownership)
+    if normalized in {
+        PerformanceFeatureOwnership.LEWLM_OWNED,
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+    }:
+        return "supported"
+    return normalized.value
+
+
+def runtime_performance_feature_report(
+    *,
+    ownership: PerformanceFeatureOwnership | str,
+    reason: str | None,
+    active: bool = False,
+    metrics: Mapping[str, int | float | str | bool | None] | None = None,
+    notes: Sequence[str] | None = None,
+    modes: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Build a portable runtime feature payload while retaining legacy fields."""
+
+    normalized_ownership = normalize_performance_feature_ownership(ownership=ownership)
+    payload = RuntimePerformanceFeatureReport(
+        supported=normalized_ownership != PerformanceFeatureOwnership.UNSUPPORTED,
+        active=active,
+        ownership=normalized_ownership,
+        reason=reason,
+        metrics=dict(metrics or {}),
+        notes=list(notes or []),
+        modes=[mode for mode in modes or () if isinstance(mode, str) and mode],
+    ).model_dump(mode="json")
+    payload["support_level"] = performance_feature_support_level(normalized_ownership)
+    return payload
+
+
+def normalize_runtime_performance_feature_report(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Normalize existing runtime feature payloads onto the portable contract."""
+
+    if payload is None:
+        return runtime_performance_feature_report(
+            ownership=PerformanceFeatureOwnership.UNSUPPORTED,
+            reason=None,
+        )
+    normalized_ownership = normalize_performance_feature_ownership(
+        ownership=payload.get("ownership"),
+        supported=bool(payload.get("supported")),
+        support_level=(str(payload.get("support_level")) if payload.get("support_level") is not None else None),
+    )
+    if not bool(payload.get("supported")) and normalized_ownership != PerformanceFeatureOwnership.UNSUPPORTED:
+        normalized_ownership = PerformanceFeatureOwnership.UNSUPPORTED
+    metrics = payload.get("metrics")
+    notes = payload.get("notes")
+    modes = payload.get("modes")
+    normalized = runtime_performance_feature_report(
+        ownership=normalized_ownership,
+        reason=(str(payload.get("reason")) if payload.get("reason") is not None else None),
+        active=bool(payload.get("active")),
+        metrics=metrics if isinstance(metrics, Mapping) else None,
+        notes=notes if isinstance(notes, Sequence) and not isinstance(notes, str) else None,
+        modes=modes if isinstance(modes, Sequence) and not isinstance(modes, str) else None,
+    )
+    for key, value in payload.items():
+        if key not in normalized:
+            normalized[str(key)] = value
+    return normalized
 
 
 class HostCapabilityReadiness(BaseModel):
@@ -698,6 +825,10 @@ class RuntimeContract(Protocol):
     def target_platform_reason(self, system: str, machine: str) -> str | None: ...
 
     def supports_manifest(self, manifest: ModelManifest) -> bool: ...
+
+    def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool: ...
+
+    def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None: ...
 
     def is_model_loaded(self, model_id: str) -> bool: ...
 

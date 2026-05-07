@@ -643,7 +643,7 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
         "service": settings.app_name,
         "version": settings.version,
         "configuration": settings.redacted_snapshot(),
-        "install_profiles": summarize_install_profiles().model_dump(mode="json"),
+        "install_profiles": summarize_install_profiles(settings).model_dump(mode="json"),
         "storage": resolved_services.metadata_store.snapshot(),
         "event_bus": {"subscriber_count": resolved_services.event_bus.subscriber_count},
         "runtime_stats": runtime_stats.model_dump(mode="json"),
@@ -664,6 +664,17 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
             f"{platform_payload['system']} {platform_payload['machine']} "
             f"(release {platform_payload['release']}, Python {platform_payload['python_version']})",
         )
+        host_memory_mb = platform_payload.get("total_memory_mb")
+        if isinstance(host_memory_mb, int):
+            source = platform_payload.get("total_memory_source")
+            source_suffix = f" via {source}" if isinstance(source, str) and source else ""
+            print(f"host memory: {host_memory_mb} MB{source_suffix}")
+        else:
+            reason = platform_payload.get("total_memory_reason")
+            if isinstance(reason, str) and reason:
+                print(f"host memory: unavailable ({reason})")
+            else:
+                print("host memory: unavailable")
         print(f"database: {payload['storage']['database_path']}")
         print(f"models tracked: {payload['storage']['model_count']}")
         print(f"privacy mode: {'on' if settings.privacy_mode else 'off'}")
@@ -679,6 +690,11 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
         recommended_profile = install_profiles.get("recommended_profile_id")
         if isinstance(recommended_profile, str) and recommended_profile:
             print(f"recommended runtime profile: {recommended_profile}")
+        summary_notes = install_profiles.get("notes")
+        if isinstance(summary_notes, list):
+            for note in summary_notes[:2]:
+                if isinstance(note, str) and note:
+                    print(f"install guidance: {note}")
         for profile in install_profiles.get("profiles", []):
             if not isinstance(profile, dict):
                 continue
@@ -776,6 +792,25 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
                 workload_defaults = item.get("workload_defaults")
                 if isinstance(workload_defaults, list) and workload_defaults:
                     print(f"    workloads: {_format_workload_defaults_summary(workload_defaults)}")
+        runtime_support_strategy = payload["runtime_stats"].get("runtime_support_strategy")
+        if isinstance(runtime_support_strategy, dict):
+            print(
+                "runtime strategy: "
+                f"primary={runtime_support_strategy.get('primary_path_id')}, "
+                f"non-apple={runtime_support_strategy.get('first_class_non_apple_path_id') or 'none'}",
+            )
+            for path in runtime_support_strategy.get("paths", [])[:3]:
+                if not isinstance(path, dict):
+                    continue
+                print(
+                    f"  {path.get('label')}: "
+                    f"role={path.get('role')}, "
+                    + (
+                        "benchmark-backed defaults"
+                        if path.get("benchmark_backed_defaults")
+                        else "defaults pending benchmarks"
+                    ),
+                )
         for target in payload["runtime_stats"]["target_platforms"]:
             print(
                 f"target {target['system']} {target['machine']}: "

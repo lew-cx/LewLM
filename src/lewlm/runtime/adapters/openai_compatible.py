@@ -3,29 +3,68 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from io import BytesIO
 import json
 from pathlib import Path
+from secrets import token_hex
 import threading
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
+import wave
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
+    AudioSpeechRequest,
+    AudioSpeechResponse,
+    AudioTranscriptionRequest,
+    AudioTranscriptionResponse,
+    AudioTranscriptionSegment,
     CapabilityName,
+    EmbeddingRequest,
+    EmbeddingResponse,
+    EmbeddingVector,
     GenerateRequest,
     GenerateResponse,
     ModelFormat,
     ModelManifest,
     ModelModality,
+    PerformanceFeatureOwnership,
+    RerankRequest,
+    RerankResponse,
+    RerankResult,
     RuntimeAffinity,
     RuntimeCandidateReport,
+    normalize_performance_feature_ownership,
+    normalize_runtime_performance_feature_report,
+    runtime_performance_feature_report,
 )
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_SUPPORTED_SYSTEMS = ("Darwin", "Linux", "Windows")
+_SEMANTIC_ENDPOINTS = {
+    CapabilityName.VISION: "/v1/chat/completions",
+    CapabilityName.AUDIO_TRANSCRIPTION: "/v1/audio/transcriptions",
+    CapabilityName.AUDIO_SPEECH: "/v1/audio/speech",
+    CapabilityName.EMBEDDINGS: "/v1/embeddings",
+    CapabilityName.RERANK: "/v1/rerank",
+}
+_IMAGE_SUFFIX_MEDIA_TYPES = {
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_IMAGE_SUFFIXES = frozenset(_IMAGE_SUFFIX_MEDIA_TYPES)
+_VISION_PROBE_IMAGE_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlAbI4AAAAASUVORK5CYII="
+)
 _PERFORMANCE_FEATURE_ORDER = (
     "continuous_batching",
     "prefix_cache",
@@ -42,133 +81,161 @@ _FEATURE_LABELS = {
     "prefill_optimization": "prefill optimization",
     "speculative_decoding": "speculative decoding",
 }
-_PROFILE_FEATURES: dict[str, dict[str, tuple[bool, str, str]]] = {
+_PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]] = {
     "openai_compatible": {
         "continuous_batching": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "Local scheduler overlap can be preserved, but batching visibility depends on the upstream server.",
         ),
         "prefix_cache": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Generic OpenAI-compatible endpoints do not expose prompt-prefix cache state or reuse counters.",
         ),
         "paged_kv_cache": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Paged KV cache behavior is not surfaced through the generic compatibility layer.",
         ),
         "kv_cache_quantization": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Per-request KV cache quantization controls are not surfaced through the compatibility layer.",
         ),
         "prefill_optimization": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "Fast prefill may still happen inside the external engine, but request-level tuning knobs are not preserved.",
         ),
         "speculative_decoding": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not mapped through the local compatibility contract.",
         ),
     },
     "vmlx": {
         "continuous_batching": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "The external scheduler can preserve continuous batching for compatible local OpenAI-style requests.",
         ),
         "prefix_cache": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "vMLX-class servers preserve prompt reuse internally for repeated compatible prefixes.",
         ),
         "paged_kv_cache": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Paged KV state remains available inside the external accelerator runtime.",
         ),
         "kv_cache_quantization": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "KV cache quantization may remain active in the external engine, but LewLM cannot tune it per request.",
         ),
         "prefill_optimization": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Prefill acceleration remains active for compatible requests on the external server.",
         ),
         "speculative_decoding": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not part of the adapter contract yet.",
         ),
     },
     "omlx": {
         "continuous_batching": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "The external server can keep local request batching active for compatible workloads.",
         ),
         "prefix_cache": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "Prefix reuse may stay active, but the adapter cannot surface detailed hit accounting.",
         ),
         "paged_kv_cache": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "KV residency stays external, but LewLM cannot expose allocator-level paging details.",
         ),
         "kv_cache_quantization": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "KV cache quantization settings are not mapped into the adapter path.",
         ),
         "prefill_optimization": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Prefill acceleration remains available for compatible requests.",
         ),
         "speculative_decoding": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not preserved through the compatibility layer.",
         ),
     },
     "vllm_mlx": {
         "continuous_batching": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "The external runtime preserves batched scheduling for local compatible requests.",
         ),
         "prefix_cache": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Automatic prefix reuse remains available inside the external runtime.",
         ),
         "paged_kv_cache": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Paged KV cache residency remains active on the external accelerator path.",
         ),
         "kv_cache_quantization": (
-            True,
-            "partial",
+            PerformanceFeatureOwnership.PARTIAL,
             "Quantized KV residency may remain active, but LewLM cannot inspect or tune the policy directly.",
         ),
         "prefill_optimization": (
-            True,
-            "supported",
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
             "Prefill acceleration remains active for local compatible requests.",
         ),
         "speculative_decoding": (
-            False,
-            "unsupported",
+            PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding remains outside the adapter contract.",
+        ),
+    },
+    "vllm_local": {
+        "continuous_batching": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "vLLM-class local servers preserve continuous batching for compatible loopback chat workloads.",
+        ),
+        "prefix_cache": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "Automatic prefix caching can stay active inside the local vLLM server.",
+        ),
+        "paged_kv_cache": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "Paged KV residency remains managed inside the local vLLM runtime.",
+        ),
+        "kv_cache_quantization": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Quantized KV residency may remain active in the external server, but LewLM cannot inspect or tune it per request.",
+        ),
+        "prefill_optimization": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "Chunked and optimized prefill can remain active inside the local vLLM server.",
+        ),
+        "speculative_decoding": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Speculative decoding may exist upstream, but the current adapter contract does not preserve those controls.",
+        ),
+    },
+    "sglang_local": {
+        "continuous_batching": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "SGLang-class local servers preserve batched scheduling for compatible loopback chat workloads.",
+        ),
+        "prefix_cache": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Prefix reuse can remain active upstream, but detailed cache hit accounting is not exposed through the adapter.",
+        ),
+        "paged_kv_cache": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Paged KV residency may remain active upstream, but allocator-level residency details are not surfaced through the adapter path.",
+        ),
+        "kv_cache_quantization": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "KV cache quantization controls are not preserved through the current OpenAI-compatible adapter contract.",
+        ),
+        "prefill_optimization": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "Prefill acceleration can remain active inside the local server for compatible requests.",
+        ),
+        "speculative_decoding": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Speculative decoding remains outside the current adapter contract even when the local server supports it internally.",
         ),
     },
 }
@@ -188,12 +255,13 @@ def summarize_feature_preservation(
         external_entry = _feature_entry(external_features.get(feature_name))
         if not native_entry["supported"]:
             continue
-        support_level = external_entry["support_level"]
+        native_rank = _feature_coverage_rank(native_entry["ownership"])
+        external_rank = _feature_coverage_rank(external_entry["ownership"])
         status = "rejected"
-        if external_entry["supported"] and support_level == "supported":
+        if external_entry["supported"] and external_rank >= native_rank:
             status = "preserved"
             preserved.append(feature_name)
-        elif external_entry["supported"] and support_level == "partial":
+        elif external_entry["supported"]:
             status = "degraded"
             degraded.append(feature_name)
         else:
@@ -214,25 +282,46 @@ def summarize_feature_preservation(
 
 
 class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
-    """Route compatible text requests to a loopback-only OpenAI-style local server."""
+    """Route compatible local requests to a loopback-only OpenAI-style local server."""
 
     name = "local_external_adapter"
     affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
-    supported_formats = (ModelFormat.MLX,)
-    supported_modalities = (ModelModality.TEXT,)
-    supported_capabilities = frozenset({CapabilityName.CHAT, CapabilityName.STREAMING})
-    supported_systems = ("Darwin",)
-    supported_machines = ("arm64",)
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF, ModelFormat.AUDIO_FOLDER)
+    supported_modalities = (
+        ModelModality.TEXT,
+        ModelModality.VISION,
+        ModelModality.AUDIO,
+        ModelModality.EMBEDDING,
+        ModelModality.RERANK,
+        ModelModality.MULTIMODAL,
+    )
+    supported_capabilities = frozenset(
+        {
+            CapabilityName.CHAT,
+            CapabilityName.STREAMING,
+            CapabilityName.VISION,
+            CapabilityName.AUDIO_TRANSCRIPTION,
+            CapabilityName.AUDIO_SPEECH,
+            CapabilityName.EMBEDDINGS,
+            CapabilityName.RERANK,
+        },
+    )
+    supported_systems = _SUPPORTED_SYSTEMS
     platform_guidance = (
-        "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED with a loopback-only "
-        "LEWLM_EXTERNAL_ACCELERATOR_BASE_URL to use a local OpenAI-compatible accelerator server."
+        "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED and point "
+        "LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
     )
 
     def __init__(self, *, settings: LewLMSettings) -> None:
         super().__init__()
         self._settings = settings
         self._discovered_model_ids: tuple[str, ...] | None = None
+        self._discovered_model_records: tuple[dict[str, Any], ...] | None = None
         self._discovery_error: str | None = None
+        self._capability_support_cache: dict[CapabilityName, bool] = {}
+        self._capability_reason_cache: dict[CapabilityName, str | None] = {}
+        self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
+        self._model_capability_reason_cache: dict[tuple[str, CapabilityName], str | None] = {}
 
     def supports_manifest(self, manifest: ModelManifest) -> bool:
         if not super().supports_manifest(manifest):
@@ -272,18 +361,92 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
     def performance_feature_snapshot(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {}
-        for feature_name, (supported, support_level, reason) in _profile_feature_map(self._settings).items():
-            snapshot[feature_name] = {
-                "supported": supported,
-                "active": supported,
-                "support_level": support_level,
-                "reason": reason,
-                "metrics": {
+        for feature_name, (ownership, reason) in _profile_feature_map(self._settings).items():
+            snapshot[feature_name] = runtime_performance_feature_report(
+                ownership=ownership,
+                active=ownership != PerformanceFeatureOwnership.UNSUPPORTED,
+                reason=reason,
+                metrics={
                     "adapter_profile": self._settings.external_accelerator_profile,
                     "contract": "openai_compatible_local",
                 },
-            }
+                notes=(
+                    [
+                        "LewLM reports only the portable contract preserved across the loopback adapter boundary; deeper scheduler or cache internals remain owned by the upstream server."
+                    ]
+                    if ownership != PerformanceFeatureOwnership.UNSUPPORTED
+                    else []
+                ),
+            )
         return snapshot
+
+    def supports_capability(self, capability: CapabilityName) -> bool:
+        if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+            return super().supports_capability(capability)
+        if capability not in self.supported_capabilities or not self.is_available():
+            return False
+        if capability in self._capability_support_cache:
+            return self._capability_support_cache[capability]
+        try:
+            for remote_model_id in self._available_remote_models():
+                supported, reason = self._probe_remote_model_capability(remote_model_id, capability)
+                if supported:
+                    self._capability_support_cache[capability] = True
+                    self._capability_reason_cache[capability] = None
+                    return True
+                if reason:
+                    self._capability_reason_cache[capability] = reason
+        except RuntimeUnavailableError as exc:
+            self._capability_support_cache[capability] = False
+            self._capability_reason_cache[capability] = str(exc)
+            return False
+        self._capability_support_cache[capability] = False
+        if capability not in self._capability_reason_cache:
+            self._capability_reason_cache[capability] = (
+                "The configured external accelerator did not advertise any local models."
+                if not self._available_remote_models()
+                else f"No advertised local model accepted `{capability.value}` through the adapter contract."
+            )
+        return False
+
+    def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool:
+        if not self.supports_manifest(manifest):
+            return False
+        if not _manifest_supports_external_capability(manifest, capability):
+            return False
+        if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+            return True
+        remote_model_id = self._resolve_remote_model_id(manifest)
+        if remote_model_id is None:
+            return False
+        supported, _ = self._probe_remote_model_capability(remote_model_id, capability)
+        return supported
+
+    def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None:
+        if not self.supports_manifest(manifest):
+            return (
+                "The configured external accelerator endpoint did not advertise a compatible local model id. "
+                f"Available ids: {list(self._available_remote_models()) or ['none discovered']}."
+            )
+        if not _manifest_supports_external_capability(manifest, capability):
+            required_modalities = ", ".join(
+                modality.value
+                for modality in _external_capability_modalities(capability)
+            )
+            return (
+                f"The external accelerator bridge only supports `{capability.value}` for manifests that include "
+                f"{required_modalities}."
+            )
+        if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+            return None
+        remote_model_id = self._resolve_remote_model_id(manifest)
+        if remote_model_id is None:
+            return (
+                "The configured external accelerator endpoint did not advertise a compatible local model id. "
+                f"Available ids: {list(self._available_remote_models()) or ['none discovered']}."
+            )
+        _, reason = self._probe_remote_model_capability(remote_model_id, capability)
+        return reason
 
     async def _load_model(self, manifest: ModelManifest) -> None:
         remote_model_id = self._resolve_remote_model_id(manifest)
@@ -339,6 +502,149 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 raise item
             yield cast(str, item)
 
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        self._ensure_available()
+        self._ensure_loaded(request.model_id)
+        self._touch_model(request.model_id)
+        manifest = self._loaded_manifests[request.model_id]
+        remote_model_id = self._require_remote_model_id(manifest)
+        supported, reason = self._probe_remote_model_capability(remote_model_id, CapabilityName.EMBEDDINGS)
+        if not supported:
+            raise RuntimeUnavailableError(
+                reason or "The configured external accelerator could not satisfy `embeddings`.",
+                details={
+                    "runtime": self.name,
+                    "model_id": request.model_id,
+                    "remote_model_id": remote_model_id,
+                    "capability": CapabilityName.EMBEDDINGS.value,
+                },
+            )
+        payload = await asyncio.to_thread(
+            self._request_json,
+            "POST",
+            _SEMANTIC_ENDPOINTS[CapabilityName.EMBEDDINGS],
+            {"model": remote_model_id, "input": request.inputs},
+        )
+        data_payload = payload.get("data", payload.get("embeddings", payload.get("vectors", [])))
+        usage_payload = payload.get("usage", {})
+        vectors = _normalize_embedding_payload(data_payload)
+        usage = _normalize_usage(usage_payload)
+        prompt_tokens = usage.get("prompt_tokens", sum(max(1, len(text.split())) for text in request.inputs))
+        return EmbeddingResponse(
+            model_id=request.model_id,
+            data=[EmbeddingVector(index=index, embedding=vector) for index, vector in enumerate(vectors)],
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": usage.get("total_tokens", prompt_tokens),
+            },
+        )
+
+    async def rerank(self, request: RerankRequest) -> RerankResponse:
+        self._ensure_available()
+        self._ensure_loaded(request.model_id)
+        self._touch_model(request.model_id)
+        manifest = self._loaded_manifests[request.model_id]
+        remote_model_id = self._require_remote_model_id(manifest)
+        supported, reason = self._probe_remote_model_capability(remote_model_id, CapabilityName.RERANK)
+        if not supported:
+            raise RuntimeUnavailableError(
+                reason or "The configured external accelerator could not satisfy `rerank`.",
+                details={
+                    "runtime": self.name,
+                    "model_id": request.model_id,
+                    "remote_model_id": remote_model_id,
+                    "capability": CapabilityName.RERANK.value,
+                },
+            )
+        payload = await asyncio.to_thread(
+            self._request_json,
+            "POST",
+            _SEMANTIC_ENDPOINTS[CapabilityName.RERANK],
+            {
+                "model": remote_model_id,
+                "query": request.query,
+                "documents": request.documents,
+                "top_n": request.top_n,
+            },
+        )
+        results_payload = payload.get("results", payload.get("data", payload.get("scores", [])))
+        results = _normalize_rerank_payload(results_payload, request)
+        if request.top_n is not None:
+            results = results[: request.top_n]
+        return RerankResponse(model_id=request.model_id, results=results)
+
+    async def transcribe_audio(self, request: AudioTranscriptionRequest) -> AudioTranscriptionResponse:
+        self._ensure_available()
+        self._ensure_loaded(request.model_id)
+        self._touch_model(request.model_id)
+        manifest = self._loaded_manifests[request.model_id]
+        remote_model_id = self._require_remote_model_id(manifest)
+        supported, reason = self._probe_remote_model_capability(remote_model_id, CapabilityName.AUDIO_TRANSCRIPTION)
+        if not supported:
+            raise RuntimeUnavailableError(
+                reason or "The configured external accelerator could not satisfy `audio_transcription`.",
+                details={
+                    "runtime": self.name,
+                    "model_id": request.model_id,
+                    "remote_model_id": remote_model_id,
+                    "capability": CapabilityName.AUDIO_TRANSCRIPTION.value,
+                },
+            )
+        payload = await asyncio.to_thread(
+            self._request_multipart_json,
+            "POST",
+            _SEMANTIC_ENDPOINTS[CapabilityName.AUDIO_TRANSCRIPTION],
+            {
+                "model": remote_model_id,
+                "language": request.language,
+                "prompt": request.prompt,
+            },
+            {
+                "file": (
+                    request.file_name,
+                    request.audio_bytes,
+                    _audio_media_type_for_bytes(request.audio_bytes),
+                ),
+            },
+        )
+        return _normalize_audio_transcription_response(payload, request)
+
+    async def synthesize_speech(self, request: AudioSpeechRequest) -> AudioSpeechResponse:
+        self._ensure_available()
+        self._ensure_loaded(request.model_id)
+        self._touch_model(request.model_id)
+        manifest = self._loaded_manifests[request.model_id]
+        remote_model_id = self._require_remote_model_id(manifest)
+        supported, reason = self._probe_remote_model_capability(remote_model_id, CapabilityName.AUDIO_SPEECH)
+        if not supported:
+            raise RuntimeUnavailableError(
+                reason or "The configured external accelerator could not satisfy `audio_speech`.",
+                details={
+                    "runtime": self.name,
+                    "model_id": request.model_id,
+                    "remote_model_id": remote_model_id,
+                    "capability": CapabilityName.AUDIO_SPEECH.value,
+                },
+            )
+        audio_bytes, media_type = await asyncio.to_thread(
+            self._request_bytes,
+            "POST",
+            _SEMANTIC_ENDPOINTS[CapabilityName.AUDIO_SPEECH],
+            {
+                "model": remote_model_id,
+                "input": request.input_text,
+                "voice": request.voice or "alloy",
+                "response_format": request.audio_format,
+            },
+        )
+        return AudioSpeechResponse(
+            model_id=request.model_id,
+            audio_bytes=audio_bytes,
+            media_type=media_type,
+            voice=request.voice or "alloy",
+            duration_seconds=_duration_seconds_from_audio_bytes(audio_bytes, media_type=media_type),
+        )
+
     def _tokenize(self, text: str) -> list[int]:
         return list(text.encode("utf-8"))
 
@@ -370,7 +676,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 details={"runtime": self.name, "response_keys": sorted(response_payload)},
             )
         message = choices[0].get("message", {})
-        output_text = str(message.get("content", ""))
+        output_text = _normalize_content_text(message.get("content"))
         usage = response_payload.get("usage", {})
         if not isinstance(usage, dict):
             usage = {}
@@ -412,21 +718,90 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         payload = self._request_json("GET", "/v1/models", None)
         data = payload.get("data")
         model_ids: list[str] = []
+        discovered_records: list[dict[str, Any]] = []
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
                     continue
+                discovered_records.append(item)
                 model_id = item.get("id")
                 if isinstance(model_id, str) and model_id:
                     model_ids.append(model_id)
         self._discovered_model_ids = tuple(model_ids)
+        self._discovered_model_records = tuple(discovered_records)
         self._discovery_error = None
         return self._discovered_model_ids
+
+    def _probe_remote_model_capability(
+        self,
+        remote_model_id: str,
+        capability: CapabilityName,
+    ) -> tuple[bool, str | None]:
+        cache_key = (remote_model_id, capability)
+        if cache_key in self._model_capability_support_cache:
+            return (
+                self._model_capability_support_cache[cache_key],
+                self._model_capability_reason_cache.get(cache_key),
+            )
+        try:
+            if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+                payload = self._request_multipart_json(
+                    "POST",
+                    _SEMANTIC_ENDPOINTS[capability],
+                    {"model": remote_model_id, "language": "en", "prompt": "LewLM audio probe"},
+                    {
+                        "file": (
+                            "probe.wav",
+                            _probe_audio_bytes(),
+                            "audio/wav",
+                        ),
+                    },
+                )
+                supported = _semantic_probe_payload_is_usable(capability=capability, payload=payload)
+                reason = None
+            elif capability == CapabilityName.AUDIO_SPEECH:
+                audio_bytes, media_type = self._request_bytes(
+                    "POST",
+                    _SEMANTIC_ENDPOINTS[capability],
+                    {
+                        "model": remote_model_id,
+                        "input": "LewLM audio probe",
+                        "voice": "alloy",
+                        "response_format": "wav",
+                    },
+                )
+                supported = bool(audio_bytes) and media_type.startswith("audio/")
+                reason = None
+            else:
+                payload = self._request_json(
+                    "POST",
+                    _SEMANTIC_ENDPOINTS[capability],
+                    _semantic_probe_payload(remote_model_id=remote_model_id, capability=capability),
+                )
+                supported = _semantic_probe_payload_is_usable(capability=capability, payload=payload)
+                reason = None
+        except RuntimeUnavailableError as exc:
+            reason = _semantic_probe_failure_reason(
+                error=exc,
+                capability=capability,
+                remote_model_id=remote_model_id,
+            )
+            self._model_capability_support_cache[cache_key] = False
+            self._model_capability_reason_cache[cache_key] = reason
+            return False, reason
+        if not supported:
+            reason = (
+                f"The configured external accelerator returned an invalid `{capability.value}` payload "
+                f"for local model `{remote_model_id}`."
+            )
+        self._model_capability_support_cache[cache_key] = supported
+        self._model_capability_reason_cache[cache_key] = reason
+        return supported, reason
 
     def _chat_payload(self, *, remote_model_id: str, request: GenerateRequest, stream: bool) -> dict[str, Any]:
         return {
             "model": remote_model_id,
-            "messages": [{"role": message.role, "content": message.content} for message in request.messages],
+            "messages": [_message_payload(message) for message in request.messages],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": stream,
@@ -454,9 +829,36 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 delta = choices[0].get("delta", {})
                 if not isinstance(delta, dict):
                     continue
-                content = delta.get("content")
-                if isinstance(content, str) and content:
+                content = _normalize_content_text(delta.get("content"))
+                if content:
                     yield content
+
+    def _request_multipart_json(
+        self,
+        method: str,
+        path: str,
+        fields: dict[str, Any],
+        files: dict[str, tuple[str, bytes, str]],
+    ) -> dict[str, Any]:
+        boundary, data = _multipart_form_data(fields=fields, files=files)
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        with self._request(method, path, body=data, headers=headers) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+        if not body:
+            return {}
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeUnavailableError(
+                "External accelerator returned malformed JSON.",
+                details={"runtime": self.name, "path": path},
+            ) from exc
+        if isinstance(parsed, dict):
+            return parsed
+        raise RuntimeUnavailableError(
+            "External accelerator returned an unexpected JSON payload.",
+            details={"runtime": self.name, "path": path, "payload_type": type(parsed).__name__},
+        )
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
         with self._request(method, path, payload=payload) as response:
@@ -477,7 +879,31 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             details={"runtime": self.name, "path": path, "payload_type": type(parsed).__name__},
         )
 
-    def _request(self, method: str, path: str, *, payload: dict[str, Any] | None = None):
+    def _request_bytes(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[bytes, str]:
+        with self._request(
+            method,
+            path,
+            payload=payload,
+            accept="audio/*,application/octet-stream",
+        ) as response:
+            media_type = _response_media_type(response)
+            return response.read(), media_type
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        accept: str = "application/json",
+    ):
         available, reason = self._check_environment()
         if not available:
             raise RuntimeUnavailableError(
@@ -485,15 +911,19 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 details={"runtime": self.name},
             )
         base_url = self._settings.external_accelerator_base_url or ""
-        headers = {"Accept": "application/json"}
+        if payload is not None and body is not None:
+            raise ValueError("payload and body cannot both be provided to the external accelerator request helper.")
+        request_headers = {"Accept": accept, **(headers or {})}
         data: bytes | None = None
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
+        elif body is not None:
+            data = body
         request = Request(
             urljoin(base_url.rstrip("/") + "/", path.lstrip("/")),
             data=data,
-            headers=headers,
+            headers=request_headers,
             method=method,
         )
         try:
@@ -506,6 +936,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             ) from exc
         except URLError as exc:
             self._discovered_model_ids = ()
+            self._discovered_model_records = ()
             self._discovery_error = str(exc.reason)
             raise RuntimeUnavailableError(
                 "Could not reach the configured external accelerator endpoint.",
@@ -513,7 +944,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             ) from exc
 
 
-def _profile_feature_map(settings: LewLMSettings) -> dict[str, tuple[bool, str, str]]:
+def _profile_feature_map(settings: LewLMSettings) -> dict[str, tuple[PerformanceFeatureOwnership, str]]:
     return _PROFILE_FEATURES.get(settings.external_accelerator_profile, _PROFILE_FEATURES["openai_compatible"])
 
 
@@ -529,7 +960,16 @@ def _remote_model_candidates(manifest: ModelManifest) -> tuple[str, ...]:
             for item in explicit_model_ids
             if isinstance(item, str) and item
         )
-    candidates.extend((manifest.model_id, manifest.display_name, Path(manifest.source_path).name))
+    source_model_id = manifest.metadata.get("source_model_id")
+    if isinstance(source_model_id, str) and source_model_id:
+        candidates.append(source_model_id)
+    source_display_name = manifest.metadata.get("source_display_name")
+    if isinstance(source_display_name, str) and source_display_name:
+        candidates.append(source_display_name)
+    source_path = Path(manifest.source_path)
+    candidates.extend((manifest.model_id, manifest.display_name, source_path.name, source_path.stem))
+    for layer in manifest.artifact_lineage:
+        candidates.extend((layer.display_name, Path(layer.source_path).name, Path(layer.source_path).stem))
     deduped: list[str] = []
     for candidate in candidates:
         if candidate not in deduped:
@@ -538,13 +978,360 @@ def _remote_model_candidates(manifest: ModelManifest) -> tuple[str, ...]:
 
 
 def _feature_entry(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {"supported": False, "support_level": "unsupported", "reason": None}
-    supported = bool(payload.get("supported"))
-    support_level = str(payload.get("support_level", "supported" if supported else "unsupported"))
+    normalized = normalize_runtime_performance_feature_report(payload if isinstance(payload, dict) else None)
     return {
-        "supported": supported,
-        "support_level": support_level,
-        "reason": payload.get("reason"),
-        "metrics": payload.get("metrics", {}),
+        "supported": bool(normalized.get("supported")),
+        "support_level": str(normalized.get("support_level", "unsupported")),
+        "ownership": str(normalized.get("ownership", PerformanceFeatureOwnership.UNSUPPORTED.value)),
+        "reason": normalized.get("reason"),
+        "metrics": normalized.get("metrics", {}),
     }
+
+
+def _feature_coverage_rank(ownership: str) -> int:
+    normalized = normalize_performance_feature_ownership(ownership=ownership)
+    if normalized in {
+        PerformanceFeatureOwnership.LEWLM_OWNED,
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+    }:
+        return 2
+    if normalized == PerformanceFeatureOwnership.PARTIAL:
+        return 1
+    return 0
+
+
+def _semantic_probe_payload(*, remote_model_id: str, capability: CapabilityName) -> dict[str, Any]:
+    if capability == CapabilityName.VISION:
+        return {
+            "model": remote_model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "LewLM vision capability probe"},
+                        {"type": "image_url", "image_url": {"url": _VISION_PROBE_IMAGE_URL}},
+                    ],
+                },
+            ],
+            "max_tokens": 1,
+            "temperature": 0.0,
+            "stream": False,
+        }
+    if capability == CapabilityName.EMBEDDINGS:
+        return {"model": remote_model_id, "input": ["LewLM semantic capability probe"]}
+    if capability == CapabilityName.RERANK:
+        return {
+            "model": remote_model_id,
+            "query": "LewLM semantic capability probe",
+            "documents": ["LewLM semantic capability probe"],
+            "top_n": 1,
+        }
+    raise ValueError(f"Unsupported semantic capability probe: {capability.value}")
+
+
+def _semantic_probe_payload_is_usable(*, capability: CapabilityName, payload: dict[str, Any]) -> bool:
+    if capability == CapabilityName.VISION:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return False
+        message = choices[0].get("message", {})
+        if not isinstance(message, dict):
+            return False
+        content = _normalize_content_text(message.get("content"))
+        return bool(content)
+    if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+        text = payload.get("text")
+        return isinstance(text, str) and bool(text.strip())
+    if capability == CapabilityName.EMBEDDINGS:
+        return isinstance(payload.get("data", payload.get("embeddings", payload.get("vectors"))), list)
+    if capability == CapabilityName.RERANK:
+        results = payload.get("results", payload.get("data", payload.get("scores")))
+        return isinstance(results, list)
+    return False
+
+
+def _semantic_probe_failure_reason(
+    *,
+    error: RuntimeUnavailableError,
+    capability: CapabilityName,
+    remote_model_id: str,
+) -> str:
+    path = _SEMANTIC_ENDPOINTS[capability]
+    body = error.details.get("body") if isinstance(error.details, dict) else None
+    response_detail = f" Upstream response: {body}" if isinstance(body, str) and body else ""
+    return (
+        f"The configured external accelerator could not satisfy `{capability.value}` for local model "
+        f"`{remote_model_id}` via `{path}`.{response_detail}"
+    )
+
+
+def _normalize_usage(payload: Any) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in payload.items():
+        if isinstance(key, str) and isinstance(value, int | float):
+            normalized[key] = int(value)
+    return normalized
+
+
+def _normalize_embedding_payload(payload: Any) -> list[list[float]]:
+    if isinstance(payload, list):
+        if payload and all(isinstance(item, (int, float)) for item in payload):
+            return [[float(value) for value in payload]]
+        vectors: list[list[float]] = []
+        for item in payload:
+            vector_payload = item
+            if isinstance(item, dict):
+                vector_payload = item.get("embedding", item.get("vector", item.get("values", [])))
+            if isinstance(vector_payload, list) and all(isinstance(value, (int, float)) for value in vector_payload):
+                vectors.append([float(value) for value in vector_payload])
+        return vectors
+    return []
+
+
+def _normalize_rerank_payload(payload: Any, request: RerankRequest) -> list[RerankResult]:
+    if not isinstance(payload, list):
+        return []
+    if payload and all(isinstance(item, (int, float)) for item in payload):
+        return [
+            RerankResult(index=index, relevance_score=float(score), document=request.documents[index])
+            for index, score in enumerate(payload)
+        ]
+    normalized: list[RerankResult] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            continue
+        item_index = item.get("index", index)
+        if not isinstance(item_index, int):
+            item_index = index
+        document = item.get("document")
+        if not isinstance(document, str) and 0 <= item_index < len(request.documents):
+            document = request.documents[item_index]
+        score = item.get("relevance_score", item.get("score", 0.0))
+        if not isinstance(score, int | float):
+            score = 0.0
+        normalized.append(
+            RerankResult(
+                index=item_index,
+                relevance_score=float(score),
+                document=document,
+            ),
+        )
+    normalized.sort(key=lambda item: (-item.relevance_score, item.index))
+    return normalized
+
+
+def _external_capability_modalities(capability: CapabilityName) -> tuple[ModelModality, ...]:
+    if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+        return (ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL)
+    if capability == CapabilityName.VISION:
+        return (ModelModality.VISION, ModelModality.MULTIMODAL)
+    if capability in {CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH}:
+        return (ModelModality.AUDIO,)
+    if capability == CapabilityName.EMBEDDINGS:
+        return (ModelModality.EMBEDDING,)
+    if capability == CapabilityName.RERANK:
+        return (ModelModality.RERANK,)
+    return ()
+
+
+def _manifest_supports_external_capability(manifest: ModelManifest, capability: CapabilityName) -> bool:
+    required_modalities = _external_capability_modalities(capability)
+    if not required_modalities:
+        return False
+    return any(modality in manifest.modality for modality in required_modalities)
+
+
+def _message_payload(message: Any) -> dict[str, Any]:
+    parts: list[dict[str, Any]] = []
+    if isinstance(message.content, str) and message.content:
+        parts.append({"type": "text", "text": message.content})
+    attachments = getattr(message, "attachments", [])
+    if isinstance(attachments, list):
+        for attachment in attachments:
+            if getattr(attachment, "attachment_type", None) != "image":
+                continue
+            parts.extend(_image_message_parts(attachment))
+    return {
+        "role": getattr(message, "role", "user"),
+        "content": parts if parts else getattr(message, "content", ""),
+    }
+
+
+def _image_message_parts(attachment: Any) -> list[dict[str, Any]]:
+    source_path = getattr(attachment, "source_path", None)
+    if not isinstance(source_path, str) or not source_path:
+        return []
+    source = Path(source_path).expanduser().resolve(strict=False)
+    candidate_paths = _expanded_image_paths(source)
+    parts: list[dict[str, Any]] = []
+    default_media_type = getattr(attachment, "media_type", None)
+    for candidate in candidate_paths:
+        image_path = Path(candidate)
+        if not image_path.exists() or not image_path.is_file():
+            continue
+        media_type = _image_media_type(image_path, default_media_type=default_media_type)
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{encoded}"},
+            },
+        )
+    return parts
+
+
+def _expanded_image_paths(source_path: Path) -> list[Path]:
+    if not source_path.exists():
+        return []
+    if source_path.is_dir():
+        return sorted(
+            candidate
+            for candidate in source_path.iterdir()
+            if candidate.is_file() and candidate.suffix.casefold() in _IMAGE_SUFFIXES
+        )
+    return [source_path]
+
+
+def _image_media_type(path: Path, *, default_media_type: str | None) -> str:
+    if isinstance(default_media_type, str) and default_media_type.startswith("image/"):
+        return default_media_type
+    return _IMAGE_SUFFIX_MEDIA_TYPES.get(path.suffix.casefold(), "image/png")
+
+
+def _normalize_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    text_parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            text_parts.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", "")).casefold()
+        if item_type in {"text", "output_text"}:
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+    return "\n".join(text_parts)
+
+
+def _multipart_form_data(
+    *,
+    fields: dict[str, Any],
+    files: dict[str, tuple[str, bytes, str]],
+) -> tuple[str, bytes]:
+    boundary = f"----lewlm{token_hex(8)}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        if value is None:
+            continue
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ],
+        )
+    for name, (file_name, file_bytes, media_type) in files.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                (
+                    f'Content-Disposition: form-data; name="{name}"; filename="{file_name}"\r\n'
+                    f"Content-Type: {media_type}\r\n\r\n"
+                ).encode("utf-8"),
+                file_bytes,
+                b"\r\n",
+            ],
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return boundary, b"".join(chunks)
+
+
+def _response_media_type(response: Any) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        get_content_type = getattr(headers, "get_content_type", None)
+        if callable(get_content_type):
+            return str(get_content_type())
+        content_type = headers.get("Content-Type")
+        if isinstance(content_type, str) and content_type:
+            return content_type.split(";", 1)[0].strip()
+    return "application/octet-stream"
+
+
+def _probe_audio_bytes() -> bytes:
+    with BytesIO() as buffer:
+        with wave.open(buffer, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * 160)
+        return buffer.getvalue()
+
+
+def _audio_media_type_for_bytes(audio_bytes: bytes) -> str:
+    if len(audio_bytes) >= 12 and audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        return "audio/wav"
+    if audio_bytes.startswith(b"ID3"):
+        return "audio/mpeg"
+    if audio_bytes.startswith(b"fLaC"):
+        return "audio/flac"
+    if audio_bytes.startswith(b"OggS"):
+        return "audio/ogg"
+    return "application/octet-stream"
+
+
+def _normalize_audio_transcription_response(
+    payload: dict[str, Any],
+    request: AudioTranscriptionRequest,
+) -> AudioTranscriptionResponse:
+    segments_payload = payload.get("segments", [])
+    segments: list[AudioTranscriptionSegment] = []
+    if isinstance(segments_payload, list):
+        for item in segments_payload:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            start_seconds = item.get("start", item.get("start_seconds"))
+            end_seconds = item.get("end", item.get("end_seconds"))
+            segments.append(
+                AudioTranscriptionSegment(
+                    start_seconds=float(start_seconds) if isinstance(start_seconds, (int, float)) else None,
+                    end_seconds=float(end_seconds) if isinstance(end_seconds, (int, float)) else None,
+                    text=text,
+                ),
+            )
+    return AudioTranscriptionResponse(
+        model_id=request.model_id,
+        text=str(payload.get("text", "")),
+        language=payload.get("language") if isinstance(payload.get("language"), str) else request.language,
+        duration_seconds=(
+            float(payload.get("duration"))
+            if isinstance(payload.get("duration"), (int, float))
+            else _duration_seconds_from_audio_bytes(request.audio_bytes, media_type=_audio_media_type_for_bytes(request.audio_bytes))
+        ),
+        segments=segments,
+    )
+
+
+def _duration_seconds_from_audio_bytes(audio_bytes: bytes, *, media_type: str) -> float | None:
+    if media_type != "audio/wav" or not audio_bytes:
+        return None
+    try:
+        with wave.open(BytesIO(audio_bytes), "rb") as handle:
+            frame_rate = handle.getframerate()
+            frame_count = handle.getnframes()
+    except wave.Error:
+        return None
+    if frame_rate <= 0:
+        return None
+    return round(frame_count / frame_rate, 4)

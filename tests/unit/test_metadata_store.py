@@ -370,3 +370,20 @@ def test_metadata_store_persists_idempotent_operation_results(tmp_path: Path) ->
     assert record.idempotency_key == "idem-1"
     assert record.request_hash == "hash-1"
     assert record.response_payload["request_id"] == "req-1"
+
+
+def test_metadata_store_host_signature_ignores_diagnostic_only_fields() -> None:
+    base_host_platform = {
+        "system": "Windows",
+        "release": "11",
+        "machine": "AMD64",
+        "python_version": "3.11.9",
+    }
+    telemetry_host_platform = {
+        **base_host_platform,
+        "total_memory_mb": 32768,
+        "total_memory_source": "windows_globalmemorystatusex",
+        "total_memory_reason": None,
+    }
+
+    assert MetadataStore._host_signature(base_host_platform) == MetadataStore._host_signature(telemetry_host_platform)

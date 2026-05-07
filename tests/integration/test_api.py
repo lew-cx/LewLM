@@ -79,12 +79,26 @@ def test_health_endpoint_reports_service_status(temp_settings) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["install_profiles"]["active_profile_ids"][0] == "core_only"
+    assert any(
+        item["profile"] == "external_accelerator_bridge_backend"
+        for item in payload["install_profiles"]["profiles"]
+    )
     assert payload["readiness"]["status"] == "blocked"
     assert payload["readiness"]["ready_capability_count"] == 0
-    assert payload["readiness"]["capability_count"] >= 6
+    assert payload["readiness"]["capability_count"] >= 7
     assert payload["readiness"]["capabilities"][0]["readiness_state"] == "no_models"
+    assert any(item["capability"] == "vision" for item in payload["readiness"]["capabilities"])
+    assert "total_memory_mb" in payload["readiness"]["host_platform"]
+    assert "total_memory_source" in payload["readiness"]["host_platform"]
+    assert "total_memory_reason" in payload["readiness"]["host_platform"]
     assert payload["configuration"]["runtime_packs"]
     assert payload["configuration"]["feature_packs"]
+    external_pack = next(
+        item
+        for item in payload["configuration"]["runtime_packs"]
+        if item["name"] == "external_accelerator"
+    )
+    assert "loopback-only OpenAI-compatible local servers" in external_pack["description"]
     assert payload["configuration"]["privacy_mode"] is True
     assert payload["configuration"]["audit_log_enabled"] is False
     assert payload["configuration"]["persistence_encryption_enabled"] is False

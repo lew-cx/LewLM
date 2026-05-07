@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
@@ -23,6 +26,8 @@ from lewlm.core.contracts import (
 )
 from lewlm.runtime.mlx_text.runtime import MLXTextRuntime
 from lewlm.structured_output import JSONSchemaResponseFormat
+
+pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
 class FakeTokenizer:

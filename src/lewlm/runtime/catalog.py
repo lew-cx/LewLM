@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import ctypes
 import os
+from pathlib import Path
 import platform
 from typing import Literal
 
@@ -59,11 +61,15 @@ class RuntimeCatalog:
 
     @staticmethod
     def host_platform_snapshot() -> HostPlatformSnapshot:
+        total_memory_mb, total_memory_source, total_memory_reason = RuntimeCatalog.host_total_memory_snapshot()
         return HostPlatformSnapshot(
             system=platform.system(),
             release=platform.release(),
             machine=platform.machine(),
             python_version=platform.python_version(),
+            total_memory_mb=total_memory_mb,
+            total_memory_source=total_memory_source,
+            total_memory_reason=total_memory_reason,
         )
 
     def select_runtime(
@@ -98,20 +104,57 @@ class RuntimeCatalog:
     ) -> tuple[list[RuntimeContract], list[str]]:
         alternatives: list[str] = []
         compatible: list[RuntimeContract] = []
+        required_capabilities = _required_runtime_capabilities(
+            capability=capability,
+            request_modality=request_modality,
+        )
         for affinity in self._candidate_affinities(manifest, request_modality=request_modality):
             runtime = self.get_runtime(affinity)
             if runtime is None:
                 alternatives.append(f"{affinity.value}: {self._runtime_absence_reason(affinity)}")
                 continue
-            if not runtime.is_available():
-                alternatives.append(f"{affinity.value}: {runtime.availability_reason() or 'runtime unavailable'}")
-                continue
-            if not runtime.supports_manifest(manifest):
-                alternatives.append(f"{affinity.value}: manifest format unsupported")
-                continue
-            if not runtime.supports_capability(capability):
+            candidate_report = getattr(runtime, "candidate_report", None)
+            if callable(candidate_report):
+                report = candidate_report(manifest)
+                if not report.available:
+                    alternatives.append(
+                        f"{affinity.value}: {report.availability_reason or 'runtime unavailable'}",
+                    )
+                    continue
+                if not report.supports_manifest:
+                    alternatives.append(
+                        f"{affinity.value}: {report.availability_reason or 'manifest unsupported'}",
+                    )
+                    continue
+            else:
+                if not runtime.is_available():
+                    alternatives.append(f"{affinity.value}: {runtime.availability_reason() or 'runtime unavailable'}")
+                    continue
+                if not runtime.supports_manifest(manifest):
+                    alternatives.append(f"{affinity.value}: manifest unsupported")
+                    continue
+            supports_manifest_capability = getattr(runtime, "supports_manifest_capability", None)
+            manifest_capability_reason = getattr(runtime, "manifest_capability_reason", None)
+            missing_required_capability = False
+            for required_capability in required_capabilities:
+                if callable(supports_manifest_capability):
+                    if supports_manifest_capability(manifest, required_capability):
+                        continue
+                    reason = None
+                    if callable(manifest_capability_reason):
+                        reason = manifest_capability_reason(manifest, required_capability)
+                    alternatives.append(
+                        f"{affinity.value}: {reason or runtime.availability_reason() or 'capability unavailable'}",
+                    )
+                    missing_required_capability = True
+                    break
+                if runtime.supports_capability(required_capability):
+                    continue
                 reason = runtime.availability_reason() or "capability unavailable"
                 alternatives.append(f"{affinity.value}: {reason}")
+                missing_required_capability = True
+                break
+            if missing_required_capability:
                 continue
             compatible.append(runtime)
         return compatible, alternatives
@@ -373,21 +416,104 @@ class RuntimeCatalog:
                 ),
             )
         return reports
+
     @staticmethod
     def host_total_memory_mb() -> int | None:
-        if hasattr(os, "sysconf"):
-            page_size_name = "SC_PAGE_SIZE"
-            page_count_name = "SC_PHYS_PAGES"
-            if page_size_name in os.sysconf_names and page_count_name in os.sysconf_names:
-                try:
-                    page_size = int(os.sysconf(page_size_name))
-                    page_count = int(os.sysconf(page_count_name))
-                except (OSError, ValueError):
-                    return None
-                total_bytes = page_size * page_count
-                if total_bytes > 0:
-                    return max(1, total_bytes // (1024 * 1024))
-        return None
+        total_memory_mb, _, _ = RuntimeCatalog.host_total_memory_snapshot()
+        return total_memory_mb
+
+    @staticmethod
+    def host_total_memory_snapshot() -> tuple[int | None, str | None, str | None]:
+        system = platform.system()
+        if system == "Windows":
+            total_memory_mb, reason = RuntimeCatalog._windows_total_memory_mb()
+            return total_memory_mb, ("windows_globalmemorystatusex" if total_memory_mb is not None else None), reason
+        total_memory_mb, reason = RuntimeCatalog._posix_total_memory_mb()
+        if total_memory_mb is not None:
+            return total_memory_mb, "posix_sysconf", None
+        if system == "Linux":
+            total_memory_mb, linux_reason = RuntimeCatalog._linux_proc_meminfo_total_memory_mb()
+            if total_memory_mb is not None:
+                return total_memory_mb, "linux_proc_meminfo", None
+            return None, None, linux_reason or reason
+        return None, None, reason
+
+    @staticmethod
+    def _posix_total_memory_mb() -> tuple[int | None, str | None]:
+        sysconf_names = getattr(os, "sysconf_names", {})
+        if not hasattr(os, "sysconf") or not sysconf_names:
+            return None, "POSIX sysconf physical-memory probes are unavailable on this host."
+        page_size_name = "SC_PAGE_SIZE"
+        page_count_name = "SC_PHYS_PAGES"
+        if page_size_name not in sysconf_names or page_count_name not in sysconf_names:
+            return None, "POSIX sysconf did not expose physical-memory probe names on this host."
+        try:
+            page_size = int(os.sysconf(page_size_name))
+            page_count = int(os.sysconf(page_count_name))
+        except (OSError, ValueError):
+            return None, "POSIX sysconf did not return usable physical-memory values."
+        total_bytes = page_size * page_count
+        total_memory_mb = RuntimeCatalog._bytes_to_mb(total_bytes)
+        if total_memory_mb is None:
+            return None, "POSIX sysconf returned a non-positive physical-memory total."
+        return total_memory_mb, None
+
+    @staticmethod
+    def _linux_proc_meminfo_total_memory_mb() -> tuple[int | None, str | None]:
+        meminfo_path = Path("/proc/meminfo")
+        try:
+            for line in meminfo_path.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("MemTotal:"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    break
+                total_kib = int(parts[1])
+                if total_kib > 0:
+                    return max(1, total_kib // 1024), None
+                break
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None, "Linux /proc/meminfo could not be read for total-memory detection."
+        return None, "Linux /proc/meminfo did not expose a usable MemTotal value."
+
+    @staticmethod
+    def _windows_total_memory_mb() -> tuple[int | None, str | None]:
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        except (AttributeError, OSError):
+            return None, "Windows GlobalMemoryStatusEx is unavailable on this host."
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        memory_status = _MemoryStatusEx()
+        memory_status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        result = kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status))
+        if not result:
+            get_last_error = getattr(ctypes, "get_last_error", None)
+            error_code = get_last_error() if callable(get_last_error) else 0
+            detail = f" (WinError {error_code})" if error_code else ""
+            return None, f"Windows GlobalMemoryStatusEx failed{detail}."
+        total_memory_mb = RuntimeCatalog._bytes_to_mb(memory_status.ullTotalPhys)
+        if total_memory_mb is None:
+            return None, "Windows GlobalMemoryStatusEx returned a non-positive physical-memory total."
+        return total_memory_mb, None
+
+    @staticmethod
+    def _bytes_to_mb(total_bytes: int) -> int | None:
+        if total_bytes <= 0:
+            return None
+        return max(1, total_bytes // (1024 * 1024))
 
     async def prepare_runtime_for_request(
         self,
@@ -547,6 +673,20 @@ def _runtime_candidate_readiness_state(
     if not runtime.supports_manifest(manifest):
         return RuntimeReadinessState.MANIFEST_UNSUPPORTED
     return RuntimeReadinessState.READY
+
+
+def _required_runtime_capabilities(
+    *,
+    capability: CapabilityName,
+    request_modality: RequestModality | None,
+) -> tuple[CapabilityName, ...]:
+    required = [capability]
+    if capability in {CapabilityName.CHAT, CapabilityName.STREAMING} and request_modality in {
+        RequestModality.IMAGE_CONDITIONED,
+        RequestModality.FRAME_BUNDLE_VIDEO,
+    }:
+        required.append(CapabilityName.VISION)
+    return tuple(required)
 
 
 def build_default_runtime_catalog(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from lewlm.core.contracts import GenerateMessage, GenerateRequest
 from lewlm.runtime.llamacpp.runtime import LlamaCppRuntime
 from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
@@ -18,7 +20,16 @@ class _DummyLlamaClient:
         return {}
 
 
-def test_llamacpp_builds_decode_time_json_schema_grammar() -> None:
+def test_llamacpp_builds_decode_time_json_schema_grammar(monkeypatch) -> None:
+    fake_grammar = SimpleNamespace(
+        from_json_schema=lambda schema, verbose=False: ("json", schema, verbose),
+        from_string=lambda grammar, verbose=False: ("grammar", grammar, verbose),
+    )
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(LlamaGrammar=fake_grammar),
+    )
+
     runtime = LlamaCppRuntime()
     request = GenerateRequest(
         model_id="test-model",

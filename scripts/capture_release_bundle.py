@@ -126,7 +126,7 @@ def _bundle_validation_inputs(
         bundled_inputs.append(
             {
                 "source_path": str(source_path),
-                "bundled_path": str(bundled_path.relative_to(output_path)),
+                "bundled_path": bundled_path.relative_to(output_path).as_posix(),
                 "format": entry["format"],
                 "sha256": entry["sha256"],
                 "size_bytes": entry["size_bytes"],

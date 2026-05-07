@@ -152,10 +152,13 @@ def test_llamacpp_runtime_applies_prefill_controls_and_surfaces_rejections(monke
     assert request.metadata["performance_controls"]["load"]["paged_kv_cache"]["effective"] == "rejected"
     assert request.metadata["performance_controls"]["load"]["kv_cache_quantization"]["effective"] == "rejected"
     assert health["performance_features"]["prefill_optimization"]["supported"] is True
+    assert health["performance_features"]["prefill_optimization"]["ownership"] == "backend_native"
     assert health["performance_features"]["prefill_optimization"]["active"] is True
     assert health["performance_features"]["prefill_optimization"]["metrics"]["requested_prefill_token_batch_size"] == 48
     assert health["performance_features"]["paged_kv_cache"]["supported"] is False
+    assert health["performance_features"]["paged_kv_cache"]["ownership"] == "unsupported"
     assert health["performance_features"]["kv_cache_quantization"]["supported"] is False
+    assert health["performance_features"]["kv_cache_quantization"]["ownership"] == "unsupported"
 
 
 def test_llamacpp_prefix_cache_wrapper_uses_longest_prefix_matches() -> None:

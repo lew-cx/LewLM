@@ -113,7 +113,7 @@ class LewLM:
             "service": self.settings.app_name,
             "version": self.settings.version,
             "time": utc_now(),
-            "install_profiles": summarize_install_profiles().model_dump(mode="json"),
+            "install_profiles": summarize_install_profiles(self.settings).model_dump(mode="json"),
             "readiness": self.services.model_router.capability_readiness_summary().model_dump(mode="json"),
             "storage": {
                 "healthy": True,

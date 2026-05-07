@@ -12,7 +12,16 @@ from importlib import import_module
 from typing import Any
 
 from lewlm.config.settings import LewLMSettings
-from lewlm.core.contracts import GenerateRequest, GenerateResponse, ModelFormat, ModelManifest, RuntimeAffinity, SpeculationMode
+from lewlm.core.contracts import (
+    GenerateRequest,
+    GenerateResponse,
+    ModelFormat,
+    ModelManifest,
+    PerformanceFeatureOwnership,
+    RuntimeAffinity,
+    SpeculationMode,
+    runtime_performance_feature_report,
+)
 from lewlm.core.errors import ConfigurationError
 from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.runtime.prefix_cache import longest_token_prefix
@@ -163,98 +172,116 @@ class LlamaCppRuntime(ManagedTextRuntime):
         paged_supported = any(bool(entry.get("supported")) for entry in paged_controls)
         quantization_supported = any(bool(entry.get("supported")) for entry in quantization_controls)
         return {
-            "continuous_batching": {
-                "supported": False,
-                "active": False,
-                "ownership": "unsupported",
-                "reason": "The current llama.cpp adapter does not expose a native batched chat or streaming surface to LewLM.",
-                "notes": [
+            "continuous_batching": runtime_performance_feature_report(
+                ownership=PerformanceFeatureOwnership.UNSUPPORTED,
+                active=False,
+                reason="The current llama.cpp adapter does not expose a native batched chat or streaming surface to LewLM.",
+                notes=[
                     "LewLM only enables backend-native continuous batching when the selected runtime exposes explicit batched chat or streaming entrypoints.",
                 ],
-                "metrics": {},
-            },
-            "prefix_cache": {
-                "supported": prefix_cache_supported,
-                "active": prefix_cache_supported and (
+            ),
+            "prefix_cache": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if prefix_cache_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=prefix_cache_supported and (
                     prefix_cache_metrics["cache_entries"] > 0 or prefix_cache_metrics["cache_hits"] > 0
                 ),
-                "reason": (
+                reason=(
                     "llama.cpp exposes an in-memory longest-prefix KV cache through `LlamaRAMCache`."
                     if prefix_cache_supported
                     else "Installed llama-cpp-python does not expose `LlamaRAMCache` or a compatible cache setter."
                 ),
-                "notes": (
+                notes=(
                     ["LewLM attaches a runtime-local RAM cache to each loaded GGUF client and records longest-prefix reuse."]
                     if prefix_cache_supported
                     else []
                 ),
-                "metrics": prefix_cache_metrics,
-            },
-            "paged_kv_cache": {
-                "supported": paged_supported,
-                "active": False,
-                "reason": (
+                metrics=prefix_cache_metrics,
+            ),
+            "paged_kv_cache": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if paged_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=False,
+                reason=(
                     "Installed llama.cpp bindings expose an operator-visible paged KV-cache control."
                     if paged_supported
                     else "LewLM does not currently see a stable paged KV-cache page-size control in the installed llama.cpp bindings."
                 ),
-                "metrics": {
+                metrics={
                     "requested_page_size_tokens": self._settings.kv_cache_page_size,
                     "requested_max_pages": self._settings.kv_cache_max_pages or 0,
                 },
-                "notes": self._control_notes("paged_kv_cache"),
-            },
-            "kv_cache_quantization": {
-                "supported": quantization_supported,
-                "active": quantization_supported and self._prefill_request_count > 0,
-                "reason": (
+                notes=self._control_notes("paged_kv_cache"),
+            ),
+            "kv_cache_quantization": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if quantization_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=quantization_supported and self._prefill_request_count > 0,
+                reason=(
                     "Installed llama.cpp bindings expose a stable KV-cache quantization surface that LewLM can apply."
                     if quantization_supported
                     else "LewLM does not currently apply KV-cache quantization through llama.cpp because the installed bindings do not expose a stable LewLM-supported contract."
                 ),
-                "metrics": {
+                metrics={
                     "requested_quantization_bits": self._settings.kv_cache_quantization_bits or 0,
                 },
-                "notes": self._control_notes("kv_cache_quantization"),
-            },
-            "prefill_optimization": {
-                "supported": prefill_supported,
-                "active": prefill_supported and self._prefill_request_count > 0,
-                "reason": (
+                notes=self._control_notes("kv_cache_quantization"),
+            ),
+            "prefill_optimization": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if prefill_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=prefill_supported and self._prefill_request_count > 0,
+                reason=(
                     "LewLM maps llama.cpp prefill batching onto constructor batch-size controls when the installed bindings expose them."
                     if prefill_supported
                     else "Installed llama.cpp bindings do not expose a LewLM-supported prefill batch-size control."
                 ),
-                "metrics": {
+                metrics={
                     "requested_prefill_token_batch_size": self._settings.prefill_token_batch_size,
                     "optimized_requests": self._prefill_request_count,
                     "optimized_prompt_tokens": self._prefill_prompt_tokens,
                     "prefill_batches_planned": self._prefill_batch_count,
                 },
-                "notes": self._control_notes("prefill_optimization"),
-            },
-            "prompt_lookup_speculation": {
-                "supported": supported,
-                "active": self._prompt_lookup_request_count > 0,
-                "modes": ["prompt_lookup"] if supported else [],
-                "reason": (
+                notes=self._control_notes("prefill_optimization"),
+            ),
+            "prompt_lookup_speculation": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=self._prompt_lookup_request_count > 0,
+                modes=["prompt_lookup"] if supported else [],
+                reason=(
                     "llama.cpp prompt-lookup speculation is available through `LlamaPromptLookupDecoding`."
                     if supported
                     else "Installed llama-cpp-python does not expose `LlamaPromptLookupDecoding`."
                 ),
-                "metrics": {
+                metrics={
                     "request_count": self._prompt_lookup_request_count,
                     "configured_max_ngram_size": self._settings.prompt_lookup_max_ngram_size,
                     "configured_num_pred_tokens": self._settings.prompt_lookup_num_pred_tokens,
                 },
-                "notes": (
+                notes=(
                     []
                     if self._settings.prompt_lookup_speculation_enabled
                     else [
                         "Enable `LEWLM_PROMPT_LOOKUP_SPECULATION_ENABLED=true` to activate prompt-lookup speculation."
                     ]
                 ),
-            },
+            ),
         }
 
     def _supports_prefix_cache(self) -> bool:
@@ -270,6 +297,20 @@ class LlamaCppRuntime(ManagedTextRuntime):
         capability = self._structured_output_capability(client)
         if isinstance(contract, JSONSchemaResponseFormat):
             if capability["json_schema"]:
+                grammar = self._json_schema_grammar(contract)
+                if grammar is None:
+                    request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+                        runtime=self.name,
+                        mode="json_schema",
+                        enforcement="prompt_guided",
+                        decoder_enforced=False,
+                        fallback_used=True,
+                        fallback_reason=(
+                            "Installed llama.cpp bindings do not expose JSON-schema grammar compilation for "
+                            "decode-time constrained decoding."
+                        ),
+                    ).model_dump(mode="json")
+                    return {}
                 request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
                     runtime=self.name,
                     mode="json_schema",
@@ -277,14 +318,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
                     decoder_enforced=True,
                     fallback_used=False,
                 ).model_dump(mode="json")
-                llama_cpp = import_module("llama_cpp")
-                grammar_class = getattr(llama_cpp, "LlamaGrammar")
-                return {
-                    "grammar": grammar_class.from_json_schema(
-                        json.dumps(contract.schema_payload, sort_keys=True),
-                        verbose=False,
-                    ),
-                }
+                return {"grammar": grammar}
             request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
                 runtime=self.name,
                 mode="json_schema",
@@ -310,6 +344,17 @@ class LlamaCppRuntime(ManagedTextRuntime):
             ).model_dump(mode="json")
             return {}
         if capability["grammar"]:
+            grammar = self._grammar_from_string(contract.grammar)
+            if grammar is None:
+                request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+                    runtime=self.name,
+                    mode="grammar",
+                    enforcement="prompt_guided",
+                    decoder_enforced=False,
+                    fallback_used=True,
+                    fallback_reason="Installed llama.cpp bindings do not expose grammar-based decode-time constrained decoding.",
+                ).model_dump(mode="json")
+                return {}
             request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
                 runtime=self.name,
                 mode="grammar",
@@ -317,9 +362,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 decoder_enforced=True,
                 fallback_used=False,
             ).model_dump(mode="json")
-            llama_cpp = import_module("llama_cpp")
-            grammar_class = getattr(llama_cpp, "LlamaGrammar")
-            return {"grammar": grammar_class.from_string(contract.grammar, verbose=False)}
+            return {"grammar": grammar}
         request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
             runtime=self.name,
             mode="grammar",
@@ -342,7 +385,10 @@ class LlamaCppRuntime(ManagedTextRuntime):
             supports_grammar_parameter = signature is not None and "grammar" in signature.parameters
         if not supports_grammar_parameter:
             return {"grammar": False, "json_schema": False}
-        llama_cpp = import_module("llama_cpp")
+        try:
+            llama_cpp = import_module("llama_cpp")
+        except ImportError:
+            return {"grammar": False, "json_schema": False}
         grammar_class = getattr(llama_cpp, "LlamaGrammar", None)
         supports_grammar = callable(getattr(grammar_class, "from_string", None))
         supports_json_schema = callable(getattr(grammar_class, "from_json_schema", None))
@@ -350,6 +396,30 @@ class LlamaCppRuntime(ManagedTextRuntime):
             "grammar": supports_grammar,
             "json_schema": supports_grammar and supports_json_schema,
         }
+
+    @staticmethod
+    def _grammar_class() -> Any | None:
+        try:
+            llama_cpp = import_module("llama_cpp")
+        except ImportError:
+            return None
+        return getattr(llama_cpp, "LlamaGrammar", None)
+
+    @classmethod
+    def _json_schema_grammar(cls, contract: JSONSchemaResponseFormat) -> Any | None:
+        grammar_class = cls._grammar_class()
+        factory = getattr(grammar_class, "from_json_schema", None)
+        if not callable(factory):
+            return None
+        return factory(json.dumps(contract.schema_payload, sort_keys=True), verbose=False)
+
+    @classmethod
+    def _grammar_from_string(cls, grammar: str) -> Any | None:
+        grammar_class = cls._grammar_class()
+        factory = getattr(grammar_class, "from_string", None)
+        if not callable(factory):
+            return None
+        return factory(grammar, verbose=False)
 
     def _build_prefix_cache_wrapper(self, *, llama_cpp: Any) -> "_InstrumentedLlamaRamCache | None":
         cache_class = getattr(llama_cpp, "LlamaRAMCache", None)

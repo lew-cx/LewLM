@@ -43,6 +43,7 @@ class PackReport(BaseModel):
 
     name: str
     kind: PackKind
+    description: str
     active: bool
     status: PackStatus
     reason: str
@@ -69,7 +70,7 @@ _RUNTIME_PACK_DEFINITIONS: tuple[PackDefinition, ...] = (
     PackDefinition(
         name="mlx",
         kind=PackKind.RUNTIME,
-        description="Apple Silicon MLX runtimes for text, vision, and audio workloads.",
+        description="Apple MLX runtime pack for text, vision, and audio workloads on Apple Silicon macOS.",
         optional_dependency_group="mlx",
         required_modules=("mlx_lm", "mlx_vlm", "mlx_audio"),
         runtime_affinities=(
@@ -81,7 +82,7 @@ _RUNTIME_PACK_DEFINITIONS: tuple[PackDefinition, ...] = (
     PackDefinition(
         name="llamacpp",
         kind=PackKind.RUNTIME,
-        description="GGUF-backed runtime through llama-cpp-python.",
+        description="Cross-platform GGUF runtime pack through llama-cpp-python.",
         optional_dependency_group="llamacpp",
         required_modules=("llama_cpp",),
         runtime_affinities=(RuntimeAffinity.LLAMACPP,),
@@ -89,7 +90,7 @@ _RUNTIME_PACK_DEFINITIONS: tuple[PackDefinition, ...] = (
     PackDefinition(
         name="external_accelerator",
         kind=PackKind.RUNTIME,
-        description="Loopback-only OpenAI-compatible accelerator adapter runtime.",
+        description="Bridge runtime pack for loopback-only OpenAI-compatible local servers that LewLM fronts instead of importing in-process.",
         runtime_affinities=(RuntimeAffinity.EXTERNAL_ACCELERATOR,),
     ),
     PackDefinition(
@@ -110,7 +111,7 @@ _FEATURE_PACK_DEFINITIONS: tuple[PackDefinition, ...] = (
     PackDefinition(
         name="documents",
         kind=PackKind.FEATURE,
-        description="Document ingest, generation, transform, tool, and skill surfaces.",
+        description="Additive documents pack for ingest, generation, transform, tool, and skill surfaces.",
         optional_dependency_group="documents",
         surfaces=(
             "documents_api",
@@ -175,6 +176,7 @@ class PackRegistry:
             return PackReport(
                 name=definition.name,
                 kind=definition.kind,
+                description=definition.description,
                 active=False,
                 status=PackStatus.DISABLED,
                 reason=self._disabled_reason(definition),
@@ -192,6 +194,7 @@ class PackRegistry:
             return PackReport(
                 name=definition.name,
                 kind=definition.kind,
+                description=definition.description,
                 active=False,
                 status=PackStatus.MISSING_DEPENDENCY,
                 reason=(
@@ -211,6 +214,7 @@ class PackRegistry:
         return PackReport(
             name=definition.name,
             kind=definition.kind,
+            description=definition.description,
             active=True,
             status=PackStatus.ACTIVE,
             reason=active_reason,

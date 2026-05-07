@@ -21,6 +21,7 @@ from lewlm.cli.main import (
 )
 from lewlm.core.contracts import (
     ConversionStatus,
+    HostPlatformSnapshot,
     ModelArtifactLayer,
     ModelArtifactRole,
     ModelFormat,
@@ -482,8 +483,37 @@ def test_cli_doctor_prints_optimization_default_summary(
 
     assert exit_code == 0
     assert "optimization defaults:" in output
+    assert "runtime strategy:" in output
+    assert "non-apple=gguf_llamacpp" in output
     assert "default " in output
     assert "workloads:" in output
+
+
+def test_cli_doctor_reports_host_memory_diagnostics(
+    temp_settings,
+    services_with_fake_attachment_runtime,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        services_with_fake_attachment_runtime.runtime_catalog,
+        "host_platform_snapshot",
+        lambda: HostPlatformSnapshot(
+            system="Windows",
+            release="11",
+            machine="AMD64",
+            python_version="3.11.9",
+            total_memory_mb=None,
+            total_memory_reason="Windows GlobalMemoryStatusEx failed.",
+        ),
+    )
+
+    exit_code = main(["doctor"], settings=temp_settings, services=services_with_fake_attachment_runtime)
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "host memory: unavailable (Windows GlobalMemoryStatusEx failed.)" in output
+    assert "install guidance:" in output
 
 
 def test_cli_doctor_json_includes_multimodal_workload_defaults(
@@ -820,9 +850,12 @@ def test_cli_benchmark_compare_external_adapter_prints_human_summary(
                 "rejected": ["kv_cache_quantization"],
             },
             "routing_preference": {
-                "applied": True,
-                "selected_runtime_name": "local_external_adapter",
-                "selected_runtime_affinity": "external_accelerator",
+                "applied": False,
+                "reason": (
+                    "Persisted benchmark evidence, but LewLM keeps `fake_mlx_semantic` because "
+                    "external accelerators remain a measured bridge path and do not replace the "
+                    "first-class local runtime default on this host."
+                ),
             },
             "artifact": {"artifact_path": "/tmp/external-adapter-benchmark.json"},
         },
@@ -839,8 +872,48 @@ def test_cli_benchmark_compare_external_adapter_prints_human_summary(
     assert "LewLM native vs local external adapter" in output
     assert "winner: external" in output
     assert "preserved: continuous_batching" in output
-    assert "routing preference: local_external_adapter (external_accelerator)" in output
+    assert "routing preference: Persisted benchmark evidence, but LewLM keeps" in output
+    assert "first-class local runtime default" in output
     assert "artifact: /tmp/external-adapter-benchmark.json" in output
+
+
+def test_cli_benchmark_compare_external_adapter_accepts_non_apple_profile(
+    temp_settings,
+    services_with_fake_runtime,
+    monkeypatch,
+    capsys,
+) -> None:
+    settings = temp_settings.with_updates(external_accelerator_profile="vllm_local")
+    main(["scan", "--json"], settings=settings, services=services_with_fake_runtime)
+    model_id = next(manifest["model_id"] for manifest in json.loads(capsys.readouterr().out)["manifests"])
+
+    def _fake_benchmark(args, benchmark_settings, services):
+        assert benchmark_settings.external_accelerator_profile == "vllm_local"
+        return {
+            "status": "completed",
+            "benchmark_type": "external_adapter_comparison",
+            "model_id": model_id,
+            "native": {"status": "completed", "runtime": "fake_mlx_semantic"},
+            "external_adapter": {"status": "completed", "runtime": "local_external_adapter"},
+            "comparison": {"status": "completed", "primary_metric": "warm_total_seconds", "winner": "external"},
+            "feature_preservation": {"preserved": ["continuous_batching"], "degraded": [], "rejected": []},
+            "routing_preference": {
+                "applied": True,
+                "selected_runtime_name": "local_external_adapter",
+                "selected_runtime_affinity": "external_accelerator",
+            },
+            "artifact": {"artifact_path": "/tmp/external-adapter-benchmark.json"},
+        }
+
+    monkeypatch.setattr("lewlm.cli.main._run_external_adapter_benchmark", _fake_benchmark)
+
+    exit_code = main(
+        ["benchmark", "--model", model_id, "--compare-external-adapter"],
+        settings=settings,
+        services=services_with_fake_runtime,
+    )
+
+    assert exit_code == 0
 
 
 def test_cli_persists_but_downgrades_partial_support_external_adapter_preference(
@@ -1514,6 +1587,9 @@ def test_cli_doctor_emits_performance_features_json(
 
     assert exit_code == 0
     assert payload["install_profiles"]["active_profile_ids"][0] == "core_only"
+    assert "total_memory_mb" in payload["runtime_stats"]["platform"]
+    assert "total_memory_source" in payload["runtime_stats"]["platform"]
+    assert "total_memory_reason" in payload["runtime_stats"]["platform"]
     performance_features = {
         item["feature"]: item
         for item in payload["runtime_stats"]["performance_features"]

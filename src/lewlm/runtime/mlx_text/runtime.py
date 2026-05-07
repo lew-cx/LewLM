@@ -27,11 +27,13 @@ from lewlm.core.contracts import (
     ModelFormat,
     ModelManifest,
     ModelModality,
+    PerformanceFeatureOwnership,
     RerankRequest,
     RerankResponse,
     RerankResult,
     RuntimeAffinity,
     SpeculationMode,
+    runtime_performance_feature_report,
 )
 from lewlm.core.errors import ConfigurationError
 from lewlm.runtime.base import ManagedTextRuntime
@@ -654,52 +656,55 @@ class MLXTextRuntime(ManagedTextRuntime):
         )
         continuous_batching_ownership = self.continuous_batching_ownership(CapabilityName.CHAT)
         feature_snapshot = {
-            "continuous_batching": {
-                "supported": bool(batch_generate or batch_generator),
-                "active": self._native_batch_request_count > 0,
-                "ownership": continuous_batching_ownership,
-                "reason": (
+            "continuous_batching": runtime_performance_feature_report(
+                ownership=continuous_batching_ownership,
+                active=self._native_batch_request_count > 0,
+                reason=(
                     "LewLM owns the persistent continuous-batch scheduler on the primary MLX text path and drives MLX `BatchGenerator` as the decode primitive."
-                    if continuous_batching_ownership == "lewlm_owned"
+                    if continuous_batching_ownership == PerformanceFeatureOwnership.LEWLM_OWNED.value
                     else "Installed MLX text generation exposes backend-native continuous batching through `batch_generate`."
-                    if continuous_batching_ownership == "backend_native"
+                    if continuous_batching_ownership == PerformanceFeatureOwnership.BACKEND_NATIVE.value
                     else "The current MLX text adapter does not detect an explicit batched chat or streaming entrypoint."
                 ),
-                "notes": (
+                notes=(
                     [
                         "LewLM keeps a persistent per-model scheduler alive for non-speculative chat and streaming requests, then inserts them into MLX `BatchGenerator` as capacity opens.",
                         "Other runtimes still report backend-native or unsupported continuous batching explicitly; LewLM does not claim ownership outside the primary MLX text path.",
                     ]
-                    if continuous_batching_ownership == "lewlm_owned"
+                    if continuous_batching_ownership == PerformanceFeatureOwnership.LEWLM_OWNED.value
                     else [
                         "LewLM routes same-model chat bursts through MLX's native `batch_generate` entrypoint when `BatchGenerator` is unavailable.",
                     ]
-                    if continuous_batching_ownership == "backend_native"
+                    if continuous_batching_ownership == PerformanceFeatureOwnership.BACKEND_NATIVE.value
                     else [
                         "LewLM only activates backend-native continuous batching when the selected runtime exposes native batched generation hooks.",
                     ]
                 ),
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     chat_batch_calls=self._native_batch_generate_calls,
                     stream_batch_calls=self._native_batch_stream_calls,
                     batched_requests=self._native_batch_request_count,
                     max_batch_size=self._native_batch_max_size,
                 ),
-            },
-            "prefix_cache": {
-                "supported": bool(prefix_cache_snapshot["supported"]),
-                "active": bool(prefix_cache_snapshot["active"]),
-                "reason": (
+            ),
+            "prefix_cache": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.LEWLM_OWNED
+                    if prefix_cache_snapshot["supported"]
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=bool(prefix_cache_snapshot["active"]),
+                reason=(
                     "MLX text generation can reuse paged radix-style prompt-prefix KV caches by prefilling uncached suffix tokens only."
                     if prefix_cache_snapshot["supported"]
                     else "Installed MLX text entrypoints do not expose reusable prompt-cache primitives."
                 ),
-                "notes": [
+                notes=[
                     "LewLM keeps a hot resident page tier in RAM, reuses radix-style shared prefix pages with copy-on-write suffix extension, and reports per-page reuse directly.",
                 ]
                 if prefix_cache_snapshot["supported"]
                 else [],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     page_size_tokens=int(prefix_cache_snapshot["page_size_tokens"]),
                     cache_entries=int(prefix_cache_snapshot["cache_entries"]),
                     cache_hits=int(prefix_cache_snapshot["cache_hits"]),
@@ -723,20 +728,24 @@ class MLXTextRuntime(ManagedTextRuntime):
                     saved_prefill_tokens=int(prefix_cache_snapshot["saved_prefill_tokens"]),
                     max_saved_prefill_tokens=int(prefix_cache_snapshot["max_saved_prefill_tokens"]),
                 ),
-            },
-            "persistent_multi_context_cache": {
-                "supported": bool(prefix_cache_snapshot["restart_resilient"]),
-                "active": bool(prefix_cache_snapshot["persisted_cache_entries"])
+            ),
+            "persistent_multi_context_cache": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.LEWLM_OWNED
+                    if prefix_cache_snapshot["restart_resilient"]
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=bool(prefix_cache_snapshot["persisted_cache_entries"])
                 or int(prefix_cache_snapshot["persistent_cache_hits"]) > 0,
-                "reason": (
+                reason=(
                     "LewLM persists content-addressed cold-tier MLX prompt-prefix pages on disk and restores JSON-safe "
                     "prompt-cache payloads into the resident hot set across restarts."
                 ),
-                "notes": [
+                notes=[
                     "Resident entries use LRU eviction while persisted radix pages stay content-addressed under the local cache root.",
                     "When MLX prompt-cache payloads cannot be serialized safely, LewLM preserves cache-key metadata and reports the limitation explicitly.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     page_size_tokens=int(prefix_cache_snapshot["page_size_tokens"]),
                     resident_cache_entries=int(prefix_cache_snapshot["resident_cache_entries"]),
                     persisted_cache_entries=int(prefix_cache_snapshot["persisted_cache_entries"]),
@@ -755,24 +764,28 @@ class MLXTextRuntime(ManagedTextRuntime):
                     page_evictions=int(prefix_cache_snapshot["page_evictions"]),
                     cached_tokens=int(prefix_cache_snapshot["cached_tokens"]),
                 ),
-            },
-            "speculative_decoding": {
-                "supported": speculative_supported,
-                "active": speculative_supported and self._speculative_request_count > 0,
-                "modes": [mode.value for mode in speculative_modes],
-                "reason": (
+            ),
+            "speculative_decoding": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.LEWLM_OWNED
+                    if speculative_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=speculative_supported and self._speculative_request_count > 0,
+                modes=[mode.value for mode in speculative_modes],
+                reason=(
                     "LewLM owns the MLX draft-model draft/verify loop on the first-class path and uses explicit passthrough only for frontier adapters."
                     if speculative_supported
                     else "Installed MLX streaming generation entrypoints do not expose compatible speculative decoding hooks."
                 ),
-                "notes": (
+                notes=(
                     []
                     if self.settings.speculative_decoding_enabled
                     else [
                         "Enable `LEWLM_SPECULATIVE_DECODING_ENABLED=true` to allow MLX draft-model and compatible frontier speculation.",
                     ]
                 ),
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     request_count=self._speculative_request_count,
                     controller_owned_requests=self._controller_speculative_request_count,
                     backend_passthrough_requests=self._backend_passthrough_speculative_request_count,
@@ -784,19 +797,19 @@ class MLXTextRuntime(ManagedTextRuntime):
                     rollback_tokens=self._rollback_token_count,
                     fallback_count=self._speculation_fallback_count,
                 ),
-            },
-            "paged_kv_cache": {
-                "supported": True,
-                "active": self._paged_kv_request_count > 0,
-                "reason": (
+            ),
+            "paged_kv_cache": runtime_performance_feature_report(
+                ownership=PerformanceFeatureOwnership.LEWLM_OWNED,
+                active=self._paged_kv_request_count > 0,
+                reason=(
                     "LewLM tracks first-class MLX text paged-KV residency with page reuse, eviction, and lane-aware pressure control."
                     if paged_kv_supported
                     else "LewLM tracks first-class MLX text paged-KV residency even when the installed MLX backend does not expose explicit native page controls."
                 ),
-                "notes": [
+                notes=[
                     "Runtime-native paged-KV knobs remain backend-dependent; the residency snapshot below reports the allocator state LewLM owns directly.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     page_size_tokens=int(paged_kv_snapshot["page_size_tokens"]),
                     max_pages=(
                         int(paged_kv_snapshot["max_pages"])
@@ -834,76 +847,92 @@ class MLXTextRuntime(ManagedTextRuntime):
                     peak_pressure_ratio=float(paged_kv_snapshot["peak_pressure_ratio"]),
                     pressure_level=str(paged_kv_snapshot["pressure_level"]),
                 ),
-            },
-            "kv_cache_quantization": {
-                "supported": kv_quantization_supported,
-                "active": kv_quantization_supported and self._quantized_kv_request_count > 0,
-                "reason": (
+            ),
+            "kv_cache_quantization": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if kv_quantization_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=kv_quantization_supported and self._quantized_kv_request_count > 0,
+                reason=(
                     "MLX text generation exposes explicit KV-cache quantization controls on the installed backend entrypoints."
                     if kv_quantization_supported
                     else "Installed MLX text entrypoints do not expose explicit KV-cache quantization controls."
                 ),
-                "notes": [
+                notes=[
                     "LewLM applies KV-cache quantization separately from model-weight selection when the backend exposes a dedicated hook.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     quantization_bits=self.settings.kv_cache_quantization_bits,
                     requests_using_quantized_kv=self._quantized_kv_request_count,
                 ),
-            },
-            "prefill_optimization": {
-                "supported": prefill_supported,
-                "active": prefill_supported and self._prefill_optimized_request_count > 0,
-                "reason": (
+            ),
+            "prefill_optimization": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if prefill_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=prefill_supported and self._prefill_optimized_request_count > 0,
+                reason=(
                     "MLX text generation exposes explicit prefill batch sizing or tokenized-prompt controls on the installed backend entrypoints."
                     if prefill_supported
                     else "Installed MLX text entrypoints do not expose explicit prefill batch sizing or tokenized-prompt controls."
                 ),
-                "notes": [
+                notes=[
                     "Prefill optimization stays local to the runtime request lifecycle; it does not add prefix-cache reuse or speculative decoding.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     prefill_token_batch_size=self.settings.prefill_token_batch_size,
                     optimized_requests=self._prefill_optimized_request_count,
                     optimized_prompt_tokens=self._prefill_prompt_tokens,
                     prefill_batches_planned=self._prefill_batch_count,
                 ),
-            },
-            "chunked_prefill": {
-                "supported": prefill_supported,
-                "active": prefill_supported and self._chunked_prefill_request_count > 0,
-                "reason": (
+            ),
+            "chunked_prefill": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.LEWLM_OWNED
+                    if prefill_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=prefill_supported and self._chunked_prefill_request_count > 0,
+                reason=(
                     "MLX text generation can split long prompt ingest into bounded token chunks on the installed backend entrypoints."
                     if prefill_supported
                     else "Installed MLX text entrypoints do not expose chunked prefill or prompt-token controls."
                 ),
-                "notes": [
+                notes=[
                     "Chunked prefill only becomes active when a prompt estimate exceeds the configured prefill token batch size.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     prefill_token_batch_size=self.settings.prefill_token_batch_size,
                     chunked_requests=self._chunked_prefill_request_count,
                     chunked_prompt_tokens=self._chunked_prefill_prompt_tokens,
                     chunk_count=self._chunked_prefill_chunk_count,
                 ),
-            },
-            "prefill_isolation": {
-                "supported": self.supports_prefill_isolation(CapabilityName.CHAT),
-                "active": self.supports_prefill_isolation(CapabilityName.CHAT) and self.settings.prefill_isolation_enabled,
-                "reason": (
+            ),
+            "prefill_isolation": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.LEWLM_OWNED
+                    if self.supports_prefill_isolation(CapabilityName.CHAT)
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=self.supports_prefill_isolation(CapabilityName.CHAT) and self.settings.prefill_isolation_enabled,
+                reason=(
                     "MLX text can combine chunked prefill with continuous batching so the scheduler may reserve decode headroom while long-prefill requests are active."
                     if self.supports_prefill_isolation(CapabilityName.CHAT)
                     else "Installed MLX text entrypoints do not currently expose the combined chunked-prefill and continuous-batching hooks needed for truthful single-host prefill isolation."
                 ),
-                "notes": [
+                notes=[
                     "Isolation is scheduler-driven and only becomes active when LewLM enables prefill isolation for long prompts.",
                 ],
-                "metrics": _compact_runtime_metrics(
+                metrics=_compact_runtime_metrics(
                     prefill_token_batch_size=self.settings.prefill_token_batch_size,
                     chunked_requests=self._chunked_prefill_request_count,
                     chunk_count=self._chunked_prefill_chunk_count,
                 ),
-            },
+            ),
         }
         feature_snapshot.update(
             self._frontier_execution.performance_feature_snapshot(),

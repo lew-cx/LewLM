@@ -54,6 +54,7 @@ Operator diagnostics for:
 - storage readiness
 - target-platform and capability hints
 - measured capability probe registry counts and per-category status on the current host
+- runtime-support strategy, including the first-class non-Apple path and bridge-only boundaries
 
 ### `scan`
 
@@ -69,7 +70,7 @@ Shows managed cache stats by default. Use `lewlm cache clear-conversions` to rem
 
 ### `capabilities`
 
-Shows per-model capability reporting, measured routing preference, downgrade notes, fallback guidance, and per-host measured probe summaries for batching, cache reuse, constrained decoding, compile/kernels, speculation, and adapter preservation.
+Shows per-model capability reporting, measured routing preference, downgrade notes, fallback guidance, and per-host measured probe summaries for batching, cache reuse, constrained decoding, compile/kernels, speculation, and adapter preservation. Runtime and benchmark payloads now also surface portable performance-core ownership modes such as `lewlm_owned`, `backend_native`, and `partial`.
 
 ### `convert`
 
@@ -82,7 +83,7 @@ Queues or resolves a conversion job with:
 
 ### `benchmark`
 
-Runs benchmark flows and emits artifact-backed summaries, including when measured adapter comparisons are persisted but downgraded instead of adopted.
+Runs benchmark flows and emits artifact-backed summaries, including when measured adapter comparisons are persisted but downgraded instead of adopted. Benchmark feature records preserve ownership-mode evidence so cross-platform paths can report truthful backend-native or partial preservation without claiming universal parity, and external-adapter wins now stay bridge-only when they would otherwise replace a first-class packaged runtime.
 
 ### `autotune`
 

@@ -14,7 +14,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | --- | --- | --- |
 | `GET` | `/v1/health` | service, storage, configuration, install-profile, pack, and capability-readiness health |
 | `GET` | `/v1/cache/stats` | cache and performance-feature snapshot |
-| `GET` | `/v1/runtime/stats` | readiness, runtime, scheduler, and residency stats |
+| `GET` | `/v1/runtime/stats` | readiness, runtime, scheduler, residency, and runtime-strategy stats |
 | `GET` | `/v1/jobs/{job_id}` | background job status |
 | `POST` | `/v1/benchmarks/autotune` | serving-profile recommendation |
 | `GET` | `/v1/cluster/stats` | experimental cluster status |
@@ -136,6 +136,7 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/runtime/stats.feature_packs[]`
 - `/v1/runtime/stats.runtimes[].readiness_state`
 - `/v1/runtime/stats.measured_capability_registry`
+- `/v1/runtime/stats.runtime_support_strategy`
 - `/v1/models/{model_id}/capabilities.runtime_candidates[].readiness_state`
 - `/v1/models/{model_id}/capabilities.capabilities[].readiness_state`
 - `/v1/models/{model_id}/capabilities.measured_capabilities[]`

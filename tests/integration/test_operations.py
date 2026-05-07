@@ -11,6 +11,7 @@ from pydantic import SecretStr
 import pytest
 
 from conftest import (
+    FakeExternalSemanticRuntime,
     FakeLlamaCppRuntime,
     FakeMLXAudioRuntime,
     FakeMLXConversionBackend,
@@ -235,6 +236,9 @@ def test_runtime_stats_include_benchmark_history_and_target_platforms(
     assert benchmark.regression.status == "no_baseline"
     assert runtime_response.status_code == 200
     runtime_payload = runtime_response.json()
+    assert "total_memory_mb" in runtime_payload["platform"]
+    assert "total_memory_source" in runtime_payload["platform"]
+    assert "total_memory_reason" in runtime_payload["platform"]
     assert runtime_payload["benchmark_summary"]["total_runs"] == 1
     assert runtime_payload["benchmark_summary"]["recent_runs"][0]["model_id"] == gguf_model_id
     assert runtime_payload["benchmark_summary"]["artifact_summary"]["total_artifacts"] == 1
@@ -260,9 +264,17 @@ def test_runtime_stats_include_benchmark_history_and_target_platforms(
     assert runtime_features["balanced_residency_mode"]["supported"] is True
     assert runtime_features["continuous_batching"]["supported"] is True
     assert "chat" in runtime_features["continuous_batching"]["supported_capabilities"]
-    assert runtime_features["continuous_batching"]["metrics"]["chat_streaming_ownership_mode"] == "backend_native"
+    assert sorted(runtime_features["continuous_batching"]["ownership_modes"]) == ["backend_native", "partial"]
+    assert runtime_features["continuous_batching"]["metrics"]["chat_streaming_ownership_mode"] == "mixed"
     assert runtime_features["continuous_batching"]["metrics"]["backend_native_runtime_count"] >= 1
+    assert runtime_features["continuous_batching"]["metrics"]["partial_runtime_count"] >= 1
     assert runtime_features["continuous_batching"]["metrics"]["lewlm_owned_runtime_count"] == 0
+    runtime_strategy = runtime_payload["runtime_support_strategy"]
+    assert runtime_strategy["first_class_non_apple_path_id"] == "gguf_llamacpp"
+    gguf_path = next(path for path in runtime_strategy["paths"] if path["path_id"] == "gguf_llamacpp")
+    assert gguf_path["role"] == "first_class_non_apple"
+    assert gguf_path["benchmark_backed_defaults"] is False
+    assert "serving-profile/autotune default adoption" in " ".join(gguf_path["lewlm_managed_layers"])
     targets = {
         (item["system"], item["machine"]): item
         for item in runtime_payload["target_platforms"]
@@ -291,6 +303,36 @@ def test_runtime_stats_readiness_reports_multimodal_surfaces(app_with_fake_attac
     assert readiness["rerank"]["ready"] is True
     assert readiness["audio_transcription"]["ready"] is True
     assert readiness["audio_speech"]["ready"] is True
+
+
+def test_runtime_stats_readiness_reports_external_semantic_bridge_surfaces(
+    temp_settings,
+    sample_multimodal_models_root: Path,
+) -> None:
+    services = bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalSemanticRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
+        },
+    )
+    app = create_app(temp_settings, services=services)
+    try:
+        with TestClient(app) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            runtime_response = client.get("/v1/runtime/stats")
+    finally:
+        services.close()
+
+    assert scan_response.status_code == 200
+    readiness = {item["capability"]: item for item in runtime_response.json()["readiness"]["capabilities"]}
+    assert readiness["chat"]["ready"] is False
+    assert readiness["embeddings"]["ready"] is True
+    assert readiness["embeddings"]["available_runtime_names"] == ["local_external_adapter"]
+    assert readiness["rerank"]["ready"] is True
+    assert readiness["rerank"]["available_runtime_names"] == ["local_external_adapter"]
 
 
 def test_runtime_stats_report_mlx_kv_cache_and_prefill_support(
@@ -1591,8 +1633,10 @@ async def test_chat_orchestrator_batches_chat_requests_with_backend_native_batch
         assert request_snapshot["frontier_average_batch_size"] == 2.0
         assert request_snapshot["frontier_average_batch_utilization"] == 1.0
         assert continuous_batching.supported is True
-        assert continuous_batching.metrics["chat_streaming_ownership_mode"] == "backend_native"
+        assert sorted(continuous_batching.ownership_modes) == ["backend_native", "partial"]
+        assert continuous_batching.metrics["chat_streaming_ownership_mode"] == "mixed"
         assert continuous_batching.metrics["backend_native_runtime_count"] >= 1
+        assert continuous_batching.metrics["partial_runtime_count"] >= 1
         assert continuous_batching.metrics["lewlm_owned_runtime_count"] == 0
         assert continuous_batching.metrics["native_total_batches"] == 1
         assert continuous_batching.metrics["native_average_batch_utilization"] == 1.0

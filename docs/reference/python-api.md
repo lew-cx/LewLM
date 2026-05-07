@@ -81,7 +81,7 @@ The facade also supports async context-manager usage and `create_app()` for bind
 | `ingest_documents()` | parse files into structured output |
 | `transform_document()` | apply built-in skill |
 | `cache_stats()` | cache snapshot |
-| `runtime_stats()` / `runtime_stats_sync()` | readiness, runtime, scheduler, serving-core, performance-feature, and measured capability-registry diagnostics |
+| `runtime_stats()` / `runtime_stats_sync()` | readiness, runtime, scheduler, serving-core, performance-feature, measured capability-registry, and runtime-strategy diagnostics |
 | `subscribe_events()` | in-process event subscription with normalized event envelopes |
 
 ## Useful companion types
@@ -111,7 +111,7 @@ Helper methods:
 | `list_tools()` / `get_tool()` | tool catalog helper access |
 | `execute_tool()` | local-tool execution with the shared API envelope |
 | `health()` | typed health response |
-| `runtime_stats()` | typed runtime diagnostics, including first-class performance-feature metrics plus the measured capability registry summary for the current host |
+| `runtime_stats()` | typed runtime diagnostics, including first-class performance-feature metrics, the measured capability registry summary, and the first-class non-Apple runtime-strategy summary for the current host |
 | `chat_completion()` | chat-completions request/response helper |
 | `responses()` | responses-style request/response helper |
 | `embeddings()` | embeddings helper |

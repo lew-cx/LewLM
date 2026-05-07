@@ -39,12 +39,16 @@ from lewlm.core.contracts import (
     MeasuredCapabilitySummary,
     ModelManifest,
     ModelModality,
+    PerformanceFeatureOwnership,
     RerankRequest,
     RerankResponse,
     RoutingDecision,
+    RuntimeAffinity,
     RuntimeContract,
     ServiceReadinessSummary,
     SpeculationMode,
+    normalize_performance_feature_ownership,
+    normalize_runtime_performance_feature_report,
     quantization_profile_label,
     utc_now,
 )
@@ -112,6 +116,8 @@ from lewlm.telemetry.models import (
     PerformanceFeatureStatus,
     RuntimeRequestMetrics,
     RuntimeSchedulerStats,
+    RuntimeSupportPathSummary,
+    RuntimeSupportStrategy,
     RuntimeStats,
     ServingProfileRecommendation,
     TargetPlatformValidation,
@@ -119,6 +125,7 @@ from lewlm.telemetry.models import (
 )
 from lewlm.telemetry.probes import summarize_measured_capabilities
 from lewlm.telemetry.runtime_metrics import RuntimeMetricsRecorder
+from lewlm.runtime.support_strategy import is_first_class_non_apple_runtime_affinity
 from lewlm.utils.validation_manifests import (
     apply_external_validation_to_target_matrix,
     load_validation_manifests,
@@ -302,6 +309,7 @@ class TelemetryService:
                 cache_stats=cache_stats,
             ),
             optimization_defaults=optimization_defaults,
+            runtime_support_strategy=self._runtime_support_strategy(optimization_defaults=optimization_defaults),
         )
 
     def optimization_defaults(
@@ -350,6 +358,117 @@ class TelemetryService:
             notes=notes,
             models=models,
         )
+
+    def _runtime_support_strategy(
+        self,
+        *,
+        optimization_defaults: OptimizationDefaultsSummary,
+    ) -> RuntimeSupportStrategy:
+        return RuntimeSupportStrategy(
+            primary_path_id="apple_mlx",
+            first_class_non_apple_path_id="gguf_llamacpp",
+            paths=[
+                RuntimeSupportPathSummary(
+                    path_id="apple_mlx",
+                    label="Apple MLX local backend",
+                    role="first_class_primary",
+                    install_profile="mlx_local_backend",
+                    host_scope="Apple Silicon macOS",
+                    runtime_affinities=[
+                        RuntimeAffinity.MLX_TEXT.value,
+                        RuntimeAffinity.MLX_VISION.value,
+                        RuntimeAffinity.MLX_AUDIO.value,
+                    ],
+                    benchmark_backed_defaults=self._runtime_path_has_benchmark_backed_defaults(
+                        optimization_defaults=optimization_defaults,
+                        runtime_affinity=RuntimeAffinity.MLX_TEXT,
+                    ),
+                    lewlm_managed_layers=[
+                        "stable CLI/API/Python/backend contract",
+                        "capability truth, readiness, and routing honesty",
+                        "serving-core state and scheduler control",
+                        "LewLM-owned batching, paged-KV accounting, prefix reuse, and selective speculation on the MLX text path",
+                        "benchmark-backed serving-profile default adoption",
+                    ],
+                    backend_native_layers=[
+                        "MLX model execution and decode kernels",
+                        "backend attention/kernel implementation details",
+                    ],
+                    notes=[
+                        "This remains LewLM's deepest ownership path.",
+                    ],
+                ),
+                RuntimeSupportPathSummary(
+                    path_id="gguf_llamacpp",
+                    label="Cross-platform GGUF backend",
+                    role="first_class_non_apple",
+                    install_profile="gguf_fallback_backend",
+                    host_scope="Linux, Windows, and non-MLX macOS",
+                    runtime_affinities=[RuntimeAffinity.LLAMACPP.value],
+                    benchmark_backed_defaults=self._runtime_path_has_benchmark_backed_defaults(
+                        optimization_defaults=optimization_defaults,
+                        runtime_affinity=RuntimeAffinity.LLAMACPP,
+                    ),
+                    lewlm_managed_layers=[
+                        "install/readiness guidance and packaged local runtime selection",
+                        "model lifecycle, routing, fallback reporting, and benchmark capture",
+                        "serving-profile/autotune default adoption for GGUF workloads",
+                        "prefix-cache instrumentation, prompt-lookup enablement, and prefill-control mapping when bindings expose them",
+                    ],
+                    backend_native_layers=[
+                        "llama.cpp token execution and streaming",
+                        "llama.cpp-native prefix cache and prompt-lookup primitives",
+                        "paged-KV, quantization, and prefill behavior when exposed by llama.cpp bindings",
+                    ],
+                    notes=[
+                        "LewLM productizes one non-Apple runtime family here instead of promising equal ownership across every backend.",
+                        "Benchmark-backed defaults on this path flow through serving profiles and runtime-local tuning, not adapter promotion.",
+                    ],
+                ),
+                RuntimeSupportPathSummary(
+                    path_id="external_accelerator_bridge",
+                    label="Cross-platform external accelerator bridge",
+                    role="bridge",
+                    install_profile="external_accelerator_bridge_backend",
+                    host_scope="Cross-platform loopback-only local servers",
+                    runtime_affinities=[RuntimeAffinity.EXTERNAL_ACCELERATOR.value],
+                    benchmark_backed_defaults=False,
+                    lewlm_managed_layers=[
+                        "loopback-only safety boundary",
+                        "manifest-to-remote-model matching",
+                        "capability probes, benchmark evidence, and fallback honesty",
+                    ],
+                    backend_native_layers=[
+                        "server lifecycle and process management",
+                        "scheduler, cache, and KV residency internals",
+                        "speculation and semantic-endpoint implementation details",
+                    ],
+                    notes=[
+                        "Use this when another local server already owns low-level execution.",
+                        "Bridge evidence remains useful, but this path does not replace a packaged first-class local runtime default.",
+                    ],
+                ),
+            ],
+            notes=[
+                "LewLM now treats packaged GGUF via llama.cpp as the single first-class non-Apple runtime family.",
+                "Loopback external accelerators remain measured bridge paths with explicit fallback boundaries.",
+            ],
+        )
+
+    @staticmethod
+    def _runtime_path_has_benchmark_backed_defaults(
+        *,
+        optimization_defaults: OptimizationDefaultsSummary,
+        runtime_affinity: RuntimeAffinity,
+    ) -> bool:
+        for model in optimization_defaults.models:
+            if model.runtime_affinity != runtime_affinity.value:
+                continue
+            if any(item.benchmark_backed for item in model.workload_defaults):
+                return True
+            if any(decision.benchmark_backed for decision in model.decisions.values()):
+                return True
+        return False
 
     def _model_optimization_defaults(self, manifest: ModelManifest) -> ModelOptimizationDefaults | None:
         if manifest.conversion_status != ConversionStatus.RUNNABLE:
@@ -611,6 +730,22 @@ class TelemetryService:
                 notes=list(assessment.notes),
             )
         if len(compatible_runtimes) <= 1:
+            runtime_affinity = getattr(getattr(runtime, "affinity", None), "value", None)
+            if is_first_class_non_apple_runtime_affinity(runtime_affinity):
+                return OptimizationDefaultDecision(
+                    status="adopted",
+                    reason=(
+                        f"LewLM keeps `{runtime.name}` as the first-class non-Apple packaged runtime for "
+                        f"`{manifest.display_name}` on this host; benchmark-backed defaults then flow through serving profiles for this runtime family."
+                    ),
+                    source="runtime_strategy",
+                    metrics=_compact_metrics(
+                        selected_runtime_name=runtime.name,
+                        selected_runtime_affinity=runtime_affinity,
+                        compatible_runtime_count=len(compatible_runtimes),
+                        alternatives=list(compatibility_alternatives),
+                    ),
+                )
             return OptimizationDefaultDecision(
                 status="rejected",
                 reason=(
@@ -3292,6 +3427,7 @@ class TelemetryService:
                     "benchmark_id": result.benchmark_id,
                     "capability": result.capability,
                     "feature": feature.feature.value,
+                    "ownership_modes": feature.ownership_modes,
                     "metrics": feature.metrics,
                     "notes": feature.notes,
                 },
@@ -3378,6 +3514,8 @@ class TelemetryService:
     ) -> MeasuredCapabilityStatus | None:
         if not feature.supported or not feature.active:
             return None
+        if feature.ownership_modes == [PerformanceFeatureOwnership.PARTIAL.value]:
+            return MeasuredCapabilityStatus.DEGRADED
         if feature.feature in {
             PerformanceFeatureName.GRAPH_COMPILATION,
             PerformanceFeatureName.ATTENTION_KERNEL_ACCELERATION,
@@ -6128,31 +6266,21 @@ class TelemetryService:
             runtime_snapshots,
             PerformanceFeatureName.KV_CACHE_QUANTIZATION.value,
         )
-        paged_kv_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in paged_kv_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        kv_quantization_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in kv_quantization_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        prefix_cache_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in prefix_cache_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        persistent_multi_context_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in persistent_multi_context_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
+        paged_kv_runtime_names = self._runtime_feature_runtime_names(paged_kv_entries)
+        kv_quantization_runtime_names = self._runtime_feature_runtime_names(kv_quantization_entries)
+        prefix_cache_runtime_names = self._runtime_feature_runtime_names(prefix_cache_entries)
+        persistent_multi_context_runtime_names = self._runtime_feature_runtime_names(persistent_multi_context_entries)
         multimodal_encoder_runtime_names = sorted(
             entry["runtime_name"]
             for entry in multimodal_encoder_entries
             if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
         )
+        prefix_cache_ownership_modes = self._runtime_feature_ownership_modes(prefix_cache_entries)
+        persistent_multi_context_ownership_modes = self._runtime_feature_ownership_modes(
+            persistent_multi_context_entries,
+        )
+        paged_kv_ownership_modes = self._runtime_feature_ownership_modes(paged_kv_entries)
+        kv_quantization_ownership_modes = self._runtime_feature_ownership_modes(kv_quantization_entries)
         return [
             self._feature_status(
                 feature=PerformanceFeatureName.DISK_BACKED_CACHE,
@@ -6175,18 +6303,17 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PREFIX_CACHE,
                 supported=bool(prefix_cache_runtime_names),
                 active=self._runtime_feature_active(prefix_cache_entries),
+                ownership_modes=prefix_cache_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if prefix_cache_runtime_names
                     else []
                 ),
                 runtime_names=prefix_cache_runtime_names,
-                reason=(
-                    "LewLM can reuse runtime-local prompt-prefix caches on "
-                    + ", ".join(f"`{name}`" for name in prefix_cache_runtime_names)
-                    + "."
-                    if prefix_cache_runtime_names
-                    else "LewLM does not implement a runtime prefix-cache surface today."
+                reason=self._runtime_feature_reason(
+                    feature_label="Prompt-prefix cache reuse",
+                    entries=prefix_cache_entries,
+                    unsupported_reason="LewLM does not implement a runtime prefix-cache surface today.",
                 ),
                 metrics=self._runtime_feature_metrics(
                     prefix_cache_entries,
@@ -6218,18 +6345,19 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PERSISTENT_MULTI_CONTEXT_CACHE,
                 supported=bool(persistent_multi_context_runtime_names),
                 active=self._runtime_feature_active(persistent_multi_context_entries),
+                ownership_modes=persistent_multi_context_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if persistent_multi_context_runtime_names
                     else []
                 ),
                 runtime_names=persistent_multi_context_runtime_names,
-                reason=(
-                    "LewLM can restore persisted multi-context prompt-prefix cache entries on "
-                    + ", ".join(f"`{name}`" for name in persistent_multi_context_runtime_names)
-                    + "."
-                    if persistent_multi_context_runtime_names
-                    else "LewLM does not expose restart-resilient chat cache persistence on the active runtimes."
+                reason=self._runtime_feature_reason(
+                    feature_label="Persistent multi-context cache reuse",
+                    entries=persistent_multi_context_entries,
+                    unsupported_reason=(
+                        "LewLM does not expose restart-resilient chat cache persistence on the active runtimes."
+                    ),
                 ),
                 metrics=self._runtime_feature_metrics(
                     persistent_multi_context_entries,
@@ -6263,18 +6391,17 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PAGED_KV_CACHE,
                 supported=bool(paged_kv_runtime_names),
                 active=self._runtime_feature_active(paged_kv_entries),
+                ownership_modes=paged_kv_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if paged_kv_runtime_names
                     else []
                 ),
                 runtime_names=paged_kv_runtime_names,
-                reason=(
-                    "LewLM can configure runtime-local paged KV cache controls on "
-                    + ", ".join(f"`{name}`" for name in paged_kv_runtime_names)
-                    + "."
-                    if paged_kv_runtime_names
-                    else "LewLM does not expose paged KV-cache storage on the active runtimes."
+                reason=self._runtime_feature_reason(
+                    feature_label="Paged KV-cache reporting",
+                    entries=paged_kv_entries,
+                    unsupported_reason="LewLM does not expose paged KV-cache storage on the active runtimes.",
                 ),
                 metrics=self._runtime_feature_metrics(
                     paged_kv_entries,
@@ -6292,18 +6419,17 @@ class TelemetryService:
                 feature=PerformanceFeatureName.KV_CACHE_QUANTIZATION,
                 supported=bool(kv_quantization_runtime_names),
                 active=self._runtime_feature_active(kv_quantization_entries),
+                ownership_modes=kv_quantization_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if kv_quantization_runtime_names
                     else []
                 ),
                 runtime_names=kv_quantization_runtime_names,
-                reason=(
-                    "LewLM can configure runtime-local KV-cache quantization on "
-                    + ", ".join(f"`{name}`" for name in kv_quantization_runtime_names)
-                    + "."
-                    if kv_quantization_runtime_names
-                    else "LewLM does not quantize runtime KV caches separately from model weights."
+                reason=self._runtime_feature_reason(
+                    feature_label="KV-cache quantization",
+                    entries=kv_quantization_entries,
+                    unsupported_reason="LewLM does not quantize runtime KV caches separately from model weights.",
                 ),
                 metrics=self._runtime_feature_metrics(
                     kv_quantization_entries,
@@ -6476,7 +6602,18 @@ class TelemetryService:
                 and self._continuous_batching_ownership(entry) == "backend_native"
             )
         )
+        partial_runtime_names = sorted(
+            entry["runtime_name"]
+            for entry in continuous_batching_entries
+            if (
+                entry.get("supported")
+                and isinstance(entry.get("runtime_name"), str)
+                and self._continuous_batching_ownership(entry) == PerformanceFeatureOwnership.PARTIAL.value
+            )
+        )
         native_runtime_names = sorted({*lewlm_owned_runtime_names, *backend_native_runtime_names})
+        text_batching_runtime_names = sorted({*native_runtime_names, *partial_runtime_names})
+        continuous_batching_ownership_modes = self._runtime_feature_ownership_modes(continuous_batching_entries)
         distributed_runtime_names = sorted(
             entry["runtime_name"]
             for entry in distributed_entries
@@ -6492,42 +6629,41 @@ class TelemetryService:
             CapabilityName.CHAT.value,
             CapabilityName.STREAMING.value,
         }
-        continuous_batching_supported = embeddings_batching_supported or native_batching_supported
-        if lewlm_owned_runtime_names and backend_native_runtime_names:
+        partial_batching_supported = bool(partial_runtime_names) and capability_focus in {
+            None,
+            CapabilityName.CHAT.value,
+            CapabilityName.STREAMING.value,
+        }
+        continuous_batching_supported = embeddings_batching_supported or native_batching_supported or partial_batching_supported
+        if len(continuous_batching_ownership_modes) > 1:
             text_batching_mode = "mixed"
-            text_batching_reason = (
-                "LewLM owns the primary chat or streaming continuous-batching path on "
-                + ", ".join(f"`{name}`" for name in lewlm_owned_runtime_names)
-                + " while "
-                + ", ".join(f"`{name}`" for name in backend_native_runtime_names)
-                + " remains backend-native."
-            )
-        elif lewlm_owned_runtime_names:
-            text_batching_mode = "lewlm_owned"
-            text_batching_reason = (
-                "LewLM owns the primary chat or streaming continuous-batching path on "
-                + ", ".join(f"`{name}`" for name in lewlm_owned_runtime_names)
-                + "."
-            )
-        elif backend_native_runtime_names:
-            text_batching_mode = "backend_native"
-            text_batching_reason = (
-                "LewLM can currently route chat or streaming requests only through backend-native continuous batching on "
-                + ", ".join(f"`{name}`" for name in backend_native_runtime_names)
-                + "; a LewLM-owned primary text scheduler is not active on this host."
-            )
+        elif continuous_batching_ownership_modes:
+            text_batching_mode = continuous_batching_ownership_modes[0]
         else:
-            text_batching_mode = "unsupported"
-            text_batching_reason = ""
+            text_batching_mode = PerformanceFeatureOwnership.UNSUPPORTED.value
+        text_batching_reason = self._runtime_feature_reason(
+            feature_label="Chat and streaming continuous batching",
+            entries=continuous_batching_entries,
+            unsupported_reason=(
+                f"Selected `{capability_focus}` requests do not have a LewLM-owned, backend-native, or partially preserved continuous batching path."
+                if capability_focus in {CapabilityName.CHAT.value, CapabilityName.STREAMING.value}
+                else "No active runtime currently advertises a chat or streaming continuous batching path."
+            ),
+        )
         if native_batching_supported and embeddings_batching_supported:
             continuous_batching_reason = (
                 "LewLM batches embeddings requests over a short model-local window and " + text_batching_reason.lower()
             )
             continuous_batching_notes = self._runtime_feature_notes(continuous_batching_entries)
-        elif native_batching_supported:
+        elif native_batching_supported or partial_batching_supported:
             continuous_batching_reason = text_batching_reason
             continuous_batching_notes = self._runtime_feature_notes(continuous_batching_entries)
-            if backend_native_runtime_names and not lewlm_owned_runtime_names:
+            if partial_runtime_names:
+                continuous_batching_notes = [
+                    *continuous_batching_notes,
+                    "Partial batching paths preserve only the portable contract; LewLM does not claim direct ownership of the upstream scheduler.",
+                ]
+            elif backend_native_runtime_names and not lewlm_owned_runtime_names:
                 continuous_batching_notes = [
                     *continuous_batching_notes,
                     "Chat and streaming continuous batching remain runtime-dependent until a LewLM-owned primary text scheduler is active.",
@@ -6765,25 +6901,15 @@ class TelemetryService:
             runtime_health,
             PerformanceFeatureName.PERSISTENT_MULTI_CONTEXT_CACHE.value,
         )
-        speculative_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in speculative_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        prompt_lookup_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in prompt_lookup_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        prefix_cache_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in prefix_cache_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        persistent_multi_context_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in persistent_multi_context_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
+        speculative_runtime_names = self._runtime_feature_runtime_names(speculative_entries)
+        prompt_lookup_runtime_names = self._runtime_feature_runtime_names(prompt_lookup_entries)
+        prefix_cache_runtime_names = self._runtime_feature_runtime_names(prefix_cache_entries)
+        persistent_multi_context_runtime_names = self._runtime_feature_runtime_names(persistent_multi_context_entries)
+        speculative_ownership_modes = self._runtime_feature_ownership_modes(speculative_entries)
+        prompt_lookup_ownership_modes = self._runtime_feature_ownership_modes(prompt_lookup_entries)
+        prefix_cache_ownership_modes = self._runtime_feature_ownership_modes(prefix_cache_entries)
+        persistent_multi_context_ownership_modes = self._runtime_feature_ownership_modes(
+            persistent_multi_context_entries,
         )
 
         request_scheduling_supported = request_scheduler.max_concurrent_requests > 0
@@ -6809,10 +6935,10 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if speculative_supported:
-            speculative_reason = (
-                "LewLM can use draft-model speculative decoding on "
-                + ", ".join(f"`{name}`" for name in speculative_runtime_names)
-                + "."
+            speculative_reason = self._runtime_feature_reason(
+                feature_label="Speculative decoding",
+                entries=speculative_entries,
+                unsupported_reason="LewLM does not configure draft-model speculative decoding on the active runtimes.",
             )
             speculative_notes = self._runtime_feature_notes(speculative_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -6834,10 +6960,10 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if prompt_lookup_supported:
-            prompt_lookup_reason = (
-                "LewLM can use prompt-lookup or n-gram speculation on "
-                + ", ".join(f"`{name}`" for name in prompt_lookup_runtime_names)
-                + "."
+            prompt_lookup_reason = self._runtime_feature_reason(
+                feature_label="Prompt-lookup speculation",
+                entries=prompt_lookup_entries,
+                unsupported_reason="LewLM does not implement prompt-lookup or n-gram speculative decoding paths today.",
             )
             prompt_lookup_notes = self._runtime_feature_notes(prompt_lookup_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -6859,10 +6985,10 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if prefix_cache_supported:
-            prefix_cache_reason = (
-                "LewLM can reuse runtime-local prompt-prefix caches on "
-                + ", ".join(f"`{name}`" for name in prefix_cache_runtime_names)
-                + "."
+            prefix_cache_reason = self._runtime_feature_reason(
+                feature_label="Prompt-prefix cache reuse",
+                entries=prefix_cache_entries,
+                unsupported_reason="LewLM does not implement runtime prefix-cache reuse on the active backends.",
             )
             prefix_cache_notes = self._runtime_feature_notes(prefix_cache_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -6884,10 +7010,12 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if persistent_multi_context_supported:
-            persistent_multi_context_reason = (
-                "LewLM can restore persisted multi-context prompt-prefix cache entries on "
-                + ", ".join(f"`{name}`" for name in persistent_multi_context_runtime_names)
-                + "."
+            persistent_multi_context_reason = self._runtime_feature_reason(
+                feature_label="Persistent multi-context cache reuse",
+                entries=persistent_multi_context_entries,
+                unsupported_reason=(
+                    "LewLM does not expose restart-resilient multi-context chat cache persistence on the active backends."
+                ),
             )
             persistent_multi_context_notes = self._runtime_feature_notes(persistent_multi_context_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -6995,41 +7123,26 @@ class TelemetryService:
             runtime_health,
             PerformanceFeatureName.PREFILL_ISOLATION.value,
         )
-        paged_kv_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in paged_kv_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        kv_quantization_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in kv_quantization_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        prefill_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in prefill_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        chunked_prefill_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in chunked_prefill_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
-        prefill_isolation_runtime_names = sorted(
-            entry["runtime_name"]
-            for entry in prefill_isolation_entries
-            if entry.get("supported") and isinstance(entry.get("runtime_name"), str)
-        )
+        paged_kv_runtime_names = self._runtime_feature_runtime_names(paged_kv_entries)
+        kv_quantization_runtime_names = self._runtime_feature_runtime_names(kv_quantization_entries)
+        prefill_runtime_names = self._runtime_feature_runtime_names(prefill_entries)
+        chunked_prefill_runtime_names = self._runtime_feature_runtime_names(chunked_prefill_entries)
+        prefill_isolation_runtime_names = self._runtime_feature_runtime_names(prefill_isolation_entries)
+        paged_kv_ownership_modes = self._runtime_feature_ownership_modes(paged_kv_entries)
+        kv_quantization_ownership_modes = self._runtime_feature_ownership_modes(kv_quantization_entries)
+        prefill_ownership_modes = self._runtime_feature_ownership_modes(prefill_entries)
+        chunked_prefill_ownership_modes = self._runtime_feature_ownership_modes(chunked_prefill_entries)
+        prefill_isolation_ownership_modes = self._runtime_feature_ownership_modes(prefill_isolation_entries)
         paged_kv_supported = bool(paged_kv_runtime_names) and capability_focus in {
             None,
             CapabilityName.CHAT.value,
             CapabilityName.STREAMING.value,
         }
         if paged_kv_supported:
-            paged_kv_reason = (
-                "LewLM owns first-class paged-KV residency accounting on "
-                + ", ".join(f"`{name}`" for name in paged_kv_runtime_names)
-                + " and reports page reuse, eviction, and lane pressure without overclaiming backend parity elsewhere."
+            paged_kv_reason = self._runtime_feature_reason(
+                feature_label="Paged KV-cache reporting",
+                entries=paged_kv_entries,
+                unsupported_reason="LewLM does not expose first-class paged-KV residency accounting on the active runtimes.",
             )
             paged_kv_notes = self._runtime_feature_notes(paged_kv_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -7051,10 +7164,10 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if kv_quantization_supported:
-            kv_quantization_reason = (
-                "LewLM can configure runtime-local KV-cache quantization on "
-                + ", ".join(f"`{name}`" for name in kv_quantization_runtime_names)
-                + "."
+            kv_quantization_reason = self._runtime_feature_reason(
+                feature_label="KV-cache quantization",
+                entries=kv_quantization_entries,
+                unsupported_reason="LewLM does not expose KV-cache quantization on the active runtimes.",
             )
             kv_quantization_notes = self._runtime_feature_notes(kv_quantization_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -7076,10 +7189,12 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if prefill_supported:
-            prefill_reason = (
-                "LewLM can apply runtime-local prefill optimization on "
-                + ", ".join(f"`{name}`" for name in prefill_runtime_names)
-                + "."
+            prefill_reason = self._runtime_feature_reason(
+                feature_label="Prefill optimization",
+                entries=prefill_entries,
+                unsupported_reason=(
+                    "LewLM publishes prefill lifecycle events, but it does not yet enable runtime-specific prefill acceleration or cache reuse."
+                ),
             )
             prefill_notes = self._runtime_feature_notes(prefill_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -7104,10 +7219,10 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if chunked_prefill_supported:
-            chunked_prefill_reason = (
-                "LewLM can split long prompt ingest into bounded prefill chunks on "
-                + ", ".join(f"`{name}`" for name in chunked_prefill_runtime_names)
-                + "."
+            chunked_prefill_reason = self._runtime_feature_reason(
+                feature_label="Chunked prefill",
+                entries=chunked_prefill_entries,
+                unsupported_reason="LewLM does not detect chunked-prefill support on the active runtimes.",
             )
             chunked_prefill_notes = self._runtime_feature_notes(chunked_prefill_entries)
         elif capability_focus is not None and capability_focus not in {
@@ -7129,10 +7244,12 @@ class TelemetryService:
             CapabilityName.STREAMING.value,
         }
         if prefill_isolation_supported:
-            prefill_isolation_reason = (
-                "LewLM can reserve decode headroom while long-prefill requests are active on "
-                + ", ".join(f"`{name}`" for name in prefill_isolation_runtime_names)
-                + "."
+            prefill_isolation_reason = self._runtime_feature_reason(
+                feature_label="Prefill isolation",
+                entries=prefill_isolation_entries,
+                unsupported_reason=(
+                    "LewLM does not detect a runtime that exposes the combined chunked-prefill and continuous-batching hooks needed for truthful single-host prefill isolation."
+                ),
             )
             prefill_isolation_notes = self._runtime_feature_notes(prefill_isolation_entries)
             if not request_scheduler.prefill_isolation_enabled:
@@ -7442,6 +7559,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.CONTINUOUS_BATCHING,
                 supported=continuous_batching_supported,
                 active=continuous_batching_supported,
+                ownership_modes=continuous_batching_ownership_modes,
                 supported_capabilities=sorted(
                     {
                         *(
@@ -7451,17 +7569,18 @@ class TelemetryService:
                         ),
                         *(
                             [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
-                            if native_runtime_names
+                            if text_batching_runtime_names
                             else []
                         ),
                     }
                 ),
-                runtime_names=sorted({*embeddings_runtime_names, *native_runtime_names}),
+                runtime_names=sorted({*embeddings_runtime_names, *text_batching_runtime_names}),
                 reason=continuous_batching_reason,
                 metrics=_compact_metrics(
                     chat_streaming_ownership_mode=text_batching_mode,
                     lewlm_owned_runtime_count=len(lewlm_owned_runtime_names),
                     backend_native_runtime_count=len(backend_native_runtime_names),
+                    partial_runtime_count=len(partial_runtime_names),
                     batched_requests=(
                         embeddings_metrics.metric_totals.get("batched_requests") if embeddings_metrics is not None else None
                     ),
@@ -7499,6 +7618,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PREFIX_CACHE,
                 supported=prefix_cache_supported,
                 active=self._runtime_feature_active(prefix_cache_entries),
+                ownership_modes=prefix_cache_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if prefix_cache_runtime_names
@@ -7536,6 +7656,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PERSISTENT_MULTI_CONTEXT_CACHE,
                 supported=persistent_multi_context_supported,
                 active=self._runtime_feature_active(persistent_multi_context_entries),
+                ownership_modes=persistent_multi_context_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if persistent_multi_context_runtime_names
@@ -7626,6 +7747,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PAGED_KV_CACHE,
                 supported=paged_kv_supported,
                 active=self._runtime_feature_active(paged_kv_entries),
+                ownership_modes=paged_kv_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if paged_kv_runtime_names
@@ -7703,6 +7825,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.KV_CACHE_QUANTIZATION,
                 supported=kv_quantization_supported,
                 active=self._runtime_feature_active(kv_quantization_entries),
+                ownership_modes=kv_quantization_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if kv_quantization_runtime_names
@@ -7756,6 +7879,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.SPECULATIVE_DECODING,
                 supported=speculative_supported,
                 active=self._runtime_feature_active(speculative_entries),
+                ownership_modes=speculative_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if speculative_runtime_names
@@ -7779,6 +7903,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PROMPT_LOOKUP_SPECULATION,
                 supported=prompt_lookup_supported,
                 active=self._runtime_feature_active(prompt_lookup_entries),
+                ownership_modes=prompt_lookup_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if prompt_lookup_runtime_names
@@ -7964,6 +8089,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PREFILL_OPTIMIZATION,
                 supported=prefill_supported,
                 active=self._runtime_feature_active(prefill_entries),
+                ownership_modes=prefill_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if prefill_runtime_names
@@ -7987,6 +8113,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.CHUNKED_PREFILL,
                 supported=chunked_prefill_supported,
                 active=self._runtime_feature_active(chunked_prefill_entries),
+                ownership_modes=chunked_prefill_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if chunked_prefill_runtime_names
@@ -8010,6 +8137,7 @@ class TelemetryService:
                 feature=PerformanceFeatureName.PREFILL_ISOLATION,
                 supported=prefill_isolation_supported,
                 active=request_scheduler.prefill_isolation_enabled and request_scheduler.isolated_prefill_requests > 0,
+                ownership_modes=prefill_isolation_ownership_modes,
                 supported_capabilities=(
                     [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
                     if prefill_isolation_runtime_names
@@ -8116,7 +8244,8 @@ class TelemetryService:
             feature = feature_map.get(feature_name)
             if not isinstance(feature, dict):
                 continue
-            entries.append({"runtime_name": runtime.get("name"), **feature})
+            normalized = normalize_runtime_performance_feature_report(feature)
+            entries.append({"runtime_name": runtime.get("name"), **normalized})
         return entries
 
     @staticmethod
@@ -8136,11 +8265,71 @@ class TelemetryService:
         return notes
 
     @staticmethod
+    def _runtime_feature_runtime_names_by_ownership(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
+        names_by_ownership: dict[str, set[str]] = {}
+        for entry in entries:
+            if not entry.get("supported") or not isinstance(entry.get("runtime_name"), str):
+                continue
+            ownership = normalize_performance_feature_ownership(
+                ownership=entry.get("ownership"),
+                supported=bool(entry.get("supported")),
+                support_level=(str(entry.get("support_level")) if entry.get("support_level") is not None else None),
+            ).value
+            names_by_ownership.setdefault(ownership, set()).add(str(entry["runtime_name"]))
+        return {
+            ownership: sorted(runtime_names)
+            for ownership, runtime_names in names_by_ownership.items()
+        }
+
+    @classmethod
+    def _runtime_feature_runtime_names(cls, entries: list[dict[str, Any]]) -> list[str]:
+        names_by_ownership = cls._runtime_feature_runtime_names_by_ownership(entries)
+        return sorted(
+            runtime_name
+            for runtime_names in names_by_ownership.values()
+            for runtime_name in runtime_names
+        )
+
+    @classmethod
+    def _runtime_feature_ownership_modes(cls, entries: list[dict[str, Any]]) -> list[str]:
+        names_by_ownership = cls._runtime_feature_runtime_names_by_ownership(entries)
+        order = (
+            PerformanceFeatureOwnership.LEWLM_OWNED.value,
+            PerformanceFeatureOwnership.BACKEND_NATIVE.value,
+            PerformanceFeatureOwnership.PARTIAL.value,
+        )
+        return [mode for mode in order if names_by_ownership.get(mode)]
+
+    @classmethod
+    def _runtime_feature_reason(
+        cls,
+        *,
+        feature_label: str,
+        entries: list[dict[str, Any]],
+        unsupported_reason: str,
+    ) -> str:
+        names_by_ownership = cls._runtime_feature_runtime_names_by_ownership(entries)
+        if not names_by_ownership:
+            return unsupported_reason
+        fragments: list[str] = []
+        for ownership, label in (
+            (PerformanceFeatureOwnership.LEWLM_OWNED.value, "LewLM-owned"),
+            (PerformanceFeatureOwnership.BACKEND_NATIVE.value, "backend-native"),
+            (PerformanceFeatureOwnership.PARTIAL.value, "partially preserved"),
+        ):
+            runtime_names = names_by_ownership.get(ownership, [])
+            if not runtime_names:
+                continue
+            fragments.append(label + " on " + ", ".join(f"`{name}`" for name in runtime_names))
+        return f"{feature_label} support is " + "; ".join(fragments) + "."
+
+    @staticmethod
     def _continuous_batching_ownership(entry: dict[str, Any]) -> str:
-        ownership = entry.get("ownership")
-        if ownership in {"lewlm_owned", "backend_native", "unsupported"}:
-            return str(ownership)
-        return "backend_native" if bool(entry.get("supported")) else "unsupported"
+        return normalize_performance_feature_ownership(
+            ownership=entry.get("ownership"),
+            supported=bool(entry.get("supported")),
+            support_level=(str(entry.get("support_level")) if entry.get("support_level") is not None else None),
+        ).value
 
     @staticmethod
     def _runtime_feature_metrics(
@@ -8178,6 +8367,7 @@ class TelemetryService:
         supported: bool,
         reason: str,
         active: bool = False,
+        ownership_modes: list[str] | None = None,
         supported_capabilities: list[str] | None = None,
         runtime_names: list[str] | None = None,
         metrics: dict[str, int | float | str | bool] | None = None,
@@ -8188,6 +8378,7 @@ class TelemetryService:
             feature=feature,
             supported=supported,
             active=active,
+            ownership_modes=list(ownership_modes or []),
             supported_capabilities=list(supported_capabilities or []),
             runtime_names=list(runtime_names or []),
             reason=reason,
