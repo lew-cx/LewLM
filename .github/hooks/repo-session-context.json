@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python .github/hooks/scripts/repo_session_context.py",
+        "windows": "python .github\\hooks\\scripts\\repo_session_context.py",
+        "timeout": 10
+      }
+    ]
+  }
+}
