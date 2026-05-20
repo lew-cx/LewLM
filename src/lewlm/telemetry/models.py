@@ -9,7 +9,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lewlm.core.contracts import CapabilityName, HostPlatformSnapshot, MeasuredCapabilitySummary, ServiceReadinessSummary
+from lewlm.core.contracts import (
+    CapabilityName,
+    HostPlatformSnapshot,
+    MeasuredCapabilitySummary,
+    PerformanceCoreEvidenceRecord,
+    ServiceReadinessSummary,
+)
 from lewlm.core.serving_core import ServingCoreSnapshot
 from lewlm.pack_registry import PackReport
 from lewlm.serving_profiles import ServingProfileApplication
@@ -32,6 +38,7 @@ class PerformanceFeatureName(str, Enum):
     BLOCK_DISK_CACHE = "block_disk_cache"
     SPECULATIVE_DECODING = "speculative_decoding"
     PROMPT_LOOKUP_SPECULATION = "prompt_lookup_speculation"
+    CONSTRAINED_DECODING = "constrained_decoding"
     KEEP_WARM_MODEL_RESIDENCY = "keep_warm_model_residency"
     AGGRESSIVE_UNLOAD_MODE = "aggressive_unload_mode"
     BALANCED_RESIDENCY_MODE = "balanced_residency_mode"
@@ -209,6 +216,7 @@ class BenchmarkRecord(BaseModel):
     completion_tokens_per_second: float | None = None
     created_at: datetime
     performance_features: list[PerformanceFeatureStatus] = Field(default_factory=list)
+    performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
     serving_profile: ServingProfileApplication | None = None
 
 
@@ -236,6 +244,7 @@ class MeasuredCapabilityRegistrySummary(BaseModel):
     total_records: int = 0
     latest_recorded_at: datetime | None = None
     categories: list[MeasuredCapabilitySummary] = Field(default_factory=list)
+    performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
 
 
 class BenchmarkScenarioSample(BaseModel):
@@ -327,6 +336,7 @@ class TargetPlatformValidation(BaseModel):
 OPTIMIZATION_CLASS_NAMES = (
     "runtime_selection",
     "continuous_batching",
+    "prefix_reuse",
     "tiered_kv_cache",
     "speculation",
     "kernel_acceleration",
@@ -400,6 +410,7 @@ class RuntimeSupportPathSummary(BaseModel):
     benchmark_backed_defaults: bool = False
     lewlm_managed_layers: list[str] = Field(default_factory=list)
     backend_native_layers: list[str] = Field(default_factory=list)
+    performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -434,6 +445,7 @@ class RuntimeStats(BaseModel):
     target_platforms: list[TargetPlatformValidation] = Field(default_factory=list)
     cluster: dict[str, Any] | None = None
     performance_features: list[PerformanceFeatureStatus] = Field(default_factory=list)
+    performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
     optimization_defaults: OptimizationDefaultsSummary | None = None
     runtime_support_strategy: RuntimeSupportStrategy | None = None
 

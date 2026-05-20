@@ -11,6 +11,7 @@ from typing import Literal
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
+    build_portable_performance_core_evidence,
     CapabilityName,
     ConversionStatus,
     HostPlatformSnapshot,
@@ -22,6 +23,7 @@ from lewlm.core.contracts import (
     RuntimeCandidateReport,
     RuntimeContract,
     RuntimeReadinessState,
+    runtime_support_path_for_affinity,
 )
 from lewlm.core.errors import RoutingError
 from lewlm.pack_registry import PackRegistry
@@ -186,6 +188,7 @@ class RuntimeCatalog:
                         host_platform_supported=False,
                         supported_systems=[],
                         supported_machines=[],
+                        support_path=runtime_support_path_for_affinity(affinity) or "packaged",
                         supports_manifest=False,
                     ),
                 )
@@ -205,6 +208,7 @@ class RuntimeCatalog:
                     host_platform_supported=runtime.supports_host_platform(),
                     supported_systems=list(runtime.supported_systems),
                     supported_machines=list(runtime.supported_machines),
+                    support_path=runtime_support_path_for_affinity(runtime.affinity) or "packaged",
                     supports_manifest=runtime.supports_manifest(manifest),
                 ),
             )
@@ -305,7 +309,14 @@ class RuntimeCatalog:
                     for capability in CapabilityName
                     if runtime.supports_capability(capability)
                 ),
-                "performance_features": runtime.performance_feature_snapshot(),
+                "performance_features": (performance_features := runtime.performance_feature_snapshot()),
+                "performance_core_evidence": [
+                    record.model_dump(mode="json")
+                    for record in build_portable_performance_core_evidence(
+                        performance_features=performance_features,
+                        runtime_names=[runtime.name],
+                    )
+                ],
             }
             for runtime in self._runtimes.values()
         ]
@@ -324,11 +335,11 @@ class RuntimeCatalog:
                 if manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION:
                     fallback_reason = self._fallback_guidance_for_manifest(manifest, system=system, machine=machine)
                 if fallback_reason is not None:
-                    install_hints: list[str] = []
-                    fallback_runtime = self.get_runtime(RuntimeAffinity.LLAMACPP)
-                    fallback_hint = getattr(fallback_runtime, "platform_guidance", None)
-                    if isinstance(fallback_hint, str) and fallback_hint:
-                        install_hints.append(fallback_hint)
+                    install_hints = self._fallback_install_hints_for_manifest(
+                        manifest,
+                        system=system,
+                        machine=machine,
+                    )
                     reports.append(
                         ModelTargetPlatformReport(
                             system=system,
@@ -381,6 +392,16 @@ class RuntimeCatalog:
             fallback_reason = None
             if not matching_affinities:
                 fallback_reason = self._fallback_guidance_for_manifest(manifest, system=system, machine=machine)
+                if fallback_reason is not None:
+                    install_hints.extend(
+                        hint
+                        for hint in self._fallback_install_hints_for_manifest(
+                            manifest,
+                            system=system,
+                            machine=machine,
+                        )
+                        if hint not in install_hints
+                    )
             host_target = self._matches_host_platform(host_platform, system=system, machine=machine)
             if matching_affinities:
                 runtime_names = ", ".join(affinity.value for affinity in matching_affinities)
@@ -566,27 +587,71 @@ class RuntimeCatalog:
         return False
 
     def _fallback_guidance_for_manifest(self, manifest: ModelManifest, *, system: str, machine: str) -> str | None:
-        if set(manifest.modality) != {ModelModality.TEXT}:
+        if set(manifest.modality) == {ModelModality.TEXT}:
+            fallback_runtime = self._text_fallback_runtime(system=system, machine=machine)
+            if fallback_runtime is None:
+                return None
+            if manifest.format_type.value == "mlx":
+                return (
+                    f"Pure text MLX models can use the {fallback_runtime.name} path on {system} {machine} "
+                    "after preparing a GGUF build for that target host."
+                )
+            if (
+                manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION
+                and manifest.format_type.value in {"huggingface", "adapter_bundle"}
+                and system in {"Linux", "Windows"}
+            ):
+                bundle_label = "adapter bundles" if manifest.format_type.value == "adapter_bundle" else "Hugging Face bundles"
+                return (
+                    f"Text {bundle_label} can target {fallback_runtime.name} on {system} {machine} "
+                    "after exporting or preparing a GGUF build for that host."
+                )
             return None
+        bridge_runtime = self._vision_bridge_runtime(manifest, system=system, machine=machine)
+        if bridge_runtime is None:
+            return None
+        return (
+            f"Image-conditioned chat on {system} {machine} currently stays bridge-backed via {bridge_runtime.name}; "
+            "configure a compatible loopback-only local server that accepts OpenAI-style image content blocks on "
+            "`/v1/chat/completions`."
+        )
+
+    def _fallback_install_hints_for_manifest(
+        self,
+        manifest: ModelManifest,
+        *,
+        system: str,
+        machine: str,
+    ) -> list[str]:
+        runtime = None
+        if set(manifest.modality) == {ModelModality.TEXT}:
+            runtime = self._text_fallback_runtime(system=system, machine=machine)
+        elif ModelModality.VISION in manifest.modality:
+            runtime = self._vision_bridge_runtime(manifest, system=system, machine=machine)
+        hint = getattr(runtime, "platform_guidance", None) if runtime is not None else None
+        return [hint] if isinstance(hint, str) and hint else []
+
+    def _text_fallback_runtime(self, *, system: str, machine: str) -> RuntimeContract | None:
         fallback_runtime = self.get_runtime(RuntimeAffinity.LLAMACPP)
         if fallback_runtime is None or not fallback_runtime.supports_target_platform(system, machine):
             return None
-        if manifest.format_type.value == "mlx":
-            return (
-                f"Pure text MLX models can use the {fallback_runtime.name} path on {system} {machine} "
-                "after preparing a GGUF build for that target host."
-            )
-        if (
-            manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION
-            and manifest.format_type.value in {"huggingface", "adapter_bundle"}
-            and system in {"Linux", "Windows"}
-        ):
-            bundle_label = "adapter bundles" if manifest.format_type.value == "adapter_bundle" else "Hugging Face bundles"
-            return (
-                f"Text {bundle_label} can target {fallback_runtime.name} on {system} {machine} "
-                "after exporting or preparing a GGUF build for that host."
-            )
-        return None
+        return fallback_runtime
+
+    def _vision_bridge_runtime(
+        self,
+        manifest: ModelManifest,
+        *,
+        system: str,
+        machine: str,
+    ) -> RuntimeContract | None:
+        if system not in {"Linux", "Windows"} or ModelModality.VISION not in manifest.modality:
+            return None
+        bridge_runtime = self.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+        if bridge_runtime is None or not bridge_runtime.supports_target_platform(system, machine):
+            return None
+        if not self._structurally_supports_manifest(bridge_runtime, manifest):
+            return None
+        return bridge_runtime
 
     @staticmethod
     def _target_readiness_state(

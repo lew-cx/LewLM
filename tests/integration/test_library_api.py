@@ -8,7 +8,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pytest
 
-from conftest import FakeLlamaCppRuntime, FakeMLXAudioRuntime, FakeMLXSemanticRuntime, FakeMLXVisionRuntime
+from conftest import (
+    FakeExternalVisionRuntime,
+    FakeLlamaCppRuntime,
+    FakeMLXAudioRuntime,
+    FakeMLXSemanticRuntime,
+    FakeMLXVisionRuntime,
+)
 from lewlm import LewLM
 from lewlm.cli.main import handle_config
 from lewlm.conversion.models import ConversionPolicy, JobStatus
@@ -65,14 +71,21 @@ def _serving_profile_services(temp_settings):
 def test_library_facade_supports_embeddable_workflows(
     sample_document_ir,
     services_with_fake_runtime_and_conversion,
+    temp_settings,
+    sample_audio_bytes: bytes,
 ) -> None:
+    audio_dir = temp_settings.models_dir[0] / "whisper-mini-audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "config.json").write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
+    (audio_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+
     lewlm = LewLM(services=services_with_fake_runtime_and_conversion)
 
     scan_summary = lewlm.scan_models()
-    assert scan_summary.discovered_count == 3
+    assert scan_summary.discovered_count == 4
 
     inventory = lewlm.inventory()
-    assert inventory.count == 3
+    assert inventory.count == 4
 
     conversion_candidate = next(
         manifest for manifest in inventory.items if manifest.conversion_status.value == "requires_conversion"
@@ -82,7 +95,20 @@ def test_library_facade_supports_embeddable_workflows(
     assert job.status == JobStatus.COMPLETED
 
     runnable_model = next(manifest for manifest in lewlm.list_models() if manifest.conversion_status.value == "runnable")
+    audio_model = next(manifest for manifest in lewlm.list_models() if "audio" in {modality.value for modality in manifest.modality})
     chat = lewlm.chat_sync(prompt="Hello from the package API", model_id=runnable_model.model_id)
+    transcription = lewlm.transcribe_audio_sync(
+        sample_audio_bytes,
+        file_name="sample.wav",
+        model_id=audio_model.model_id,
+        language="en",
+    )
+    speech = lewlm.synthesize_speech_sync(
+        "Hello from the package API",
+        model_id=audio_model.model_id,
+        voice="alloy",
+        audio_format="wav",
+    )
     assert chat.response.output_text == "Echo: Hello from the package API"
     assert chat.metadata.model.resolved_model_id == runnable_model.model_id
     assert chat.metadata.routing.kind == "model_router"
@@ -92,6 +118,10 @@ def test_library_facade_supports_embeddable_workflows(
     assert chat.metadata.serving.runtime_adapter_kind == "backend_native_batch"
     assert chat.request_metadata["serving"]["phase"] == "completed"
     assert chat.request_metadata["serving"]["runtime_adapter"]["kind"] == "backend_native_batch"
+    assert transcription.response.text == f"Transcribed sample.wav ({len(sample_audio_bytes)} bytes)"
+    assert transcription.response.language == "en"
+    assert speech.response.media_type == "audio/wav"
+    assert speech.response.voice == "alloy"
 
     artifact = lewlm.generate_document(
         sample_document_ir,
@@ -120,7 +150,7 @@ def test_library_facade_supports_embeddable_workflows(
     assert "total_memory_mb" in health["readiness"]["host_platform"]
     assert "total_memory_source" in health["readiness"]["host_platform"]
     assert "total_memory_reason" in health["readiness"]["host_platform"]
-    assert health["storage"]["model_count"] == 3
+    assert health["storage"]["model_count"] == 4
 
     runtime_stats = lewlm.runtime_stats_sync()
     assert runtime_stats.runtime_policy == "balanced"
@@ -395,6 +425,51 @@ def test_library_facade_selects_distinct_multimodal_serving_profiles_by_workload
     services.close()
 
 
+def test_library_facade_routes_vision_requests_through_external_bridge(
+    services_with_fake_external_vision_runtime,
+    sample_attachment_sources,
+) -> None:
+    lewlm = LewLM(services=services_with_fake_external_vision_runtime)
+    lewlm.scan_models()
+    vision_model_id = next(
+        manifest.model_id
+        for manifest in lewlm.list_models()
+        if manifest.display_name == "qwen2-vl-vision-mlx"
+    )
+
+    chat = lewlm.chat_sync(
+        messages=[
+            GenerateMessage(
+                role="user",
+                content="Describe the attached image",
+                attachments=[
+                    GenerateAttachment(
+                        attachment_type="image",
+                        name=sample_attachment_sources["image_one"].name,
+                        source_path=str(sample_attachment_sources["image_one"]),
+                        media_type="image/png",
+                        detail="high",
+                    ),
+                ],
+            ),
+        ],
+        model_id=vision_model_id,
+    )
+
+    assert chat.response.output_text.startswith("Adapter vision echo:")
+    assert chat.metadata.model.runtime_name == "local_external_adapter"
+    assert chat.metadata.model.runtime_affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    bridge_runtime = services_with_fake_external_vision_runtime.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    assert isinstance(bridge_runtime, FakeExternalVisionRuntime)
+    user_message = next(
+        message for message in bridge_runtime.captured_requests[-1].messages if message.role == "user" and message.attachments
+    )
+    assert user_message.attachments[0].detail == "high"
+
+    lewlm.close()
+    services_with_fake_external_vision_runtime.close()
+
+
 def test_library_facade_routes_once_when_serving_profile_lookup_misses(
     temp_settings,
     sample_chat_models_root,
@@ -647,4 +722,5 @@ def test_config_command_prints_operator_focused_summary(temp_settings, capsys) -
     assert exit_code == 0
     assert "model roots:" in captured
     assert "validation manifests:" in captured
+    assert "host validation command:" in captured
     assert "release bundle command:" in captured

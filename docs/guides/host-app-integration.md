@@ -60,6 +60,16 @@ See:
 
 **Current boundary:** LewLM now enforces JSON-schema and grammar contracts at decode time on supported runtime paths, and returns explicit prompt-guided fallback metadata when the selected runtime cannot honor the requested constraint mode.
 
+## Failure shape across HTTP and typed helpers
+
+When a local-server request fails, LewLM keeps one machine-readable error shape:
+
+- HTTP returns a top-level `error` object with `code`, `message`, and `details`
+- `LewLMAppClient.from_http()` raises `LewLMAppClientHTTPError` with matching `code`, `status_code`, and `details`
+- support-path-related failures can include fields such as `support_path`, `feature_class`, and `fallback_guidance`
+
+That keeps embedded and local-server host apps aligned on the same fallback and support-path diagnostics instead of forcing callers to scrape raw HTTP text.
+
 ## Citation-ready source and chunk packaging
 
 `POST /v1/documents/ingest` and `LewLMAppClient.ingest_documents()` return app-facing packaging that lines up with grounded-answer and citation flows:

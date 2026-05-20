@@ -1,3 +1,3 @@
 """Package version constants."""
 
-__version__ = "0.3.3a0"
+__version__ = "0.4.0a0"

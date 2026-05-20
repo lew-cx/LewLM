@@ -30,6 +30,7 @@ from lewlm.core.contracts import (
     RuntimeContract,
     utc_now,
 )
+from lewlm.core.multimodal import AudioSpeechExecution, AudioTranscriptionExecution
 from lewlm.documents.ingest.models import DocumentIngestResult
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
 from lewlm.documents.render.service import GeneratedDocumentArtifact
@@ -396,6 +397,86 @@ class LewLM:
             apply_serving_profile=apply_serving_profile,
             prompt_request=prompt_request,
             allowed_prompt_file_roots=allowed_prompt_file_roots,
+        )
+
+    async def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        *,
+        file_name: str,
+        model_id: str | None = None,
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        """Run one audio transcription request through the shared multimodal contract."""
+
+        return await self.services.multimodal_orchestrator.transcribe_audio(
+            model_id=model_id,
+            audio_bytes=audio_bytes,
+            file_name=file_name,
+            language=language,
+            prompt=prompt,
+        )
+
+    def transcribe_audio_sync(
+        self,
+        audio_bytes: bytes,
+        *,
+        file_name: str,
+        model_id: str | None = None,
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        """Run one audio transcription request from synchronous code."""
+
+        return _run_sync(
+            lambda: self.transcribe_audio(
+                audio_bytes,
+                file_name=file_name,
+                model_id=model_id,
+                language=language,
+                prompt=prompt,
+            ),
+            helper_name="LewLM.transcribe_audio_sync",
+            async_name="LewLM.transcribe_audio",
+        )
+
+    async def synthesize_speech(
+        self,
+        input_text: str,
+        *,
+        model_id: str | None = None,
+        voice: str | None = None,
+        audio_format: str = "wav",
+    ) -> AudioSpeechExecution:
+        """Run one speech-synthesis request through the shared multimodal contract."""
+
+        return await self.services.multimodal_orchestrator.synthesize_speech(
+            model_id=model_id,
+            input_text=input_text,
+            voice=voice,
+            audio_format=audio_format,
+        )
+
+    def synthesize_speech_sync(
+        self,
+        input_text: str,
+        *,
+        model_id: str | None = None,
+        voice: str | None = None,
+        audio_format: str = "wav",
+    ) -> AudioSpeechExecution:
+        """Run one speech-synthesis request from synchronous code."""
+
+        return _run_sync(
+            lambda: self.synthesize_speech(
+                input_text,
+                model_id=model_id,
+                voice=voice,
+                audio_format=audio_format,
+            ),
+            helper_name="LewLM.synthesize_speech_sync",
+            async_name="LewLM.synthesize_speech",
         )
 
     async def warm_model(self, model_id: str) -> RoutingDecision:

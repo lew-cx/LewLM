@@ -6,8 +6,9 @@ import json
 import re
 from pathlib import Path
 
-from conftest import FakeMLXSemanticRuntime
+from conftest import FakeLlamaCppRuntime, FakeMLXSemanticRuntime
 from lewlm.conversion.models import CONVERSION_OUTPUT_METADATA_FILENAME, ConversionArtifactRecord, ConversionPolicy
+from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.errors import ConfigurationError
 from lewlm.cli.main import (
     _annotate_profile_metrics,
@@ -21,6 +22,7 @@ from lewlm.cli.main import (
 )
 from lewlm.core.contracts import (
     ConversionStatus,
+    GenerateResponse,
     HostPlatformSnapshot,
     ModelArtifactLayer,
     ModelArtifactRole,
@@ -29,6 +31,27 @@ from lewlm.core.contracts import (
     ModelModality,
     RuntimeAffinity,
 )
+
+
+class PromptGuidedLlamaRuntime(FakeLlamaCppRuntime):
+    def structured_output_runtime_status(self, contract):
+        status = super().structured_output_runtime_status(contract)
+        if status is None:
+            return None
+        status.enforcement = "prompt_guided"
+        status.decoder_enforced = False
+        status.fallback_used = True
+        status.fallback_reason = "Fake runtime preserves structured-output requests without decoder enforcement."
+        return status
+
+    async def _generate(self, request) -> GenerateResponse:
+        prompt = request.messages[-1].content if request.messages else ""
+        return GenerateResponse(
+            model_id=request.model_id,
+            output_text=f"Echo: {prompt}",
+            finish_reason="stop",
+            usage={"prompt_tokens": len(request.messages), "completion_tokens": 2, "total_tokens": len(request.messages) + 2},
+        )
 
 
 def test_cli_scan_emits_json_summary(temp_settings, sample_models_root: Path, capsys) -> None:
@@ -485,6 +508,8 @@ def test_cli_doctor_prints_optimization_default_summary(
     assert "optimization defaults:" in output
     assert "runtime strategy:" in output
     assert "non-apple=gguf_llamacpp" in output
+    assert "recommended feature paths:" in output
+    assert "structured output:" in output
     assert "default " in output
     assert "workloads:" in output
 
@@ -611,6 +636,46 @@ def test_cli_doctor_marks_multimodal_default_selection_benchmark_backed_when_all
         "text_only_multimodal",
     ]
     assert all(item["profile_status"] == "selected" for item in workload_defaults.values())
+
+
+def test_cli_chat_routes_image_requests_through_external_bridge(
+    temp_settings,
+    services_with_fake_external_vision_runtime,
+    sample_attachment_sources,
+    capsys,
+) -> None:
+    scan_code = main(["scan", "--json"], settings=temp_settings, services=services_with_fake_external_vision_runtime)
+    scan_payload = json.loads(capsys.readouterr().out)
+    assert scan_code == 0
+    vision_model_id = next(
+        manifest["model_id"]
+        for manifest in scan_payload["manifests"]
+        if manifest["display_name"] == "qwen2-vl-vision-mlx"
+    )
+
+    exit_code = main(
+        [
+            "chat",
+            "Describe the attached image",
+            "--model",
+            vision_model_id,
+            "--attach-image",
+            str(sample_attachment_sources["image_one"]),
+            "--json",
+        ],
+        settings=temp_settings,
+        services=services_with_fake_external_vision_runtime,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["output_text"].startswith("Adapter vision echo:")
+    bridge_runtime = services_with_fake_external_vision_runtime.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    assert bridge_runtime is not None
+    user_message = next(
+        message for message in bridge_runtime.captured_requests[-1].messages if message.role == "user" and message.attachments
+    )
+    assert user_message.attachments[0].name == sample_attachment_sources["image_one"].name
 
 
 def test_cli_benchmark_all_repeat_emits_multi_pass_suite_payload(
@@ -1594,11 +1659,17 @@ def test_cli_doctor_emits_performance_features_json(
         item["feature"]: item
         for item in payload["runtime_stats"]["performance_features"]
     }
+    performance_core_evidence = {
+        item["family"]: item
+        for item in payload["runtime_stats"]["performance_core_evidence"]
+    }
     assert "artifact_summary" in payload["runtime_stats"]["benchmark_summary"]
     assert performance_features["request_scheduling_and_backpressure"]["supported"] is True
     assert performance_features["prefix_cache"]["supported"] is True
     assert performance_features["prefix_cache"]["active"] is False
     assert "measured_capability_registry" in payload["runtime_stats"]
+    assert "continuous_batching" in performance_core_evidence
+    assert "constrained_decoding" in performance_core_evidence
 
 
 def test_cli_doctor_reports_mlx_kv_cache_and_prefill_support(
@@ -1656,6 +1727,116 @@ def test_cli_chat_json_includes_reasoning_when_requested(
         "content": None,
         "summary": "Inspect the prompt before replying.",
     }
+
+
+def test_cli_chat_json_reports_decode_time_structured_output(
+    temp_settings,
+    services_with_fake_runtime,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    response_format_path = tmp_path / "response-format.json"
+    response_format_path.write_text(
+        json.dumps(
+            {
+                "type": "json_schema",
+                "name": "cli_probe",
+                "schema": {
+                    "type": "object",
+                    "properties": {"status": {"type": "string", "const": "ok"}},
+                    "required": ["status"],
+                    "additionalProperties": False,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    scan_code = main(["scan", "--json"], settings=temp_settings, services=services_with_fake_runtime)
+    scan_payload = json.loads(capsys.readouterr().out)
+    assert scan_code == 0
+    gguf_model_id = next(
+        manifest["model_id"]
+        for manifest in scan_payload["manifests"]
+        if manifest["format_type"] == "gguf"
+    )
+
+    exit_code = main(
+        [
+            "chat",
+            "Return the probe object.",
+            "--model",
+            gguf_model_id,
+            "--response-format-file",
+            str(response_format_path),
+            "--json",
+        ],
+        settings=temp_settings,
+        services=services_with_fake_runtime,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["structured_output"]["contract"]["type"] == "json_schema"
+    assert payload["structured_output"]["enforcement"] == "decode_time"
+    assert payload["structured_output"]["decoder_enforced"] is True
+    assert payload["structured_output"]["fallback_used"] is False
+    assert payload["structured_output"]["validation"]["state"] == "valid"
+
+
+def test_cli_chat_human_output_reports_prompt_guided_structured_output_fallback(
+    temp_settings,
+    sample_models_root: Path,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    services = bootstrap_services(
+        temp_settings,
+        runtime_overrides={RuntimeAffinity.LLAMACPP: PromptGuidedLlamaRuntime()},
+    )
+    response_format_path = tmp_path / "response-format.json"
+    response_format_path.write_text(
+        json.dumps(
+            {
+                "type": "json_schema",
+                "name": "cli_probe",
+                "schema": {
+                    "type": "object",
+                    "properties": {"status": {"type": "string", "const": "ok"}},
+                    "required": ["status"],
+                    "additionalProperties": False,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    try:
+        scan_code = main(["scan", "--json"], settings=temp_settings, services=services)
+        scan_payload = json.loads(capsys.readouterr().out)
+        assert scan_code == 0
+        gguf_model_id = next(
+            manifest["model_id"]
+            for manifest in scan_payload["manifests"]
+            if manifest["format_type"] == "gguf"
+        )
+
+        exit_code = main(
+            [
+                "chat",
+                "Return the probe object.",
+                "--model",
+                gguf_model_id,
+                "--response-format-file",
+                str(response_format_path),
+            ],
+            settings=temp_settings,
+            services=services,
+        )
+        output = capsys.readouterr().out
+    finally:
+        services.close()
+
+    assert exit_code == 0
+    assert "structured output: json_schema (prompt_guided, validation=invalid) fallback" in output
 
 
 def test_cli_main_closes_owned_bootstrapped_services(temp_settings, monkeypatch, capsys) -> None:

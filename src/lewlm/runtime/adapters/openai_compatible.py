@@ -6,7 +6,7 @@ import asyncio
 import base64
 from io import BytesIO
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from secrets import token_hex
 import threading
 from typing import Any, cast
@@ -37,12 +37,14 @@ from lewlm.core.contracts import (
     RerankResult,
     RuntimeAffinity,
     RuntimeCandidateReport,
+    RuntimeReadinessState,
     normalize_performance_feature_ownership,
     normalize_runtime_performance_feature_report,
     runtime_performance_feature_report,
 )
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
+from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _SUPPORTED_SYSTEMS = ("Darwin", "Linux", "Windows")
@@ -72,6 +74,7 @@ _PERFORMANCE_FEATURE_ORDER = (
     "kv_cache_quantization",
     "prefill_optimization",
     "speculative_decoding",
+    "constrained_decoding",
 )
 _FEATURE_LABELS = {
     "continuous_batching": "continuous batching",
@@ -80,6 +83,7 @@ _FEATURE_LABELS = {
     "kv_cache_quantization": "KV cache quantization",
     "prefill_optimization": "prefill optimization",
     "speculative_decoding": "speculative decoding",
+    "constrained_decoding": "constrained decoding",
 }
 _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]] = {
     "openai_compatible": {
@@ -107,6 +111,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not mapped through the local compatibility contract.",
         ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output requests can survive through prompt-guided fallback, but decoder-level constrained decoding is not preserved across the compatibility layer.",
+        ),
     },
     "vmlx": {
         "continuous_batching": (
@@ -132,6 +140,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
         "speculative_decoding": (
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not part of the adapter contract yet.",
+        ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "The adapter can preserve the structured-output contract, but decode-time token constraints remain owned by the upstream server and are not portable through LewLM.",
         ),
     },
     "omlx": {
@@ -159,6 +171,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding controls are not preserved through the compatibility layer.",
         ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but the adapter cannot claim portable decode-time constrained decoding for the upstream runtime.",
+        ),
     },
     "vllm_mlx": {
         "continuous_batching": (
@@ -184,6 +200,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
         "speculative_decoding": (
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding remains outside the adapter contract.",
+        ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but decode-time token constraints are not preserved through the adapter contract.",
         ),
     },
     "vllm_local": {
@@ -211,6 +231,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding may exist upstream, but the current adapter contract does not preserve those controls.",
         ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but decode-time token constraints are not preserved through the adapter contract.",
+        ),
     },
     "sglang_local": {
         "continuous_batching": (
@@ -236,6 +260,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
         "speculative_decoding": (
             PerformanceFeatureOwnership.UNSUPPORTED,
             "Speculative decoding remains outside the current adapter contract even when the local server supports it internally.",
+        ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but decoder-level constrained decoding does not cross the adapter boundary as a portable LewLM contract.",
         ),
     },
 }
@@ -342,6 +370,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         except RuntimeUnavailableError as exc:
             return report.model_copy(
                 update={
+                    "available": False,
+                    "readiness_state": RuntimeReadinessState.RUNTIME_UNAVAILABLE,
                     "supports_manifest": False,
                     "availability_reason": str(exc),
                 },
@@ -369,7 +399,17 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 metrics={
                     "adapter_profile": self._settings.external_accelerator_profile,
                     "contract": "openai_compatible_local",
+                    **(
+                        {
+                            "decoder_enforced": False,
+                            "fallback_used": True,
+                            "enforcement": "prompt_guided",
+                        }
+                        if feature_name == "constrained_decoding"
+                        else {}
+                    ),
                 },
+                modes=(["prompt_guided"] if feature_name == "constrained_decoding" else []),
                 notes=(
                     [
                         "LewLM reports only the portable contract preserved across the loopback adapter boundary; deeper scheduler or cache internals remain owned by the upstream server."
@@ -379,6 +419,22 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 ),
             )
         return snapshot
+
+    def structured_output_runtime_status(
+        self,
+        contract: StructuredOutputRequest | None,
+    ) -> StructuredOutputRuntimeStatus | None:
+        if contract is None or contract.type == "text":
+            return None
+        _, reason = _profile_feature_map(self._settings)["constrained_decoding"]
+        return StructuredOutputRuntimeStatus(
+            runtime=self.name,
+            mode=contract.type,
+            enforcement="prompt_guided",
+            decoder_enforced=False,
+            fallback_used=True,
+            fallback_reason=f"{reason} This remains a loopback adapter boundary rather than packaged decode-time parity.",
+        )
 
     def supports_capability(self, capability: CapabilityName) -> bool:
         if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
@@ -408,6 +464,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 else f"No advertised local model accepted `{capability.value}` through the adapter contract."
             )
         return False
+
+    def _record_structured_output_runtime(self, request: GenerateRequest) -> None:
+        status = self.structured_output_runtime_status(request.structured_output)
+        if status is None:
+            return
+        request.metadata["structured_output_runtime"] = status.model_dump(mode="json")
 
     def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool:
         if not self.supports_manifest(manifest):
@@ -474,10 +536,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
     async def _generate(self, request: GenerateRequest) -> GenerateResponse:
         manifest = self._loaded_manifests[request.model_id]
+        self._record_structured_output_runtime(request)
         return await self._generate_with_manifest(manifest, request)
 
     async def _stream_generate(self, request: GenerateRequest):
         manifest = self._loaded_manifests[request.model_id]
+        self._record_structured_output_runtime(request)
         remote_model_id = self._require_remote_model_id(manifest)
         payload = self._chat_payload(remote_model_id=remote_model_id, request=request, stream=True)
         queue: asyncio.Queue[object] = asyncio.Queue()
@@ -528,6 +592,21 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         data_payload = payload.get("data", payload.get("embeddings", payload.get("vectors", [])))
         usage_payload = payload.get("usage", {})
         vectors = _normalize_embedding_payload(data_payload)
+        if len(vectors) != len(request.inputs):
+            raise RuntimeUnavailableError(
+                _semantic_invalid_payload_reason(
+                    capability=CapabilityName.EMBEDDINGS,
+                    remote_model_id=remote_model_id,
+                ),
+                details={
+                    "runtime": self.name,
+                    "model_id": request.model_id,
+                    "remote_model_id": remote_model_id,
+                    "capability": CapabilityName.EMBEDDINGS.value,
+                    "vector_count": len(vectors),
+                    "input_count": len(request.inputs),
+                },
+            )
         usage = _normalize_usage(usage_payload)
         prompt_tokens = usage.get("prompt_tokens", sum(max(1, len(text.split())) for text in request.inputs))
         return EmbeddingResponse(
@@ -583,12 +662,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         if not supported:
             raise RuntimeUnavailableError(
                 reason or "The configured external accelerator could not satisfy `audio_transcription`.",
-                details={
-                    "runtime": self.name,
-                    "model_id": request.model_id,
-                    "remote_model_id": remote_model_id,
-                    "capability": CapabilityName.AUDIO_TRANSCRIPTION.value,
-                },
+                details=_bridge_capability_error_details(
+                    runtime_name=self.name,
+                    model_id=request.model_id,
+                    remote_model_id=remote_model_id,
+                    capability=CapabilityName.AUDIO_TRANSCRIPTION,
+                ),
             )
         payload = await asyncio.to_thread(
             self._request_multipart_json,
@@ -619,12 +698,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         if not supported:
             raise RuntimeUnavailableError(
                 reason or "The configured external accelerator could not satisfy `audio_speech`.",
-                details={
-                    "runtime": self.name,
-                    "model_id": request.model_id,
-                    "remote_model_id": remote_model_id,
-                    "capability": CapabilityName.AUDIO_SPEECH.value,
-                },
+                details=_bridge_capability_error_details(
+                    runtime_name=self.name,
+                    model_id=request.model_id,
+                    remote_model_id=remote_model_id,
+                    capability=CapabilityName.AUDIO_SPEECH,
+                ),
             )
         audio_bytes, media_type = await asyncio.to_thread(
             self._request_bytes,
@@ -710,6 +789,17 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             resolved = available_ids.get(candidate.casefold())
             if resolved is not None:
                 return resolved
+        record_candidates: dict[str, str] = {}
+        for record in self._available_remote_model_records():
+            model_id = record.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            for candidate in _remote_record_candidates(record):
+                record_candidates.setdefault(candidate.casefold(), model_id)
+        for candidate in _remote_model_candidates(manifest):
+            resolved = record_candidates.get(candidate.casefold())
+            if resolved is not None:
+                return resolved
         return None
 
     def _available_remote_models(self) -> tuple[str, ...]:
@@ -731,6 +821,11 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovered_model_records = tuple(discovered_records)
         self._discovery_error = None
         return self._discovered_model_ids
+
+    def _available_remote_model_records(self) -> tuple[dict[str, Any], ...]:
+        if self._discovered_model_records is None:
+            self._available_remote_models()
+        return self._discovered_model_records or ()
 
     def _probe_remote_model_capability(
         self,
@@ -790,9 +885,9 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             self._model_capability_reason_cache[cache_key] = reason
             return False, reason
         if not supported:
-            reason = (
-                f"The configured external accelerator returned an invalid `{capability.value}` payload "
-                f"for local model `{remote_model_id}`."
+            reason = _semantic_invalid_payload_reason(
+                capability=capability,
+                remote_model_id=remote_model_id,
             )
         self._model_capability_support_cache[cache_key] = supported
         self._model_capability_reason_cache[cache_key] = reason
@@ -920,8 +1015,9 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             request_headers["Content-Type"] = "application/json"
         elif body is not None:
             data = body
+        request_url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
         request = Request(
-            urljoin(base_url.rstrip("/") + "/", path.lstrip("/")),
+            request_url,
             data=data,
             headers=request_headers,
             method=method,
@@ -932,12 +1028,17 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             body = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeUnavailableError(
                 f"External accelerator request failed with HTTP {exc.code}.",
-                details={"runtime": self.name, "path": path, "body": body},
+                details={"runtime": self.name, "path": path, "body": body, "status_code": exc.code},
             ) from exc
         except URLError as exc:
             self._discovered_model_ids = ()
             self._discovered_model_records = ()
             self._discovery_error = str(exc.reason)
+            if isinstance(exc.reason, ConnectionRefusedError):
+                raise RuntimeUnavailableError(
+                    f"The configured external accelerator endpoint `{request_url}` refused the connection.",
+                    details={"runtime": self.name, "path": path, "reason": str(exc.reason)},
+                ) from exc
             raise RuntimeUnavailableError(
                 "Could not reach the configured external accelerator endpoint.",
                 details={"runtime": self.name, "path": path, "reason": str(exc.reason)},
@@ -966,15 +1067,43 @@ def _remote_model_candidates(manifest: ModelManifest) -> tuple[str, ...]:
     source_display_name = manifest.metadata.get("source_display_name")
     if isinstance(source_display_name, str) and source_display_name:
         candidates.append(source_display_name)
-    source_path = Path(manifest.source_path)
-    candidates.extend((manifest.model_id, manifest.display_name, source_path.name, source_path.stem))
+    candidates.extend((manifest.model_id, manifest.display_name, *_portable_path_name_candidates(manifest.source_path)))
     for layer in manifest.artifact_lineage:
-        candidates.extend((layer.display_name, Path(layer.source_path).name, Path(layer.source_path).stem))
+        candidates.extend((layer.display_name, *_portable_path_name_candidates(layer.source_path)))
     deduped: list[str] = []
     for candidate in candidates:
         if candidate not in deduped:
             deduped.append(candidate)
     return tuple(deduped)
+
+
+def _remote_record_candidates(record: dict[str, Any]) -> tuple[str, ...]:
+    candidates: list[str] = []
+    model_id = record.get("id")
+    if isinstance(model_id, str) and model_id:
+        candidates.append(model_id)
+    root = record.get("root")
+    if isinstance(root, str) and root:
+        candidates.extend(_portable_path_name_candidates(root))
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        aliases = metadata.get("aliases")
+        if isinstance(aliases, list):
+            candidates.extend(item for item in aliases if isinstance(item, str) and item)
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return tuple(deduped)
+
+
+def _portable_path_name_candidates(raw_path: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for pure_path in (PurePosixPath(raw_path), PureWindowsPath(raw_path)):
+        for item in (pure_path.name, pure_path.stem):
+            if item and item not in candidates:
+                candidates.append(item)
+    return tuple(candidates)
 
 
 def _feature_entry(payload: Any) -> dict[str, Any]:
@@ -1059,10 +1188,156 @@ def _semantic_probe_failure_reason(
     path = _SEMANTIC_ENDPOINTS[capability]
     body = error.details.get("body") if isinstance(error.details, dict) else None
     response_detail = f" Upstream response: {body}" if isinstance(body, str) and body else ""
+    if capability == CapabilityName.VISION:
+        return _vision_probe_failure_reason(
+            error=error,
+            remote_model_id=remote_model_id,
+            path=path,
+            response_detail=response_detail,
+        )
+    if capability in {CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH}:
+        return _audio_probe_failure_reason(
+            capability=capability,
+            error=error,
+            remote_model_id=remote_model_id,
+            path=path,
+            response_detail=response_detail,
+        )
     return (
         f"The configured external accelerator could not satisfy `{capability.value}` for local model "
-        f"`{remote_model_id}` via `{path}`.{response_detail}"
+        f"`{remote_model_id}` via `{path}`. {_bridge_endpoint_sentence(capability)}{response_detail}"
     )
+
+
+def _vision_probe_failure_reason(
+    *,
+    error: RuntimeUnavailableError,
+    remote_model_id: str,
+    path: str,
+    response_detail: str,
+) -> str:
+    details = error.details if isinstance(error.details, dict) else {}
+    status_code = details.get("status_code")
+    body = details.get("body")
+    normalized_body = body.casefold() if isinstance(body, str) else ""
+    if status_code == 404:
+        return (
+            f"The configured external accelerator did not expose `{path}` for local model `{remote_model_id}`. "
+            "LewLM's bridge-only vision path requires a compatible loopback server that accepts OpenAI-style image "
+            f"content blocks on that endpoint.{response_detail}"
+        )
+    if status_code in {400, 415, 422} and any(
+        token in normalized_body
+        for token in ("image", "image_url", "vision", "multimodal", "content block", "content blocks")
+    ):
+        return (
+            f"The configured external accelerator reached `{path}`, but local model `{remote_model_id}` rejected "
+            "OpenAI-style image content blocks. LewLM's bridge-only vision path requires a compatible server/model "
+            f"pair that accepts `image_url` parts on that route.{response_detail}"
+        )
+    return (
+        f"The configured external accelerator could not satisfy `vision` for local model `{remote_model_id}` via "
+        f"`{path}`.{response_detail}"
+    )
+
+
+def _audio_probe_failure_reason(
+    *,
+    capability: CapabilityName,
+    error: RuntimeUnavailableError,
+    remote_model_id: str,
+    path: str,
+    response_detail: str,
+) -> str:
+    details = error.details if isinstance(error.details, dict) else {}
+    status_code = details.get("status_code")
+    body = details.get("body")
+    normalized_body = body.casefold() if isinstance(body, str) else ""
+    audio_label = "speech synthesis" if capability == CapabilityName.AUDIO_SPEECH else "audio transcription"
+    if status_code == 404:
+        return (
+            f"The configured external accelerator did not expose `{path}` for local model `{remote_model_id}`. "
+            f"LewLM's bridge-only non-Apple {audio_label} path requires a compatible loopback server that implements "
+            f"that endpoint.{response_detail}"
+        )
+    if status_code in {400, 415, 422} and any(
+        token in normalized_body
+        for token in ("audio", "multipart", "file", "speech", "voice", "wav", "transcription", "tts", "stt")
+    ):
+        return (
+            f"The configured external accelerator reached `{path}`, but local model `{remote_model_id}` rejected "
+            f"the bridge-backed {audio_label} probe. LewLM expects a compatible server/model pair on that loopback "
+            f"endpoint.{response_detail}"
+        )
+    return (
+        f"The configured external accelerator could not satisfy `{capability.value}` for local model "
+        f"`{remote_model_id}` via `{path}`. {_bridge_endpoint_sentence(capability)}{response_detail}"
+    )
+
+
+def _semantic_invalid_payload_reason(*, capability: CapabilityName, remote_model_id: str) -> str:
+    path = _SEMANTIC_ENDPOINTS[capability]
+    return (
+        f"The configured external accelerator returned an invalid `{capability.value}` payload for local model "
+        f"`{remote_model_id}` via `{path}`. {_bridge_endpoint_sentence(capability)}"
+    )
+
+
+def _bridge_endpoint_sentence(capability: CapabilityName) -> str:
+    path = _SEMANTIC_ENDPOINTS[capability]
+    if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+        return (
+            f"LewLM expects a compatible loopback `{path}` endpoint for this bridge-backed audio-transcription path. "
+            "This remains the intentionally narrower non-Apple audio parity boundary."
+        )
+    if capability == CapabilityName.AUDIO_SPEECH:
+        return (
+            f"LewLM expects a compatible loopback `{path}` endpoint for this bridge-backed speech path. "
+            "This remains the intentionally narrower non-Apple audio parity boundary."
+        )
+    if capability == CapabilityName.EMBEDDINGS:
+        return f"LewLM expects a compatible loopback `{path}` endpoint for adapter-backed embeddings."
+    if capability == CapabilityName.RERANK:
+        return f"LewLM expects a compatible loopback `{path}` endpoint or equivalent extension for adapter-backed rerank."
+    return f"LewLM expects a compatible loopback `{path}` endpoint for this bridge-backed capability."
+
+
+def _bridge_capability_error_details(
+    *,
+    runtime_name: str,
+    model_id: str,
+    remote_model_id: str,
+    capability: CapabilityName,
+) -> dict[str, Any]:
+    path = _SEMANTIC_ENDPOINTS[capability]
+    details: dict[str, Any] = {
+        "runtime": runtime_name,
+        "model_id": model_id,
+        "remote_model_id": remote_model_id,
+        "capability": capability.value,
+        "support_path": "bridge",
+        "expected_endpoint": path,
+        "fallback_guidance": list(_bridge_capability_guidance(capability)),
+    }
+    if capability in {CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH}:
+        details["bridge_only"] = True
+        details["parity_contract"] = "bridge_only_audio"
+    return details
+
+
+def _bridge_capability_guidance(capability: CapabilityName) -> tuple[str, ...]:
+    path = _SEMANTIC_ENDPOINTS[capability]
+    if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+        return (
+            f"Expose a compatible local `{path}` endpoint on the loopback server for bridge-backed transcription.",
+            "LewLM keeps non-Apple audio parity bridge-backed here and does not bundle the upstream STT server.",
+        )
+    if capability == CapabilityName.AUDIO_SPEECH:
+        return (
+            f"Expose a compatible local `{path}` endpoint on the loopback server for bridge-backed speech synthesis.",
+            "LewLM keeps non-Apple audio parity bridge-backed here and does not bundle the upstream TTS server.",
+        )
+    return (f"Expose a compatible local `{path}` endpoint on the loopback server.",)
 
 
 def _normalize_usage(payload: Any) -> dict[str, int]:
@@ -1162,22 +1437,44 @@ def _message_payload(message: Any) -> dict[str, Any]:
 def _image_message_parts(attachment: Any) -> list[dict[str, Any]]:
     source_path = getattr(attachment, "source_path", None)
     if not isinstance(source_path, str) or not source_path:
-        return []
+        raise RuntimeUnavailableError(
+            "Image attachments on the external accelerator bridge require a readable local `source_path`.",
+            details={"attachment_name": getattr(attachment, "name", None)},
+        )
     source = Path(source_path).expanduser().resolve(strict=False)
+    if not source.exists():
+        raise RuntimeUnavailableError(
+            "Image attachment path does not exist for the external accelerator bridge.",
+            details={"source_path": str(source)},
+        )
     candidate_paths = _expanded_image_paths(source)
+    if not candidate_paths:
+        raise RuntimeUnavailableError(
+            "The external accelerator bridge could not find any local image files at the attachment path.",
+            details={"source_path": str(source)},
+        )
     parts: list[dict[str, Any]] = []
     default_media_type = getattr(attachment, "media_type", None)
+    detail = _image_detail_value(attachment)
     for candidate in candidate_paths:
         image_path = Path(candidate)
         if not image_path.exists() or not image_path.is_file():
             continue
         media_type = _image_media_type(image_path, default_media_type=default_media_type)
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        image_url_payload: dict[str, Any] = {"url": f"data:{media_type};base64,{encoded}"}
+        if detail is not None:
+            image_url_payload["detail"] = detail
         parts.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{media_type};base64,{encoded}"},
+                "image_url": image_url_payload,
             },
+        )
+    if not parts:
+        raise RuntimeUnavailableError(
+            "The external accelerator bridge could not encode any local image files from the attachment path.",
+            details={"source_path": str(source)},
         )
     return parts
 
@@ -1200,6 +1497,18 @@ def _image_media_type(path: Path, *, default_media_type: str | None) -> str:
     return _IMAGE_SUFFIX_MEDIA_TYPES.get(path.suffix.casefold(), "image/png")
 
 
+def _image_detail_value(attachment: Any) -> str | None:
+    detail = getattr(attachment, "detail", None)
+    if detail is None:
+        metadata = getattr(attachment, "metadata", None)
+        if isinstance(metadata, dict):
+            detail = metadata.get("detail")
+    if not isinstance(detail, str):
+        return None
+    normalized = detail.casefold()
+    return normalized if normalized in {"auto", "low", "high"} else None
+
+
 def _normalize_content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -1217,6 +1526,11 @@ def _normalize_content_text(content: Any) -> str:
             text = item.get("text")
             if isinstance(text, str) and text:
                 text_parts.append(text)
+                continue
+            if isinstance(text, dict):
+                value = text.get("value")
+                if isinstance(value, str) and value:
+                    text_parts.append(value)
     return "\n".join(text_parts)
 
 

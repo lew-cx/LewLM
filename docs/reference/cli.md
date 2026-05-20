@@ -48,6 +48,7 @@ Starts the local FastAPI service.
 Operator diagnostics for:
 
 - active install-profile summary
+- current-host recommended feature paths for chat, semantic text, vision, audio, and structured output
 - runtime-pack and feature-pack status
 - resolved configuration
 - runtime availability
@@ -100,6 +101,8 @@ The richest interactive command. It can use:
 - MCP-style tool metadata
 - local attachments
 - reasoning visibility controls
+
+When a chat request includes `--response-format-file` or `--output-schema-file`, `lewlm chat --json` now includes the same `structured_output` payload exposed by the HTTP and Python surfaces. The default human-readable output also prints a concise structured-output status line so decode-time enforcement and prompt-guided fallback are distinguishable without inspecting internal metadata.
 
 ### `generate-doc` and `transform`
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from conftest import FakeLlamaCppRuntime, FakeMLXSemanticRuntime
+from conftest import FakeLlamaCppRuntime, FakeMLXAudioRuntime, FakeMLXSemanticRuntime
 from lewlm.core.contracts import (
     ArchitectureSubtype,
     CapabilityName,
@@ -19,6 +19,7 @@ from lewlm.core.contracts import (
     RuntimeCandidateReport,
     RuntimeAffinity,
     RuntimeReadinessState,
+    RuntimeSupportPath,
     ValidationState,
 )
 from lewlm.routing.service import ModelRouter
@@ -415,6 +416,228 @@ def test_model_router_can_route_semantic_models_through_external_adapter(temp_se
     assert rerank_readiness.available_runtime_names == ["local_external_adapter"]
 
 
+def test_model_router_prefers_packaged_semantic_gguf_path_and_reports_bridge_alternative(temp_settings) -> None:
+    embedding_manifest = _manifest(
+        model_id="gguf-embed-demo",
+        display_name="gguf-embed-demo",
+        estimated_memory_mb=256,
+        format_type=ModelFormat.GGUF,
+        runtime_affinity=(RuntimeAffinity.LLAMACPP,),
+    ).model_copy(
+        update={
+            "architecture_family": "bge",
+            "modality": (ModelModality.EMBEDDING,),
+            "source_path": "X:\\models\\gguf-embed-demo.gguf",
+        },
+    )
+    rerank_manifest = _manifest(
+        model_id="gguf-rerank-demo",
+        display_name="gguf-rerank-demo",
+        estimated_memory_mb=256,
+        format_type=ModelFormat.GGUF,
+        runtime_affinity=(RuntimeAffinity.LLAMACPP,),
+    ).model_copy(
+        update={
+            "architecture_family": "bge",
+            "modality": (ModelModality.RERANK,),
+            "source_path": "X:\\models\\gguf-rerank-demo.gguf",
+        },
+    )
+
+    class _FakePackagedSemanticGGUFRuntime(FakeMLXSemanticRuntime):
+        name = "fake_llamacpp_semantic"
+        affinity = RuntimeAffinity.LLAMACPP
+        supported_formats = (ModelFormat.GGUF,)
+        supported_modalities = (ModelModality.TEXT, ModelModality.EMBEDDING, ModelModality.RERANK)
+
+    class _FakeExternalSemanticBridgeRuntime(_FakePackagedSemanticGGUFRuntime):
+        name = "local_external_adapter"
+        affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+
+    router = ModelRouter(
+        model_registry=_StaticRegistry([embedding_manifest, rerank_manifest]),
+        runtime_catalog=RuntimeCatalog(
+            {
+                RuntimeAffinity.LLAMACPP: _FakePackagedSemanticGGUFRuntime(settings=temp_settings),
+                RuntimeAffinity.EXTERNAL_ACCELERATOR: _FakeExternalSemanticBridgeRuntime(settings=temp_settings),
+            },
+        ),
+        settings=temp_settings,
+    )
+
+    _, embedding_runtime, embedding_decision = router.route_embeddings(
+        embedding_manifest.model_id,
+        inputs=["semantic packaged"],
+    )
+    _, rerank_runtime, rerank_decision = router.route_rerank(
+        rerank_manifest.model_id,
+        query="semantic packaged",
+        documents=["one", "two"],
+    )
+    embedding_readiness = router.capability_readiness(CapabilityName.EMBEDDINGS)
+    rerank_readiness = router.capability_readiness(CapabilityName.RERANK)
+
+    assert embedding_runtime.affinity == RuntimeAffinity.LLAMACPP
+    assert embedding_decision.support_path == RuntimeSupportPath.PACKAGED
+    assert rerank_runtime.affinity == RuntimeAffinity.LLAMACPP
+    assert rerank_decision.support_path == RuntimeSupportPath.PACKAGED
+    assert embedding_readiness.bridge_only is False
+    assert embedding_readiness.available_support_paths == [RuntimeSupportPath.PACKAGED, RuntimeSupportPath.BRIDGE]
+    assert embedding_readiness.packaged_runtime_names == ["fake_llamacpp_semantic"]
+    assert embedding_readiness.bridge_runtime_names == ["local_external_adapter"]
+    assert rerank_readiness.bridge_only is False
+    assert rerank_readiness.available_support_paths == [RuntimeSupportPath.PACKAGED, RuntimeSupportPath.BRIDGE]
+
+
+def test_model_router_can_route_audio_models_through_external_adapter(temp_settings) -> None:
+    manifest = _manifest(
+        model_id="audio-demo",
+        display_name="audio-demo",
+        estimated_memory_mb=256,
+        format_type=ModelFormat.AUDIO_FOLDER,
+        runtime_affinity=(RuntimeAffinity.MLX_AUDIO,),
+    ).model_copy(
+        update={
+            "architecture_family": "whisper",
+            "modality": (ModelModality.AUDIO,),
+            "source_path": "/tmp/audio-demo",
+        },
+    )
+    router = ModelRouter(
+        model_registry=_StaticRegistry([manifest]),
+        runtime_catalog=RuntimeCatalog(
+            {
+                RuntimeAffinity.EXTERNAL_ACCELERATOR: _FakeExternalAudioBridgeRuntime(),
+            },
+        ),
+        settings=temp_settings,
+    )
+
+    selected_manifest, transcription_runtime, transcription_decision = router.route_audio_transcription(manifest.model_id)
+    _, speech_runtime, speech_decision = router.route_audio_speech(manifest.model_id)
+    capability_report = router.model_capability_report(manifest.model_id)
+    transcription_readiness = router.capability_readiness(CapabilityName.AUDIO_TRANSCRIPTION)
+    speech_readiness = router.capability_readiness(CapabilityName.AUDIO_SPEECH)
+    capability_by_name = {item.capability: item for item in capability_report.capabilities}
+
+    assert selected_manifest.model_id == manifest.model_id
+    assert transcription_runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    assert transcription_decision.support_path == RuntimeSupportPath.BRIDGE
+    assert speech_runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    assert speech_decision.support_path == RuntimeSupportPath.BRIDGE
+    assert capability_by_name[CapabilityName.AUDIO_TRANSCRIPTION].support_path == RuntimeSupportPath.BRIDGE
+    assert capability_by_name[CapabilityName.AUDIO_SPEECH].support_path == RuntimeSupportPath.BRIDGE
+    assert transcription_readiness.ready is True
+    assert transcription_readiness.bridge_only is True
+    assert transcription_readiness.available_support_paths == [RuntimeSupportPath.BRIDGE]
+    assert transcription_readiness.bridge_runtime_names == ["local_external_adapter"]
+    assert "bridge-backed external audio path" in transcription_readiness.reason
+    assert any("/v1/audio/transcriptions" in note for note in transcription_readiness.notes)
+    assert speech_readiness.ready is True
+    assert speech_readiness.bridge_only is True
+    assert "bridge-backed external audio path" in speech_readiness.reason
+    assert any("/v1/audio/speech" in note for note in speech_readiness.notes)
+
+
+def test_model_router_prefers_decode_time_structured_output_path_when_auto_selecting(
+    temp_settings,
+    monkeypatch,
+) -> None:
+    router = ModelRouter(
+        model_registry=_StaticRegistry(
+            [
+                _manifest(
+                    model_id="mlx-chat",
+                    display_name="aaa-mlx-chat",
+                    estimated_memory_mb=512,
+                    format_type=ModelFormat.MLX,
+                    runtime_affinity=(RuntimeAffinity.MLX_TEXT,),
+                ),
+                _manifest(
+                    model_id="gguf-chat",
+                    display_name="zzz-gguf-chat",
+                    estimated_memory_mb=512,
+                    format_type=ModelFormat.GGUF,
+                    runtime_affinity=(RuntimeAffinity.LLAMACPP,),
+                ),
+            ],
+        ),
+        runtime_catalog=RuntimeCatalog(
+            {
+                RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=temp_settings),
+                RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
+            },
+        ),
+        settings=temp_settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 16_384)
+
+    plain_manifest, plain_runtime, _ = router.route_chat(
+        None,
+        messages=[GenerateMessage(role="user", content="hello")],
+        max_tokens=32,
+    )
+    structured_manifest, structured_runtime, structured_decision = router.route_chat(
+        None,
+        messages=[GenerateMessage(role="user", content="return JSON")],
+        max_tokens=32,
+        structured_output_requested=True,
+    )
+    explicit_manifest, explicit_runtime, _ = router.route_chat(
+        "mlx-chat",
+        messages=[GenerateMessage(role="user", content="return JSON")],
+        max_tokens=32,
+        structured_output_requested=True,
+    )
+
+    assert plain_manifest.model_id == "mlx-chat"
+    assert plain_runtime.affinity == RuntimeAffinity.MLX_TEXT
+    assert structured_manifest.model_id == "gguf-chat"
+    assert structured_runtime.affinity == RuntimeAffinity.LLAMACPP
+    assert "decode-time structured output available" in structured_decision.reason
+    assert explicit_manifest.model_id == "mlx-chat"
+    assert explicit_runtime.affinity == RuntimeAffinity.MLX_TEXT
+
+
+def test_model_router_reports_bridge_backed_vision_support_on_external_adapter(temp_settings, monkeypatch) -> None:
+    manifest = _multimodal_manifest()
+    router = ModelRouter(
+        model_registry=_StaticRegistry([manifest]),
+        runtime_catalog=RuntimeCatalog(
+            {
+                RuntimeAffinity.EXTERNAL_ACCELERATOR: _FakeExternalVisionBridgeRuntime(),
+            },
+        ),
+        settings=temp_settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 16_384)
+
+    _, runtime, decision = router.route_chat(
+        manifest.model_id,
+        messages=[
+            GenerateMessage(
+                role="user",
+                content="Describe this image",
+                attachments=[GenerateAttachment(attachment_type="image", name="sample.png", source_path="/tmp/sample.png")],
+            ),
+        ],
+        max_tokens=32,
+    )
+    capability_report = router.model_capability_report(manifest.model_id)
+    vision_capability = next(item for item in capability_report.capabilities if item.capability == CapabilityName.VISION)
+    readiness = router.capability_readiness(CapabilityName.VISION)
+
+    assert runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    assert decision.request_modality == RequestModality.IMAGE_CONDITIONED
+    assert decision.support_path == RuntimeSupportPath.BRIDGE
+    assert vision_capability.runtime_affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    assert vision_capability.support_path == RuntimeSupportPath.BRIDGE
+    assert "bridge-backed" in vision_capability.reason
+    assert readiness.bridge_only is True
+    assert readiness.available_support_paths == [RuntimeSupportPath.BRIDGE]
+    assert "bridge-backed" in readiness.reason
+
+
 def test_model_router_readiness_surfaces_external_adapter_model_mismatch_reason(temp_settings) -> None:
     manifest = _manifest(
         model_id="mlx-demo",
@@ -667,6 +890,18 @@ class _FakeExternalTextBridgeRuntime(FakeLlamaCppRuntime):
     supported_formats = (ModelFormat.MLX, ModelFormat.GGUF)
 
 
+class _FakeExternalAudioBridgeRuntime(FakeMLXAudioRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF, ModelFormat.AUDIO_FOLDER)
+
+
+class _FakeExternalVisionBridgeRuntime(FakeMLXVisionRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF)
+
+
 class _MismatchedExternalAdapterRuntime(_FakeExternalTextBridgeRuntime):
     def supports_manifest(self, manifest: ModelManifest) -> bool:
         return False
@@ -685,6 +920,7 @@ class _MismatchedExternalAdapterRuntime(_FakeExternalTextBridgeRuntime):
             host_platform_supported=True,
             supported_systems=["Darwin", "Linux", "Windows"],
             supported_machines=[],
+            support_path=RuntimeSupportPath.BRIDGE,
             supports_manifest=False,
         )
 

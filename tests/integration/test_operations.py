@@ -21,7 +21,7 @@ from conftest import (
 from lewlm.api.app import create_app
 from lewlm.conversion.models import ConversionJobRequest, JobStatus
 from lewlm.core.bootstrap import bootstrap_services
-from lewlm.core.contracts import CapabilityName, GenerateMessage, GenerateRequest, GenerateResponse, ModelManifest, RuntimeAffinity
+from lewlm.core.contracts import CapabilityName, GenerateMessage, GenerateRequest, GenerateResponse, ModelFormat, ModelManifest, RuntimeAffinity
 from lewlm.core.errors import BackpressureError
 from lewlm.security.persistence import ENCRYPTED_FILE_MAGIC
 
@@ -33,6 +33,12 @@ class SlowFakeLlamaCppRuntime(FakeLlamaCppRuntime):
     async def _generate(self, request: GenerateRequest) -> GenerateResponse:
         await asyncio.sleep(0.05)
         return await super()._generate(request)
+
+
+class FakeExternalAudioRuntime(FakeMLXAudioRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF, ModelFormat.AUDIO_FOLDER)
 
 
 def _write_external_validation_manifest(
@@ -305,6 +311,43 @@ def test_runtime_stats_readiness_reports_multimodal_surfaces(app_with_fake_attac
     assert readiness["audio_speech"]["ready"] is True
 
 
+def test_runtime_stats_mark_nonapple_behavior_defaults_per_family(
+    temp_settings,
+    services_with_fake_runtime,
+) -> None:
+    app = create_app(temp_settings, services=services_with_fake_runtime)
+    with TestClient(app) as client:
+        scan_response = client.post("/v1/models/scan", json={})
+        manifests = scan_response.json()["manifests"]
+        gguf_model_id = next(manifest["model_id"] for manifest in manifests if manifest["format_type"] == "gguf")
+        recommendation = asyncio.run(
+            services_with_fake_runtime.telemetry_service.autotune(
+                model_id=gguf_model_id,
+                prompt="Non-Apple serving defaults",
+            ),
+        )
+        runtime_response = client.get("/v1/runtime/stats")
+
+    assert recommendation.runtime == "fake_llamacpp"
+    assert runtime_response.status_code == 200
+    runtime_payload = runtime_response.json()
+    optimization_defaults = runtime_payload["optimization_defaults"]["models"]
+    model_defaults = next(item for item in optimization_defaults if item["model_id"] == gguf_model_id)
+    assert model_defaults["decisions"]["prefix_reuse"]["status"] == "adopted"
+    assert model_defaults["decisions"]["prefix_reuse"]["benchmark_backed"] is True
+
+    runtime_strategy = runtime_payload["runtime_support_strategy"]
+    gguf_path = next(path for path in runtime_strategy["paths"] if path["path_id"] == "gguf_llamacpp")
+    evidence = {item["family"]: item for item in gguf_path["performance_core_evidence"]}
+
+    assert gguf_path["benchmark_backed_defaults"] is True
+    assert evidence["continuous_batching"]["mode"] == "backend_native"
+    assert evidence["continuous_batching"]["benchmark_backed"] is True
+    assert evidence["prefix_reuse"]["mode"] == "backend_native"
+    assert evidence["prefix_reuse"]["benchmark_backed"] is True
+    assert evidence["tiered_kv"]["benchmark_backed"] is False
+
+
 def test_runtime_stats_readiness_reports_external_semantic_bridge_surfaces(
     temp_settings,
     sample_multimodal_models_root: Path,
@@ -333,6 +376,36 @@ def test_runtime_stats_readiness_reports_external_semantic_bridge_surfaces(
     assert readiness["embeddings"]["available_runtime_names"] == ["local_external_adapter"]
     assert readiness["rerank"]["ready"] is True
     assert readiness["rerank"]["available_runtime_names"] == ["local_external_adapter"]
+
+
+def test_runtime_stats_readiness_reports_external_audio_bridge_surfaces(
+    temp_settings,
+    sample_multimodal_models_root: Path,
+) -> None:
+    services = bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalAudioRuntime(),
+        },
+    )
+    app = create_app(temp_settings, services=services)
+    try:
+        with TestClient(app) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            runtime_response = client.get("/v1/runtime/stats")
+    finally:
+        services.close()
+
+    assert scan_response.status_code == 200
+    readiness = {item["capability"]: item for item in runtime_response.json()["readiness"]["capabilities"]}
+    assert readiness["audio_transcription"]["ready"] is True
+    assert readiness["audio_transcription"]["bridge_only"] is True
+    assert readiness["audio_transcription"]["available_support_paths"] == ["bridge"]
+    assert readiness["audio_transcription"]["bridge_runtime_names"] == ["local_external_adapter"]
+    assert readiness["audio_speech"]["ready"] is True
+    assert readiness["audio_speech"]["bridge_only"] is True
+    assert "bridge-backed only" in " ".join(readiness["audio_speech"]["notes"])
 
 
 def test_runtime_stats_report_mlx_kv_cache_and_prefill_support(

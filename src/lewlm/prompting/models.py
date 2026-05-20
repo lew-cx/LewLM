@@ -135,6 +135,18 @@ class PromptCompilationRequest(BaseModel):
     mcp_tools_path: str | None = None
     include_trace: bool = False
 
+    def requests_structured_output(self) -> bool:
+        """Return whether the caller requested a non-text output contract."""
+
+        return any(
+            (
+                self.response_format is not None and self.response_format.type != "text",
+                self.response_format_path is not None,
+                self.output_schema is not None,
+                self.output_schema_path is not None,
+            ),
+        )
+
     def has_requested_overrides(self) -> bool:
         """Return whether the caller provided any explicit prompt override input."""
 
@@ -145,10 +157,7 @@ class PromptCompilationRequest(BaseModel):
                 self.pretext_path is not None,
                 self.system_prompt_file_path is not None,
                 self.skills_path is not None,
-                self.response_format is not None and self.response_format.type != "text",
-                self.response_format_path is not None,
-                self.output_schema is not None,
-                self.output_schema_path is not None,
+                self.requests_structured_output(),
                 bool(self.tools),
                 self.tools_path is not None,
                 bool(self.mcp_tools),

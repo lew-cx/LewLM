@@ -337,6 +337,10 @@ def _feature(payload: dict[str, object], feature_name: str) -> dict[str, object]
     return next(item for item in payload["performance_features"] if item["feature"] == feature_name)
 
 
+def _evidence(payload: dict[str, object], family_name: str) -> dict[str, object]:
+    return next(item for item in payload["performance_core_evidence"] if item["family"] == family_name)
+
+
 def test_cli_benchmark_diagnostics_text_cache_batching_and_prefill(
     temp_settings,
     services_with_fake_attachment_runtime,
@@ -392,6 +396,8 @@ def test_cli_benchmark_diagnostics_text_cache_batching_and_prefill(
     assert _feature(payload, "paged_kv_cache")["supported"] is True
     assert _feature(payload, "kv_cache_quantization")["supported"] is True
     assert _feature(payload, "prefill_optimization")["active"] is True
+    assert _evidence(payload, "continuous_batching")["family"] == "continuous_batching"
+    assert _evidence(payload, "prefill_isolation")["family"] == "prefill_isolation"
 
 
 def test_cli_benchmark_diagnostics_gguf_constrained_decoding(
@@ -422,6 +428,7 @@ def test_cli_benchmark_diagnostics_gguf_constrained_decoding(
     assert constrained_decoding["metrics"]["decoder_enforced"] is True
     assert constrained_decoding["metrics"]["fallback_used"] is False
     assert constrained_decoding["metrics"]["validation_state"] == "valid"
+    assert _evidence(payload, "constrained_decoding")["family"] == "constrained_decoding"
 
 
 def test_cli_benchmark_diagnostics_multimodal_chat_encoder_reuse(

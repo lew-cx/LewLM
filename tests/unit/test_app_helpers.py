@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -12,12 +13,33 @@ from types import SimpleNamespace
 import pytest
 
 from lewlm import LewLM, LewLMAppClient
-from lewlm.api.schemas.chat import ChatCompletionRequest, ChatMessage, ResponseCreateRequest
+from lewlm.app_helpers import LewLMAppClientHTTPError
+from lewlm.api.schemas.chat import (
+    ChatCompletionRequest,
+    ChatMessage,
+    InputImagePart,
+    InputTextPart,
+    ResponseCreateRequest,
+    ResponseInputMessage,
+)
 from lewlm.api.schemas.documents import DocumentIngestRequest, DocumentIngestResponse
 from lewlm.api.schemas.health import ConfigurationHealth, HealthResponse, StorageHealth
-from lewlm.api.schemas.multimodal import EmbeddingCreateRequest, RetrievalContextRequest, RerankCreateRequest
+from lewlm.api.schemas.multimodal import (
+    AudioSpeechCreateRequest,
+    AudioTranscriptionCreateRequest,
+    EmbeddingCreateRequest,
+    RetrievalContextRequest,
+    RerankCreateRequest,
+)
 from lewlm.core.citations import CitationContextPackage, GeneratedCitationReference
-from lewlm.core.contracts import GenerateResponse, ReasoningVisibility, RoutingDecision, RuntimeAffinity
+from lewlm.core.contracts import (
+    AudioTranscriptionSegment,
+    GenerateResponse,
+    ReasoningVisibility,
+    RoutingDecision,
+    RuntimeAffinity,
+)
+from lewlm.core.errors import LewLMError, PackUnavailableError
 from lewlm.core.execution_metadata import build_routed_execution_metadata
 from lewlm.documents.ingest.models import DocumentChunk, DocumentSourceType, IngestedDocumentSource
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
@@ -173,6 +195,8 @@ class _StubMultimodalOrchestrator:
         self.embed_calls: list[tuple[str | None, list[str]]] = []
         self.rerank_calls: list[tuple[str | None, str, list[str], int | None]] = []
         self.retrieve_context_calls: list[dict[str, object]] = []
+        self.transcribe_audio_calls: list[tuple[str | None, int, str, str | None, str | None]] = []
+        self.synthesize_speech_calls: list[tuple[str | None, str, str | None, str]] = []
 
     async def embed(self, *, model_id: str | None, inputs: list[str]):
         self.embed_calls.append((model_id, inputs))
@@ -293,6 +317,70 @@ class _StubMultimodalOrchestrator:
                 created=456,
                 requested_model_id=rerank_model_id,
                 routing=_routing(rerank_model_id or "rerank-model"),
+            ),
+        )
+
+    async def transcribe_audio(
+        self,
+        *,
+        model_id: str | None,
+        audio_bytes: bytes,
+        file_name: str,
+        language: str | None,
+        prompt: str | None,
+    ):
+        self.transcribe_audio_calls.append((model_id, len(audio_bytes), file_name, language, prompt))
+        text = f"Transcribed {file_name}"
+        return SimpleNamespace(
+            request_id="transcribe-1",
+            created_at=567,
+            response=SimpleNamespace(
+                model_id=model_id or "audio-model",
+                text=text,
+                language=language or "en",
+                duration_seconds=1.0,
+                segments=[
+                    AudioTranscriptionSegment(
+                        start_seconds=0.0,
+                        end_seconds=1.0,
+                        text=text,
+                    ),
+                ],
+            ),
+            routing=_routing(model_id or "audio-model", affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
+            metadata=build_routed_execution_metadata(
+                request_id="transcribe-1",
+                created=567,
+                requested_model_id=model_id,
+                routing=_routing(model_id or "audio-model", affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
+            ),
+        )
+
+    async def synthesize_speech(
+        self,
+        *,
+        model_id: str | None,
+        input_text: str,
+        voice: str | None,
+        audio_format: str,
+    ):
+        self.synthesize_speech_calls.append((model_id, input_text, voice, audio_format))
+        return SimpleNamespace(
+            request_id="speech-1",
+            created_at=678,
+            response=SimpleNamespace(
+                model_id=model_id or "audio-model",
+                audio_bytes=b"RIFFstub-audio",
+                media_type=f"audio/{audio_format}",
+                voice=voice,
+                duration_seconds=1.0,
+            ),
+            routing=_routing(model_id or "audio-model", affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
+            metadata=build_routed_execution_metadata(
+                request_id="speech-1",
+                created=678,
+                requested_model_id=model_id,
+                routing=_routing(model_id or "audio-model", affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
             ),
         )
 
@@ -427,7 +515,7 @@ def _stub_services(temp_settings):
     return services, chat_orchestrator, multimodal_orchestrator, tool_execution_service, runtime_stats
 
 
-def test_embedded_app_client_maps_common_workflows(temp_settings) -> None:
+def test_embedded_app_client_maps_common_workflows(temp_settings, sample_audio_bytes: bytes) -> None:
     services, chat_orchestrator, multimodal_orchestrator, tool_execution_service, runtime_stats = _stub_services(temp_settings)
     lewlm = LewLM(services=services)
     client = lewlm.app_client()
@@ -523,6 +611,22 @@ def test_embedded_app_client_maps_common_workflows(temp_settings) -> None:
             top_k=1,
         ),
     )
+    transcription = client.transcribe_audio(
+        request=AudioTranscriptionCreateRequest(
+            model="audio-model",
+            audio_base64=base64.b64encode(sample_audio_bytes).decode("ascii"),
+            file_name="sample.wav",
+            language="en",
+        ),
+    )
+    speech = client.synthesize_speech(
+        request=AudioSpeechCreateRequest(
+            model="audio-model",
+            input="Say it clearly",
+            voice="alloy",
+            format="wav",
+        ),
+    )
     ingest = client.ingest_documents(
         request=DocumentIngestRequest(paths=[str(Path(temp_settings.data_dir) / "sample.md")], title="Stub ingest"),
     )
@@ -569,6 +673,19 @@ def test_embedded_app_client_maps_common_workflows(temp_settings) -> None:
     assert retrieval.embedding_stage is not None
     assert retrieval.rerank_stage is not None
     assert multimodal_orchestrator.retrieve_context_calls[0]["top_k"] == 1
+    assert transcription.model == "audio-model"
+    assert transcription.text == "Transcribed sample.wav"
+    assert transcription.segments[0].text == "Transcribed sample.wav"
+    assert multimodal_orchestrator.transcribe_audio_calls == [
+        ("audio-model", len(sample_audio_bytes), "sample.wav", "en", None),
+    ]
+    assert speech.model == "audio-model"
+    assert speech.media_type == "audio/wav"
+    assert speech.content_type == "audio/wav"
+    assert speech.voice == "alloy"
+    assert multimodal_orchestrator.synthesize_speech_calls == [
+        ("audio-model", "Say it clearly", "alloy", "wav"),
+    ]
     assert ingest.request_id == "ingest-1"
     assert ingest.sources[0].path.endswith("sample.md")
     assert tools.count == 2
@@ -599,6 +716,98 @@ def test_app_client_rejects_mixed_request_and_keyword_arguments(temp_settings) -
             request=EmbeddingCreateRequest(model="embed-model", input="alpha"),
             inputs="beta",
         )
+    with pytest.raises(ValueError, match="either `request` or keyword arguments"):
+        client.transcribe_audio(
+            request=AudioTranscriptionCreateRequest(model="audio-model", audio_base64="", file_name="sample.wav"),
+            audio_bytes=b"wav",
+        )
+    with pytest.raises(ValueError, match="either `request` or keyword arguments"):
+        client.synthesize_speech(
+            request=AudioSpeechCreateRequest(model="audio-model", input="hello"),
+            input_text="override",
+        )
+
+
+def test_embedded_app_client_routes_typed_vision_requests_through_external_bridge(
+    services_with_fake_external_vision_runtime,
+    sample_attachment_sources,
+) -> None:
+    lewlm = LewLM(services=services_with_fake_external_vision_runtime)
+    lewlm.scan_models()
+    vision_model_id = next(
+        manifest.model_id
+        for manifest in lewlm.list_models()
+        if manifest.display_name == "qwen2-vl-vision-mlx"
+    )
+    client = lewlm.app_client()
+
+    response = client.chat_completion(
+        model=vision_model_id,
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    InputTextPart(type="input_text", text="Describe the attached image"),
+                    InputImagePart(type="input_image", path=str(sample_attachment_sources["image_one"]), detail="high"),
+                ],
+            ),
+        ],
+    )
+
+    assert response.choices[0].message.content.startswith("Adapter vision echo:")
+    assert response.metadata.model.runtime_name == "local_external_adapter"
+    assert response.metadata.model.runtime_affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    bridge_runtime = services_with_fake_external_vision_runtime.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    assert bridge_runtime is not None
+    user_message = next(
+        message for message in bridge_runtime.captured_requests[-1].messages if message.role == "user" and message.attachments
+    )
+    assert user_message.attachments[0].detail == "high"
+
+    lewlm.close()
+    services_with_fake_external_vision_runtime.close()
+
+
+def test_embedded_app_client_routes_typed_vision_responses_through_external_bridge(
+    services_with_fake_external_vision_runtime,
+    sample_attachment_sources,
+) -> None:
+    lewlm = LewLM(services=services_with_fake_external_vision_runtime)
+    lewlm.scan_models()
+    vision_model_id = next(
+        manifest.model_id
+        for manifest in lewlm.list_models()
+        if manifest.display_name == "qwen2-vl-vision-mlx"
+    )
+    client = lewlm.app_client()
+
+    response = client.responses(
+        request=ResponseCreateRequest(
+            model=vision_model_id,
+            input=[
+                ResponseInputMessage(
+                    role="user",
+                    content=[
+                        InputTextPart(type="input_text", text="Describe the attached image"),
+                        InputImagePart(type="input_image", path=str(sample_attachment_sources["image_one"]), detail="high"),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+    assert response.output_text.startswith("Adapter vision echo:")
+    assert response.metadata.model.runtime_name == "local_external_adapter"
+    assert response.metadata.model.runtime_affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR
+    bridge_runtime = services_with_fake_external_vision_runtime.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    assert bridge_runtime is not None
+    user_message = next(
+        message for message in bridge_runtime.captured_requests[-1].messages if message.role == "user" and message.attachments
+    )
+    assert user_message.attachments[0].detail == "high"
+
+    lewlm.close()
+    services_with_fake_external_vision_runtime.close()
 
 
 @contextmanager
@@ -707,6 +916,27 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
                 },
             )
             if self.path == "/v1/chat/completions":
+                if payload["model"] == "bridge-error-model":
+                    response = {
+                        "error": {
+                            "code": "pack_unavailable",
+                            "message": "The bridge-backed audio path is not ready on this host.",
+                            "details": {
+                                "support_path": "bridge",
+                                "feature_class": "audio",
+                                "fallback_guidance": [
+                                    "Configure a loopback-only local server with `/v1/audio/transcriptions` and `/v1/audio/speech`.",
+                                ],
+                            },
+                        },
+                    }
+                    raw = json.dumps(response).encode("utf-8")
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
                 response = {
                     "id": "chat-remote-1",
                     "object": "chat.completion",
@@ -842,6 +1072,47 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
                         routing=_routing(payload.get("rerank_model") or "rerank-model"),
                     ).model_dump(mode="json"),
                 }
+            elif self.path == "/v1/audio/transcriptions":
+                response = {
+                    "request_id": "transcribe-remote-1",
+                    "created": 567,
+                    "model": payload["model"],
+                    "text": f"Transcribed {payload['file_name']}",
+                    "language": payload.get("language") or "en",
+                    "duration_seconds": 1.0,
+                    "segments": [
+                        {
+                            "start_seconds": 0.0,
+                            "end_seconds": 1.0,
+                            "text": f"Transcribed {payload['file_name']}",
+                        },
+                    ],
+                    "routing": _routing(payload["model"], affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR).model_dump(mode="json"),
+                    "metadata": build_routed_execution_metadata(
+                        request_id="transcribe-remote-1",
+                        created=567,
+                        requested_model_id=payload["model"],
+                        routing=_routing(payload["model"], affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
+                    ).model_dump(mode="json"),
+                }
+            elif self.path == "/v1/audio/speech":
+                response = {
+                    "request_id": "speech-remote-1",
+                    "created": 678,
+                    "model": payload["model"],
+                    "media_type": f"audio/{payload['format']}",
+                    "content_type": f"audio/{payload['format']}",
+                    "audio_base64": base64.b64encode(b"RIFFremote-audio").decode("ascii"),
+                    "voice": payload.get("voice"),
+                    "duration_seconds": 1.0,
+                    "routing": _routing(payload["model"], affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR).model_dump(mode="json"),
+                    "metadata": build_routed_execution_metadata(
+                        request_id="speech-remote-1",
+                        created=678,
+                        requested_model_id=payload["model"],
+                        routing=_routing(payload["model"], affinity=RuntimeAffinity.EXTERNAL_ACCELERATOR),
+                    ).model_dump(mode="json"),
+                }
             elif self.path == "/v1/documents/ingest":
                 response = DocumentIngestResponse(
                     request_id="ingest-remote-1",
@@ -915,7 +1186,7 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
         thread.join(timeout=5.0)
 
 
-def test_http_app_client_round_trips_typed_requests_and_responses() -> None:
+def test_http_app_client_round_trips_typed_requests_and_responses(sample_audio_bytes: bytes) -> None:
     with _serve_http_app_client_api() as (base_url, request_log):
         client = LewLMAppClient.from_http(base_url, api_key="secret-key")
         health = client.health()
@@ -981,6 +1252,18 @@ def test_http_app_client_round_trips_typed_requests_and_responses() -> None:
             rerank_model="rerank-model",
             top_k=1,
         )
+        transcription = client.transcribe_audio(
+            model="audio-model",
+            audio_bytes=sample_audio_bytes,
+            file_name="sample.wav",
+            language="en",
+        )
+        speech = client.synthesize_speech(
+            model="audio-model",
+            input_text="Say it clearly",
+            voice="alloy",
+            audio_format="wav",
+        )
         ingest = client.ingest_documents(paths=["/tmp/sample.md"], title="Remote ingest")
         tools = client.list_tools()
         tool = client.get_tool("documents.generate")
@@ -1007,6 +1290,11 @@ def test_http_app_client_round_trips_typed_requests_and_responses() -> None:
     assert retrieval.request_id == "retrieval-remote-1"
     assert retrieval.items[0].chunk.chunk_id == "chunk-1"
     assert retrieval.embedding_stage is not None
+    assert transcription.request_id == "transcribe-remote-1"
+    assert transcription.text == "Transcribed sample.wav"
+    assert speech.request_id == "speech-remote-1"
+    assert speech.media_type == "audio/wav"
+    assert speech.voice == "alloy"
     assert ingest.request_id == "ingest-remote-1"
     assert ingest.sources[0].path == "/tmp/sample.md"
     assert tools.count == 2
@@ -1021,6 +1309,8 @@ def test_http_app_client_round_trips_typed_requests_and_responses() -> None:
         "/v1/embeddings",
         "/v1/rerank",
         "/v1/retrieval/context",
+        "/v1/audio/transcriptions",
+        "/v1/audio/speech",
         "/v1/documents/ingest",
         "/v1/tools/execute",
     ]
@@ -1030,7 +1320,60 @@ def test_http_app_client_round_trips_typed_requests_and_responses() -> None:
     chat_request = next(entry for entry in request_log if entry["method"] == "POST" and entry["path"] == "/v1/chat/completions")
     assert chat_request["payload"]["include_prompt_trace"] is True
     assert chat_request["payload"]["response_format"]["schema"]["required"] == ["summary"]
+    transcription_request = next(
+        entry for entry in request_log if entry["method"] == "POST" and entry["path"] == "/v1/audio/transcriptions"
+    )
+    assert transcription_request["payload"]["audio_base64"] == base64.b64encode(sample_audio_bytes).decode("ascii")
+    assert transcription_request["payload"]["file_name"] == "sample.wav"
+    speech_request = next(entry for entry in request_log if entry["method"] == "POST" and entry["path"] == "/v1/audio/speech")
+    assert speech_request["payload"]["input"] == "Say it clearly"
+    assert speech_request["payload"]["format"] == "wav"
     tool_request = next(entry for entry in request_log if entry["method"] == "POST" and entry["path"] == "/v1/tools/execute")
     assert tool_request["payload"]["tool"] == "documents.generate"
     assert tool_request["payload"]["input"]["file_name"] == "remote-tool.md"
     assert all(entry["headers"].get("X-Api-Key") == "secret-key" for entry in request_log)
+
+
+def test_http_app_client_preserves_typed_image_parts() -> None:
+    with _serve_http_app_client_api() as (base_url, request_log):
+        client = LewLMAppClient.from_http(base_url)
+        response = client.chat_completion(
+            model="vision-model",
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content=[
+                        InputTextPart(type="input_text", text="Describe the image"),
+                        InputImagePart(type="input_image", path="X:\\images\\sample.png", detail="low"),
+                    ],
+                ),
+            ],
+        )
+
+    assert response.model == "vision-model"
+    payload = request_log[-1]["payload"]
+    image_part = payload["messages"][0]["content"][1]
+    assert image_part["type"] == "input_image"
+    assert image_part["detail"] == "low"
+
+
+def test_http_app_client_preserves_structured_api_errors() -> None:
+    with _serve_http_app_client_api() as (base_url, _request_log):
+        client = LewLMAppClient.from_http(base_url)
+        with pytest.raises(LewLMAppClientHTTPError) as exc_info:
+            client.chat_completion(
+                model="bridge-error-model",
+                messages=[ChatMessage(role="user", content="hello")],
+            )
+
+    exc = exc_info.value
+    assert isinstance(exc, LewLMError)
+    assert exc.status_code == 503
+    assert exc.code == "pack_unavailable"
+    assert exc.details["support_path"] == "bridge"
+    assert exc.details["feature_class"] == "audio"
+    assert exc.details["fallback_guidance"] == [
+        "Configure a loopback-only local server with `/v1/audio/transcriptions` and `/v1/audio/speech`.",
+    ]
+    assert isinstance(exc.api_error, PackUnavailableError)
+    assert str(exc) == "The bridge-backed audio path is not ready on this host."

@@ -40,6 +40,45 @@ The bundle capture writes artifacts such as:
 - `release-candidate-validation.json`
 - `release-artifact-index.json`
 
+## Host validation workspace
+
+```bash
+python scripts/capture_host_validation.py --output-dir out/host-validation \
+  --capture-all-capabilities \
+  --require-target Darwin:arm64 \
+  --require-target Linux:x86_64 \
+  --require-target Windows:AMD64 \
+  --minimum-verified-models 1
+```
+
+This workspace capture wraps the existing CLI and release scripts into one evidence directory. It records:
+
+- `cli/config.json`, `cli/scan.json`, `cli/list-models.json`, and `cli/doctor.json`
+- `capabilities/*.json` for explicitly requested models or every discovered model when `--capture-all-capabilities` is set
+- `release-bundle/` outputs from `capture_release_bundle.py` plus an explicit `validate-release-candidate.json`
+- `host-validation-evidence.json`, a machine-readable index with command summaries, exit codes, and artifact locations
+
+When you already have a local LewLM API running on loopback, add `--api-base-url http://127.0.0.1:8000` to capture `/v1/health`, `/v1/runtime/stats`, and any extra `/v1/` probes listed in `--http-probe-manifest`. This is the intended Milestone 118 workflow for real-host chat, streaming, semantic, vision, audio, and document evidence without checking local artifacts into the repository.
+
+Example probe manifest:
+
+```json
+{
+  "probes": [
+    {
+      "name": "chat-stream",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "json_body": {
+        "model": "bridge-model",
+        "stream": true,
+        "messages": [{"role": "user", "content": "hello"}]
+      }
+    }
+  ]
+}
+```
+
 ## Multi-host validation
 
 ```bash

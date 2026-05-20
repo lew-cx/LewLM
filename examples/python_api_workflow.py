@@ -8,6 +8,13 @@ from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat, Document
 from lewlm.tools.models import DocumentGenerateToolRequest, GenerateDocumentToolInput
 
 
+def _feature_path_summary(items: list[dict[str, object]]) -> dict[str, str]:
+    return {
+        str(item["feature_class"]): f'{item["label"]} [{item["support_path"]}]'
+        for item in items
+    }
+
+
 def main() -> None:
     data_dir = Path.home() / ".lewlm"
     output_dir = Path("out")
@@ -21,7 +28,10 @@ def main() -> None:
     )
 
     with LewLM(settings) as lewlm:
+        health = lewlm.health()
+        recommended_feature_paths = _feature_path_summary(health["install_profiles"]["recommended_feature_paths"])
         print(f"scanning models from {models_dir}")
+        print(f"recommended feature paths: {recommended_feature_paths}")
         scan_summary = lewlm.scan_models()
         print(f"discovered {scan_summary.discovered_count} model(s)")
         print(f"built-in skills: {len(lewlm.list_skills())}")

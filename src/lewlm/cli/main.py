@@ -73,6 +73,7 @@ from lewlm.runtime.adapters import summarize_feature_preservation
 from lewlm.security.authorization import ToolAction
 from lewlm.security.files import read_scoped_text_file
 from lewlm.serving_profiles import SERVING_PROFILE_WORKLOAD_CLASS_CHOICES, is_attachment_workload_class
+from lewlm.structured_output import StructuredOutputResult
 from lewlm.tools.models import (
     DocumentGenerateToolRequest,
     DocumentTransformToolRequest,
@@ -707,6 +708,19 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
                 for note in notes[:2]:
                     if isinstance(note, str) and note:
                         print(f"  note: {note}")
+        recommended_feature_paths = install_profiles.get("recommended_feature_paths")
+        if isinstance(recommended_feature_paths, list) and recommended_feature_paths:
+            print("recommended feature paths:")
+            for item in recommended_feature_paths:
+                if not isinstance(item, dict):
+                    continue
+                feature_class = str(item.get("feature_class", "feature")).replace("_", " ")
+                label = item.get("label")
+                support_path = item.get("support_path")
+                rendered = str(label or item.get("profile") or "unavailable")
+                if isinstance(support_path, str) and support_path:
+                    rendered = f"{rendered} ({support_path})"
+                print(f"  {feature_class}: {rendered}")
         print(f"file roots: {', '.join(str(root) for root in settings.file_access_roots)}")
         print(f"cache artifacts: {payload['cache_stats']['artifact_count']}")
         print(f"runtime response cache: {payload['cache_stats']['runtime_response_count']} entries")
@@ -4223,6 +4237,11 @@ def handle_chat(args: argparse.Namespace, settings: LewLMSettings, services: Lew
                 "message_count": stream_session.prompt_trace.message_count,
                 "session_id": session_id,
                 "reasoning": stream_session.reasoning.model_dump(mode="json") if stream_session.reasoning is not None else None,
+                "structured_output": (
+                    stream_session.structured_output.model_dump(mode="json")
+                    if stream_session.structured_output is not None
+                    else None
+                ),
                 "serving_profile": (
                     stream_session.serving_profile.model_dump(mode="json")
                     if stream_session.serving_profile is not None
@@ -4237,11 +4256,18 @@ def handle_chat(args: argparse.Namespace, settings: LewLMSettings, services: Lew
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
+            if (
+                isinstance(payload.get("serving_profile"), dict)
+                or payload.get("structured_output") is not None
+                or reasoning is not None
+                or session_id is not None
+            ):
+                print()
             if isinstance(payload.get("serving_profile"), dict):
                 _print_serving_profile_summary(payload.get("serving_profile"), prefix="")
+            _print_cli_structured_output(payload.get("structured_output"))
             _print_cli_reasoning(reasoning)
             if session_id is not None:
-                print()
                 print(f"session: {session_id}")
         return ExitCode.OK
 
@@ -4279,6 +4305,11 @@ def handle_chat(args: argparse.Namespace, settings: LewLMSettings, services: Lew
         "message_count": execution.prompt_trace.message_count,
         "session_id": session_id,
         "reasoning": execution.response.reasoning.model_dump(mode="json") if execution.response.reasoning is not None else None,
+        "structured_output": (
+            execution.structured_output.model_dump(mode="json")
+            if execution.structured_output is not None
+            else None
+        ),
         "serving_profile": (
             execution.serving_profile.model_dump(mode="json")
             if execution.serving_profile is not None
@@ -4296,6 +4327,7 @@ def handle_chat(args: argparse.Namespace, settings: LewLMSettings, services: Lew
                 f"serving profile: {execution.serving_profile.profile_id} "
                 f"({', '.join(f'{key}={value}' for key, value in execution.serving_profile.effective_settings.items())})",
             )
+        _print_cli_structured_output(execution.structured_output)
         _print_cli_reasoning(execution.response.reasoning)
         if session_id is not None:
             print(f"session: {session_id}")
@@ -4354,6 +4386,38 @@ def _print_cli_reasoning(reasoning: ReasoningOutput | None) -> None:
         print("[reasoning]")
         print(reasoning.content)
         print("[/reasoning]")
+
+
+def _print_cli_structured_output(structured_output: StructuredOutputResult | dict[str, object] | None) -> None:
+    if structured_output is None:
+        return
+    payload = (
+        structured_output.model_dump(mode="json")
+        if isinstance(structured_output, StructuredOutputResult)
+        else structured_output
+    )
+    contract_payload = payload.get("contract")
+    contract = (
+        str(contract_payload.get("type"))
+        if isinstance(contract_payload, dict) and contract_payload.get("type") is not None
+        else str(payload.get("contract_type") or "text")
+    )
+    enforcement = str(payload.get("enforcement") or "none")
+    validation = payload.get("validation")
+    validation_state = (
+        str(validation.get("state"))
+        if isinstance(validation, dict) and validation.get("state") is not None
+        else "unavailable"
+    )
+    summary = f"structured output: {contract} ({enforcement}, validation={validation_state})"
+    fallback_reason = payload.get("fallback_reason")
+    if payload.get("fallback_used"):
+        summary = f"{summary} fallback"
+        if isinstance(fallback_reason, str) and fallback_reason:
+            summary = f"{summary} - {fallback_reason}"
+    elif isinstance(fallback_reason, str) and fallback_reason:
+        summary = f"{summary} - {fallback_reason}"
+    print(summary)
 
 
 def _cli_prompt_file_roots(
@@ -5103,6 +5167,11 @@ def _print_config_summary(settings: LewLMSettings) -> None:
     print(f"tool authorization: {'required' if settings.tool_authorization_required else 'not required'}")
     print(f"parser sandbox: {'enabled' if settings.parser_sandbox_enabled else 'disabled'}")
     print(f"conversion sandbox: {'enabled' if settings.conversion_sandbox_enabled else 'disabled'}")
+    print(
+        "host validation command: python scripts/capture_host_validation.py --output-dir out\\host-validation "
+        "--capture-all-capabilities --require-target Darwin:arm64 --require-target Linux:x86_64 "
+        "--require-target Windows:AMD64 --minimum-verified-models 1"
+    )
     print(
         "release bundle command: python scripts/capture_release_bundle.py --output-dir out "
         "--require-target Darwin:arm64 --require-frontier-family dense_text "

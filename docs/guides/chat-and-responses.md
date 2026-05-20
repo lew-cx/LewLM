@@ -29,6 +29,8 @@ Both routes also accept a host-app-facing `response_format` contract.
 - `type: "grammar"` records a grammar request
 - `structured_output` on the response reports whether LewLM enforced the contract at decode time, whether it had to fall back to prompt guidance, and what JSON/grammar validation state LewLM observed
 
+On Linux and Windows, the packaged llama.cpp/GGUF path is the first-class non-Apple route that can report `enforcement: "decode_time"` for structured output. Non-enforcing routes keep the same public shape, but they report `enforcement: "prompt_guided"` with `fallback_used: true` instead of implying decoder enforcement.
+
 When the caller is using local file-backed prompt assets, `response_format_path` can load that same contract from disk. Legacy `output_schema` and `output_schema_path` are still accepted for prompt-oriented JSON-schema input, but `response_format` is the stable public contract for host applications.
 
 ## Message content parts

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lewlm"
-version = "0.3.3a0"
+version = "0.4.0a0"
 description = "Local-first middleware backend for multimodal local AI runtimes, serving, and document workflows."
 readme = "README.md"
 license = {file = "LICENSE"}

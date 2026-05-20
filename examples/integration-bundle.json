@@ -7123,6 +7123,17 @@
             "runtime_affinity": {
               "$ref": "#/$defs/RuntimeAffinity"
             },
+            "support_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RuntimeSupportPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "reason": {
               "title": "Reason",
               "type": "string"
@@ -7199,6 +7210,14 @@
             "distributed_experimental"
           ],
           "title": "RuntimeAffinity",
+          "type": "string"
+        },
+        "RuntimeSupportPath": {
+          "enum": [
+            "packaged",
+            "bridge"
+          ],
+          "title": "RuntimeSupportPath",
           "type": "string"
         }
       },
@@ -8120,6 +8139,17 @@
             "runtime_affinity": {
               "$ref": "#/$defs/RuntimeAffinity"
             },
+            "support_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RuntimeSupportPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "reason": {
               "title": "Reason",
               "type": "string"
@@ -8196,6 +8226,14 @@
             "distributed_experimental"
           ],
           "title": "RuntimeAffinity",
+          "type": "string"
+        },
+        "RuntimeSupportPath": {
+          "enum": [
+            "packaged",
+            "bridge"
+          ],
+          "title": "RuntimeSupportPath",
           "type": "string"
         }
       },
@@ -8691,6 +8729,17 @@
             "runtime_affinity": {
               "$ref": "#/$defs/RuntimeAffinity"
             },
+            "support_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RuntimeSupportPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "reason": {
               "title": "Reason",
               "type": "string"
@@ -8767,6 +8816,14 @@
             "distributed_experimental"
           ],
           "title": "RuntimeAffinity",
+          "type": "string"
+        },
+        "RuntimeSupportPath": {
+          "enum": [
+            "packaged",
+            "bridge"
+          ],
+          "title": "RuntimeSupportPath",
           "type": "string"
         }
       },

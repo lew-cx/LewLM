@@ -115,6 +115,8 @@ The bundle capture writes `sbom.json`, `dependency-audit.json`, `release-manifes
 
 When you pass `--validation-manifest-path`, the bundle capture copies those external release manifests into `validation-manifests/` inside the output bundle before validation so the resulting bundle remains portable across machines and handoffs.
 
+For Milestone 118-style host proof capture, use `python scripts/capture_host_validation.py --output-dir out/host-validation --capture-all-capabilities ...` to collect config, scan/list, doctor, capability, release-bundle, and optional loopback `/v1/` probe evidence in one machine-readable workspace without committing local artifacts.
+
 Validate a multi-host release candidate set with:
 
 ```bash

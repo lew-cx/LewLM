@@ -7,6 +7,22 @@ from pathlib import Path
 from urllib import error, request
 
 
+def _format_http_error(status_code: int, reason: str, body: str) -> str:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return f"{status_code} {reason}: {body}"
+    error_payload = payload.get("error")
+    if not isinstance(error_payload, dict):
+        return f"{status_code} {reason}: {body}"
+    code = str(error_payload.get("code") or "http_error")
+    message = str(error_payload.get("message") or reason)
+    details = error_payload.get("details")
+    if isinstance(details, dict) and details:
+        return f"{status_code} {code}: {message}\n{json.dumps(details, indent=2, sort_keys=True)}"
+    return f"{status_code} {code}: {message}"
+
+
 def _post_json(base_url: str, path: str, payload: dict[str, object]) -> dict[str, object]:
     raw = json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -20,7 +36,7 @@ def _post_json(base_url: str, path: str, payload: dict[str, object]) -> dict[str
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:  # pragma: no cover - example script
         body = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"{exc.code} {exc.reason}: {body}") from exc
+        raise SystemExit(_format_http_error(exc.code, exc.reason, body)) from exc
 
 
 def _iter_sse(base_url: str, path: str):
@@ -51,7 +67,7 @@ def _iter_sse(base_url: str, path: str):
                     data_lines.append(line.partition(":")[2].lstrip())
     except error.HTTPError as exc:  # pragma: no cover - example script
         body = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"{exc.code} {exc.reason}: {body}") from exc
+        raise SystemExit(_format_http_error(exc.code, exc.reason, body)) from exc
 
 
 def _demo_document() -> dict[str, object]:

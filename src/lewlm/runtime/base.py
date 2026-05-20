@@ -11,6 +11,7 @@ from typing import Any
 from lewlm.core.contracts import (
     AudioSpeechRequest,
     AudioSpeechResponse,
+    build_portable_performance_core_evidence,
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
     CapabilityName,
@@ -28,9 +29,11 @@ from lewlm.core.contracts import (
     RuntimeAffinity,
     RuntimeEstimate,
     RuntimeReadinessState,
+    runtime_support_path_for_affinity,
     utc_now,
 )
 from lewlm.core.errors import NotImplementedLewLMError, RuntimeUnavailableError, UnsupportedCapabilityError
+from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 
 class ManagedRuntime(ABC):
@@ -196,6 +199,7 @@ class ManagedRuntime(ABC):
             host_platform_supported=self.supports_host_platform(),
             supported_systems=list(self.supported_systems),
             supported_machines=list(self.supported_machines),
+            support_path=runtime_support_path_for_affinity(self.affinity) or "packaged",
             supports_manifest=self.supports_manifest(manifest) if manifest is not None else True,
         )
 
@@ -239,6 +243,7 @@ class ManagedRuntime(ABC):
         }
 
     async def health_check(self) -> dict[str, Any]:
+        performance_features = self.performance_feature_snapshot()
         return {
             "name": self.name,
             "affinity": self.affinity.value,
@@ -264,7 +269,14 @@ class ManagedRuntime(ABC):
                 for capability in CapabilityName
                 if self.supports_capability(capability)
             ),
-            "performance_features": self.performance_feature_snapshot(),
+            "performance_features": performance_features,
+            "performance_core_evidence": [
+                record.model_dump(mode="json")
+                for record in build_portable_performance_core_evidence(
+                    performance_features=performance_features,
+                    runtime_names=[self.name],
+                )
+            ],
         }
 
     def performance_feature_snapshot(self) -> dict[str, Any]:
@@ -394,6 +406,24 @@ class ManagedTextRuntime(ManagedRuntime):
         self._touch_model(request.model_id)
         async for delta in self._stream_generate(request):
             yield delta
+
+    def structured_output_runtime_status(
+        self,
+        contract: StructuredOutputRequest | None,
+    ) -> StructuredOutputRuntimeStatus | None:
+        if contract is None or contract.type == "text":
+            return None
+        return StructuredOutputRuntimeStatus(
+            runtime=self.name,
+            mode=contract.type,
+            enforcement="prompt_guided",
+            decoder_enforced=False,
+            fallback_used=True,
+            fallback_reason=(
+                f"LewLM recorded the structured-output contract, but `{self.name}` "
+                f"does not expose decode-time constrained decoding for `{contract.type}` requests on this path."
+            ),
+        )
 
     def supports_continuous_batching(self, capability: CapabilityName) -> bool:
         return False

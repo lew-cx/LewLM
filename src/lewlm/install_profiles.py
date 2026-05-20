@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from lewlm.core.contracts import RuntimeSupportPath
 from lewlm.documents.ingest.ocr import detect_ocr_backend
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -40,8 +41,23 @@ class InstallProfileSummary(BaseModel):
 
     active_profile_ids: list[str] = Field(default_factory=list)
     recommended_profile_id: str | None = None
+    recommended_feature_paths: list["FeaturePathRecommendation"] = Field(default_factory=list)
     profiles: list[InstallProfileStatus] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+class FeaturePathRecommendation(BaseModel):
+    """Recommended current-host path for one public operator-facing feature class."""
+
+    feature_class: str
+    profile: str
+    label: str
+    support_path: RuntimeSupportPath
+    summary: str
+    fallback_guidance: list[str] = Field(default_factory=list)
+
+
+InstallProfileSummary.model_rebuild()
 
 
 def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSummary:
@@ -75,7 +91,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             f"{host_label} should use the cross-platform GGUF profile as LewLM's first-class non-Apple runtime family.",
         )
         summary_notes.append(
-            "External accelerators remain the supported bridge path for compatible loopback-only local servers, including NVIDIA-oriented operators, and do not replace the packaged GGUF/llama.cpp default when it is available.",
+            "External accelerators remain the supported bridge path for compatible loopback-only local servers, including NVIDIA-oriented operators, and do not replace the packaged GGUF/llama.cpp default when it is available. Non-Apple audio transcription and speech still use this bridge path, while semantic GGUF models can stay packaged on the llama.cpp path.",
         )
     else:
         summary_notes.append(
@@ -125,9 +141,19 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             install_spec=".[llamacpp]",
             installed=not gguf_missing,
             ready=gguf_host_supported and not gguf_missing,
-            summary="Cross-platform packaged GGUF runtime profile backed by llama.cpp; LewLM's first-class non-Apple runtime family.",
+            summary=(
+                "Cross-platform packaged GGUF runtime profile backed by llama.cpp; "
+                "LewLM's first-class non-Apple runtime family for chat, embeddings, and packaged rerank fallback."
+            ),
             notes=[
                 *(["Recommended first-class non-Apple runtime on Linux and Windows today."] if system in {"Linux", "Windows"} else []),
+                *(
+                    [
+                        "Packaged GGUF support on non-Apple hosts covers LewLM's first-class text runtime family plus embedding-capable semantic GGUF models; rerank stays packaged through LewLM's embedding-similarity fallback when the backend lacks a native rerank API. Non-Apple audio transcription and speech intentionally remain bridge-only through the external accelerator path.",
+                    ]
+                    if system in {"Linux", "Windows"}
+                    else []
+                ),
                 *(
                     [
                         f"Current host {host_label} is outside the documented GGUF support matrix (macOS, Linux, Windows).",
@@ -188,6 +214,11 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             if gguf_host_supported
             else None
         ),
+        recommended_feature_paths=_recommended_feature_paths(
+            system=system,
+            apple_silicon_host=apple_silicon_host,
+            gguf_host_supported=gguf_host_supported,
+        ),
         profiles=profiles,
         notes=summary_notes,
     )
@@ -223,7 +254,8 @@ def _external_accelerator_notes(
         ),
         "LewLM does not install or manage the external server itself.",
         "Text and streaming use `/v1/chat/completions`; image-conditioned chat uses the same route with OpenAI-style image content blocks.",
-        "Audio execution depends on the loopback server exposing `/v1/audio/transcriptions` and `/v1/audio/speech`.",
+        "Audio execution depends on the loopback server exposing `/v1/audio/transcriptions` and `/v1/audio/speech`, and LewLM probes those bridge endpoints separately.",
+        "This bridge is LewLM's current bridge-only non-Apple public audio parity path for transcription and speech requests.",
         "LewLM reports narrower bridge depth explicitly; it does not claim MLX-level multimodal optimization or telemetry parity through this path.",
     ]
     if system in {"Linux", "Windows"}:
@@ -251,3 +283,123 @@ def _external_accelerator_notes(
     else:
         notes.append(f"{host_label} is configured for a loopback-only external accelerator endpoint.")
     return notes
+
+
+def _recommended_feature_paths(
+    *,
+    system: str,
+    apple_silicon_host: bool,
+    gguf_host_supported: bool,
+) -> list[FeaturePathRecommendation]:
+    if apple_silicon_host:
+        return [
+            FeaturePathRecommendation(
+                feature_class="chat",
+                profile="mlx_local_backend",
+                label="Apple MLX local backend",
+                support_path=RuntimeSupportPath.PACKAGED,
+                summary="Use the packaged Apple MLX path as the default chat and streaming route on Apple Silicon macOS.",
+                fallback_guidance=[
+                    "If the MLX profile is unavailable on this host, switch to the packaged GGUF profile for chat.",
+                ],
+            ),
+            FeaturePathRecommendation(
+                feature_class="semantic_text",
+                profile="mlx_local_backend",
+                label="Apple MLX local backend",
+                support_path=RuntimeSupportPath.PACKAGED,
+                summary="Use the Apple MLX path for embeddings and rerank on Apple Silicon macOS.",
+                fallback_guidance=[
+                    "If you need a loopback semantic backend instead, use the external accelerator bridge with compatible `/v1/embeddings` and `/v1/rerank` endpoints.",
+                ],
+            ),
+            FeaturePathRecommendation(
+                feature_class="vision",
+                profile="mlx_local_backend",
+                label="Apple MLX local backend",
+                support_path=RuntimeSupportPath.PACKAGED,
+                summary="Use the Apple MLX vision path for image-conditioned chat on Apple Silicon macOS.",
+                fallback_guidance=[
+                    "If MLX vision is unavailable, the external accelerator bridge can still serve OpenAI-style image content blocks through LewLM's shared chat surfaces.",
+                ],
+            ),
+            FeaturePathRecommendation(
+                feature_class="audio",
+                profile="mlx_local_backend",
+                label="Apple MLX local backend",
+                support_path=RuntimeSupportPath.PACKAGED,
+                summary="Use the Apple MLX audio path for transcription and speech on Apple Silicon macOS.",
+                fallback_guidance=[
+                    "If MLX audio is unavailable, the external accelerator bridge can serve audio through compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints.",
+                ],
+            ),
+            FeaturePathRecommendation(
+                feature_class="structured_output",
+                profile="gguf_fallback_backend",
+                label="Cross-platform GGUF backend",
+                support_path=RuntimeSupportPath.PACKAGED,
+                summary="Use the packaged GGUF/llama.cpp path when you need decode-time JSON-schema or grammar enforcement; Apple MLX remains prompt-guided fallback for structured output.",
+                fallback_guidance=[
+                    "If GGUF is unavailable, LewLM still records structured-output contracts on MLX, but enforcement falls back to prompt-guided generation plus validation metadata.",
+                ],
+            ),
+        ]
+    if not gguf_host_supported:
+        return []
+    return [
+        FeaturePathRecommendation(
+            feature_class="chat",
+            profile="gguf_fallback_backend",
+            label="Cross-platform GGUF backend",
+            support_path=RuntimeSupportPath.PACKAGED,
+            summary="Use the packaged GGUF/llama.cpp path as the default chat and streaming route on this host.",
+            fallback_guidance=[
+                "If another loopback server already owns execution, the external accelerator bridge remains a supported adapter-backed alternative.",
+            ],
+        ),
+        FeaturePathRecommendation(
+            feature_class="semantic_text",
+            profile="gguf_fallback_backend",
+            label="Cross-platform GGUF backend",
+            support_path=RuntimeSupportPath.PACKAGED,
+            summary="Use the packaged GGUF/llama.cpp path for embeddings and packaged rerank fallback on this host.",
+            fallback_guidance=[
+                "Use compatible embedding or rerank GGUF models for semantic text; rerank stays honest by using packaged embedding-similarity fallback when the backend does not expose a native rerank API.",
+                "If another loopback server already owns semantic execution, the external accelerator bridge remains a supported adapter-backed alternative with compatible `/v1/embeddings` and `/v1/rerank` endpoints.",
+            ],
+        ),
+        FeaturePathRecommendation(
+            feature_class="vision",
+            profile="external_accelerator_bridge_backend",
+            label="Cross-platform external accelerator bridge",
+            support_path=RuntimeSupportPath.BRIDGE,
+            summary=(
+                "Use the loopback external accelerator bridge for bridge-only image-conditioned chat on this host; "
+                "LewLM does not claim packaged non-Apple vision parity here."
+            ),
+            fallback_guidance=[
+                "The local server must accept OpenAI-style image content blocks on `/v1/chat/completions`.",
+            ],
+        ),
+        FeaturePathRecommendation(
+            feature_class="audio",
+            profile="external_accelerator_bridge_backend",
+            label="Cross-platform external accelerator bridge",
+            support_path=RuntimeSupportPath.BRIDGE,
+            summary="Use the loopback external accelerator bridge for the current bridge-only transcription and speech path on this host.",
+            fallback_guidance=[
+                "The local server must expose compatible `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints.",
+                "LewLM probes the transcription and speech bridge endpoints separately and keeps packaged-vs-bridge readiness explicit.",
+            ],
+        ),
+        FeaturePathRecommendation(
+            feature_class="structured_output",
+            profile="gguf_fallback_backend",
+            label="Cross-platform GGUF backend",
+            support_path=RuntimeSupportPath.PACKAGED,
+            summary="Use the packaged GGUF/llama.cpp path when you need decode-time JSON-schema or grammar enforcement on this host.",
+            fallback_guidance=[
+                "The external accelerator bridge preserves structured-output requests only through prompt-guided fallback; it is not the portable decode-time enforcement default.",
+            ],
+        ),
+    ]

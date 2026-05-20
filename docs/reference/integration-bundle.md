@@ -23,7 +23,7 @@ Use it alongside the live OpenAPI document at `/v1/openapi.json`.
 ## How to use it
 
 1. Read `examples/integration-bundle.json` to map a host-app request or response onto LewLM's stable shapes.
-2. Use `/v1/openapi.json` for the live route index, operation IDs, and content-type metadata.
+2. Use `/v1/openapi.json` for the live route index, operation IDs, and content-type metadata, and `GET /v1/health` when you need the current-host `recommended_feature_paths` / readiness contract that sits beside these request and response shapes.
 3. Start from `examples/http_api_integration.py` for a minimal standard-library client that calls chat, responses, embeddings, retrieval, rerank, documents, and SSE events.
 4. Use `examples/app_starter_proofs.py` when you want app-shaped proofs for structured chat, grounded answers, document ingest, and local tools instead of single-surface calls.
 

@@ -304,7 +304,7 @@ class MLXVisionRuntime(ManagedTextRuntime):
         if not super().supports_capability(capability):
             return False
         module = import_module("mlx_vlm")
-        if capability == CapabilityName.CHAT:
+        if capability in {CapabilityName.CHAT, CapabilityName.VISION}:
             return resolve_backend_callable(module, ("generate", "chat", "generate_text"), required=False) is not None
         if capability == CapabilityName.STREAMING:
             return resolve_backend_callable(module, ("generate_stream", "stream_generate"), required=False) is not None

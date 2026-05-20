@@ -39,6 +39,8 @@ LewLM's capability reports are more than a boolean matrix. They include:
 - target-platform notes
 - fallback guidance for conversion or alternate runtimes
 
+For runtime-strategy reporting, LewLM now keeps the first-class non-Apple path behavior-specific: `runtime_support_strategy.paths[].performance_core_evidence` records whether continuous batching, prefix reuse, tiered KV, speculation, and related serving behaviors are benchmark-backed on the current host, merely backend-native, or still fallback/unsupported.
+
 ## Experimental layers
 
 LewLM also carries experimental routing-adjacent surfaces:

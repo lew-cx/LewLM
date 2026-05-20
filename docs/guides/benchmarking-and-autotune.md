@@ -99,6 +99,12 @@ Milestone 103 now chooses **GGUF via llama.cpp** as LewLM's first-class non-Appl
 
 `--compare-external-adapter` artifacts still matter, but they now stay in the bridge-evidence bucket: LewLM uses them for fallback honesty and preservation reporting instead of promoting the external adapter over a first-class packaged runtime.
 
+`runtime_support_strategy.paths[].performance_core_evidence` now reports those non-Apple defaults per portable serving behavior instead of flattening the whole path to one blanket benchmark flag. That means operators can distinguish:
+
+- behaviors that are benchmark-backed on the current host
+- behaviors that remain backend-native but not yet benchmark-backed
+- fallback or unsupported behaviors that still keep their explicit boundary
+
 ## Related operator endpoints
 
 - `GET /v1/cache/stats`

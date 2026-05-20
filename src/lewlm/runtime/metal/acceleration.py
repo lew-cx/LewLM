@@ -8,7 +8,11 @@ from importlib import import_module
 from typing import Any
 
 from lewlm.config.settings import LewLMSettings
-from lewlm.core.contracts import GenerateRequest
+from lewlm.core.contracts import (
+    GenerateRequest,
+    PerformanceFeatureOwnership,
+    runtime_performance_feature_report,
+)
 from lewlm.runtime.introspection import invoke_with_signature
 
 _ACCELERATION_METADATA_KEY = "mlx_acceleration"
@@ -85,12 +89,16 @@ class MLXAccelerationTracker:
         if self._last_fallback_reason is not None:
             attention_notes.append(f"Last fallback to stock path: {self._last_fallback_reason}")
         return {
-            "graph_compilation": {
-                "supported": compile_supported,
-                "active": self._compiled_request_count > 0,
-                "reason": compile_reason,
-                "notes": graph_notes,
-                "metrics": _compact_metrics(
+            "graph_compilation": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if compile_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=self._compiled_request_count > 0,
+                reason=compile_reason,
+                notes=graph_notes,
+                metrics=_compact_metrics(
                     configured_enabled=self.settings.mlx_graph_compile_enabled,
                     compile_attempts=self._compile_attempt_count,
                     compiled_requests=self._compiled_request_count,
@@ -98,17 +106,21 @@ class MLXAccelerationTracker:
                     compile_failures=self._compile_failure_count,
                     compiled_callable_count=len(self._compiled_callables),
                 ),
-            },
-            "attention_kernel_acceleration": {
-                "supported": attention_support.supported,
-                "active": (self._flash_attention_request_count + self._custom_sdpa_request_count) > 0,
-                "reason": (
+            ),
+            "attention_kernel_acceleration": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if attention_support.supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=(self._flash_attention_request_count + self._custom_sdpa_request_count) > 0,
+                reason=(
                     "Installed MLX generation entrypoints advertise an accelerated attention-kernel hook."
                     if attention_support.supported
                     else "Installed MLX generation entrypoints do not advertise an accelerated attention-kernel hook."
                 ),
-                "notes": attention_notes,
-                "metrics": _compact_metrics(
+                notes=attention_notes,
+                metrics=_compact_metrics(
                     configured_mode=self.settings.mlx_attention_kernel_mode,
                     preferred_mode=attention_support.preferred_mode,
                     supported_modes=",".join(attention_support.supported_modes) if attention_support.supported_modes else None,
@@ -119,7 +131,7 @@ class MLXAccelerationTracker:
                     kernel_fallback_requests=self._kernel_fallback_request_count,
                     last_kernel_path=self._last_kernel_path,
                 ),
-            },
+            ),
         }
 
     def invoke(

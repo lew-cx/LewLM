@@ -124,11 +124,33 @@ For streaming chat and responses APIs, the envelope is attached to the final SSE
 
 The retrieval surface also includes per-stage `embedding_stage` and `rerank_stage` summaries so host apps can distinguish the overall helper request from the underlying scoring passes.
 
+## Error envelope
+
+Non-success responses use one top-level machine-readable shape:
+
+```json
+{
+  "error": {
+    "code": "runtime_unavailable",
+    "message": "The selected runtime is not ready on this host.",
+    "details": {
+      "support_path": "bridge",
+      "fallback_guidance": ["Configure a loopback-only local bridge endpoint."]
+    }
+  }
+}
+```
+
+`details` is where LewLM surfaces parity-specific guidance such as `support_path`, `feature_class`, `available_support_paths`, `bridge_only`, and `fallback_guidance`.
+
 ## Consumer-ready fields
 
 For host applications, the main machine-readable readiness fields are:
 
+- `/v1/health.install_profiles.recommended_feature_paths[]`
 - `/v1/health.readiness`
+- `/v1/health.readiness.capabilities[].available_support_paths`
+- `/v1/health.readiness.capabilities[].bridge_only`
 - `/v1/health.configuration.runtime_packs[]`
 - `/v1/health.configuration.feature_packs[]`
 - `/v1/runtime/stats.readiness`
@@ -137,7 +159,9 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/runtime/stats.runtimes[].readiness_state`
 - `/v1/runtime/stats.measured_capability_registry`
 - `/v1/runtime/stats.runtime_support_strategy`
+- `/v1/models/{model_id}/capabilities.runtime_candidates[].support_path`
 - `/v1/models/{model_id}/capabilities.runtime_candidates[].readiness_state`
+- `/v1/models/{model_id}/capabilities.capabilities[].support_path`
 - `/v1/models/{model_id}/capabilities.capabilities[].readiness_state`
 - `/v1/models/{model_id}/capabilities.measured_capabilities[]`
 - `/v1/events` top-level `request_id`, `capability`, `operation`, `stage`, and `status`

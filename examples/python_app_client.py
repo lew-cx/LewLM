@@ -19,10 +19,20 @@ SUMMARY_SCHEMA = {
 }
 
 
+def _feature_path_summary(items) -> dict[str, str]:
+    return {
+        item.feature_class: f"{item.label} [{item.support_path.value}]"
+        for item in items
+    }
+
+
 def embedded_example() -> None:
     with LewLM() as lewlm:
         client = lewlm.app_client()
-        print(f"health: {client.health().status}")
+        health = client.health()
+        feature_paths = _feature_path_summary(health.install_profiles.recommended_feature_paths)
+        print(f"health: {health.status}")
+        print(f"feature paths: {feature_paths}")
         print(f"runtime policy: {client.runtime_stats().runtime_policy}")
 
         if CHAT_MODEL_ID.startswith("<"):
@@ -80,7 +90,10 @@ def embedded_example() -> None:
 
 def remote_example(base_url: str = "http://127.0.0.1:8080") -> None:
     client = LewLMAppClient.from_http(base_url)
-    print(f"health: {client.health().status}")
+    health = client.health()
+    feature_paths = _feature_path_summary(health.install_profiles.recommended_feature_paths)
+    print(f"health: {health.status}")
+    print(f"feature paths: {feature_paths}")
     print(f"runtime policy: {client.runtime_stats().runtime_policy}")
 
 

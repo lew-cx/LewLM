@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from lewlm.structured_output import StructuredOutputRequest
+from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 from lewlm.core.citations import GeneratedCitationReference
 
@@ -313,6 +313,7 @@ class RuntimeCandidateReport(BaseModel):
     host_platform_supported: bool
     supported_systems: list[str] = Field(default_factory=list)
     supported_machines: list[str] = Field(default_factory=list)
+    support_path: "RuntimeSupportPath" = "packaged"
     supports_manifest: bool
 
 
@@ -329,12 +330,18 @@ class RoutingModalityPath(str, Enum):
     MULTIMODAL_DEFAULT = "multimodal_default"
 
 
+class RuntimeSupportPath(str, Enum):
+    PACKAGED = "packaged"
+    BRIDGE = "bridge"
+
+
 class RoutingDecision(BaseModel):
     """Explainable routing result for a generation request."""
 
     model_id: str
     runtime_name: str
     runtime_affinity: RuntimeAffinity
+    support_path: RuntimeSupportPath | None = None
     reason: str
     request_modality: RequestModality | None = None
     modality_path: RoutingModalityPath | None = None
@@ -369,6 +376,7 @@ class ModelCapabilityStatus(BaseModel):
     readiness_state: CapabilityReadinessState = CapabilityReadinessState.BLOCKED
     runtime_name: str | None = None
     runtime_affinity: RuntimeAffinity | None = None
+    support_path: RuntimeSupportPath | None = None
     reason: str
     alternatives: list[str] = Field(default_factory=list)
     estimated_memory_mb: int | None = None
@@ -440,6 +448,46 @@ class PerformanceFeatureOwnership(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
+class PerformanceCoreEvidenceFamily(str, Enum):
+    CONTINUOUS_BATCHING = "continuous_batching"
+    TIERED_KV = "tiered_kv"
+    PREFIX_REUSE = "prefix_reuse"
+    PREFILL_ISOLATION = "prefill_isolation"
+    SPECULATION = "speculation"
+    CONSTRAINED_DECODING = "constrained_decoding"
+    KERNEL_ACCELERATION = "kernel_acceleration"
+
+
+class PerformanceCoreEvidenceMode(str, Enum):
+    LEWLM_OWNED = "lewlm_owned"
+    BACKEND_NATIVE = "backend_native"
+    FALLBACK = "fallback"
+    UNSUPPORTED = "unsupported"
+
+
+class PerformanceCoreEvidenceSource(str, Enum):
+    RUNTIME_FEATURE = "runtime_feature"
+    BENCHMARK_FEATURE = "benchmark_feature"
+    BENCHMARK_SCENARIO = "benchmark_scenario"
+    MEASURED_CAPABILITY = "measured_capability"
+    RUNTIME_SUPPORT_STRATEGY = "runtime_support_strategy"
+
+
+class PerformanceCoreEvidenceRecord(BaseModel):
+    """Portable performance-core evidence summary shared across reporting surfaces."""
+
+    family: PerformanceCoreEvidenceFamily
+    mode: PerformanceCoreEvidenceMode = PerformanceCoreEvidenceMode.UNSUPPORTED
+    reason: str
+    runtime_names: list[str] = Field(default_factory=list)
+    feature_names: list[str] = Field(default_factory=list)
+    measured_categories: list[MeasuredCapabilityCategory] = Field(default_factory=list)
+    sources: list[PerformanceCoreEvidenceSource] = Field(default_factory=list)
+    benchmark_backed: bool = False
+    notes: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
 class RuntimePerformanceFeatureReport(BaseModel):
     """Portable runtime-facing report for one performance feature."""
 
@@ -496,6 +544,63 @@ def performance_feature_support_level(ownership: PerformanceFeatureOwnership | s
     }:
         return "supported"
     return normalized.value
+
+
+def normalize_performance_core_evidence_mode(
+    *,
+    mode: PerformanceCoreEvidenceMode | str | None = None,
+    ownership: PerformanceFeatureOwnership | str | None = None,
+    supported: bool | None = None,
+    support_level: str | None = None,
+) -> PerformanceCoreEvidenceMode:
+    """Normalize portable evidence modes from either explicit modes or feature ownership."""
+
+    if isinstance(mode, PerformanceCoreEvidenceMode):
+        return mode
+    if isinstance(mode, str):
+        normalized_mode = mode.casefold()
+        if normalized_mode == PerformanceFeatureOwnership.PARTIAL.value:
+            return PerformanceCoreEvidenceMode.FALLBACK
+        for candidate in PerformanceCoreEvidenceMode:
+            if candidate.value == normalized_mode:
+                return candidate
+    normalized_ownership = normalize_performance_feature_ownership(
+        ownership=ownership,
+        supported=supported,
+        support_level=support_level,
+    )
+    if normalized_ownership == PerformanceFeatureOwnership.LEWLM_OWNED:
+        return PerformanceCoreEvidenceMode.LEWLM_OWNED
+    if normalized_ownership == PerformanceFeatureOwnership.BACKEND_NATIVE:
+        return PerformanceCoreEvidenceMode.BACKEND_NATIVE
+    if normalized_ownership == PerformanceFeatureOwnership.PARTIAL:
+        return PerformanceCoreEvidenceMode.FALLBACK
+    return PerformanceCoreEvidenceMode.UNSUPPORTED
+
+
+def performance_core_evidence_mode_from_measured_status(
+    status: MeasuredCapabilityStatus | str | None,
+) -> PerformanceCoreEvidenceMode:
+    """Map measured capability outcomes onto the portable evidence vocabulary."""
+
+    if isinstance(status, MeasuredCapabilityStatus):
+        normalized_status = status
+    elif isinstance(status, str):
+        try:
+            normalized_status = MeasuredCapabilityStatus(status)
+        except ValueError:
+            return PerformanceCoreEvidenceMode.UNSUPPORTED
+    else:
+        return PerformanceCoreEvidenceMode.UNSUPPORTED
+    if normalized_status == MeasuredCapabilityStatus.SUPPORTED:
+        return PerformanceCoreEvidenceMode.BACKEND_NATIVE
+    if normalized_status in {
+        MeasuredCapabilityStatus.DEGRADED,
+        MeasuredCapabilityStatus.FALLBACK,
+        MeasuredCapabilityStatus.MIXED,
+    }:
+        return PerformanceCoreEvidenceMode.FALLBACK
+    return PerformanceCoreEvidenceMode.UNSUPPORTED
 
 
 def runtime_performance_feature_report(
@@ -555,6 +660,256 @@ def normalize_runtime_performance_feature_report(payload: Mapping[str, Any] | No
     return normalized
 
 
+_PORTABLE_PERFORMANCE_CORE_COMPONENTS: dict[PerformanceCoreEvidenceFamily, tuple[str, ...]] = {
+    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING: ("continuous_batching",),
+    PerformanceCoreEvidenceFamily.TIERED_KV: ("paged_kv_cache", "kv_cache_quantization"),
+    PerformanceCoreEvidenceFamily.PREFIX_REUSE: ("prefix_cache", "persistent_multi_context_cache"),
+    PerformanceCoreEvidenceFamily.PREFILL_ISOLATION: (
+        "prefill_isolation",
+        "chunked_prefill",
+        "prefill_optimization",
+    ),
+    PerformanceCoreEvidenceFamily.SPECULATION: (
+        "speculative_decoding",
+        "prompt_lookup_speculation",
+    ),
+    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING: ("constrained_decoding",),
+    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION: (
+        "graph_compilation",
+        "attention_kernel_acceleration",
+    ),
+}
+
+_PORTABLE_PERFORMANCE_CORE_UNSUPPORTED_REASONS: dict[PerformanceCoreEvidenceFamily, str] = {
+    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING: (
+        "No runtime currently reports portable continuous-batching evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.TIERED_KV: (
+        "No runtime currently reports portable tiered-KV residency evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.PREFIX_REUSE: (
+        "No runtime currently reports portable prefix-reuse evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.PREFILL_ISOLATION: (
+        "No runtime currently reports portable prefill-isolation evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.SPECULATION: (
+        "No runtime currently reports portable speculation evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING: (
+        "No runtime currently reports portable constrained-decoding evidence on this host."
+    ),
+    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION: (
+        "No runtime currently reports portable kernel-acceleration evidence on this host."
+    ),
+}
+
+
+def build_portable_performance_core_evidence(
+    *,
+    performance_features: Mapping[str, Any] | None,
+    runtime_names: Sequence[str] | None = None,
+    benchmark_backed: bool = False,
+    source: PerformanceCoreEvidenceSource = PerformanceCoreEvidenceSource.RUNTIME_FEATURE,
+) -> list[PerformanceCoreEvidenceRecord]:
+    """Project a runtime feature map onto the portable performance-core families."""
+
+    feature_map = {
+        str(name): payload
+        for name, payload in (performance_features or {}).items()
+        if isinstance(name, str)
+    }
+    runtime_name_list = sorted({name for name in runtime_names or () if isinstance(name, str) and name})
+    return [
+        _portable_performance_core_record(
+            family=family,
+            feature_map=feature_map,
+            runtime_names=runtime_name_list,
+            benchmark_backed=benchmark_backed,
+            source=source,
+        )
+        for family in PerformanceCoreEvidenceFamily
+    ]
+
+
+def _portable_performance_core_record(
+    *,
+    family: PerformanceCoreEvidenceFamily,
+    feature_map: Mapping[str, Any],
+    runtime_names: list[str],
+    benchmark_backed: bool,
+    source: PerformanceCoreEvidenceSource,
+) -> PerformanceCoreEvidenceRecord:
+    component_names = _PORTABLE_PERFORMANCE_CORE_COMPONENTS[family]
+    components = [
+        (
+            component_name,
+            normalize_runtime_performance_feature_report(
+                payload if isinstance(payload := feature_map.get(component_name), Mapping) else None,
+            ),
+        )
+        for component_name in component_names
+    ]
+    component_modes = {
+        component_name: _portable_feature_mode(payload)
+        for component_name, payload in components
+    }
+    supported_components = [component_name for component_name, payload in components if bool(payload.get("supported"))]
+    mode = _portable_performance_core_mode(
+        family=family,
+        components=components,
+        component_modes=component_modes,
+    )
+    notes = _portable_performance_core_notes(
+        family=family,
+        mode=mode,
+        components=components,
+    )
+    return PerformanceCoreEvidenceRecord(
+        family=family,
+        mode=mode,
+        reason=_portable_performance_core_reason(
+            family=family,
+            mode=mode,
+            components=components,
+            supported_components=supported_components,
+        ),
+        runtime_names=runtime_names,
+        feature_names=list(component_names),
+        sources=[source],
+        benchmark_backed=benchmark_backed,
+        notes=notes,
+        metrics={
+            "supported_component_count": len(supported_components),
+            "component_modes": ",".join(
+                f"{component_name}:{component_modes[component_name].value}"
+                for component_name in component_names
+            ),
+        },
+    )
+
+
+def _portable_feature_mode(payload: Mapping[str, Any]) -> PerformanceCoreEvidenceMode:
+    return normalize_performance_core_evidence_mode(
+        ownership=(str(payload.get("ownership")) if payload.get("ownership") is not None else None),
+        supported=bool(payload.get("supported")),
+        support_level=(str(payload.get("support_level")) if payload.get("support_level") is not None else None),
+    )
+
+
+def _portable_performance_core_mode(
+    *,
+    family: PerformanceCoreEvidenceFamily,
+    components: Sequence[tuple[str, Mapping[str, Any]]],
+    component_modes: Mapping[str, PerformanceCoreEvidenceMode],
+) -> PerformanceCoreEvidenceMode:
+    supported_components = {
+        component_name
+        for component_name, payload in components
+        if bool(payload.get("supported"))
+    }
+    if family == PerformanceCoreEvidenceFamily.TIERED_KV:
+        if "paged_kv_cache" in supported_components:
+            return component_modes["paged_kv_cache"]
+        if "kv_cache_quantization" in supported_components:
+            return PerformanceCoreEvidenceMode.FALLBACK
+        return PerformanceCoreEvidenceMode.UNSUPPORTED
+    if family == PerformanceCoreEvidenceFamily.PREFIX_REUSE:
+        if "prefix_cache" in supported_components:
+            return component_modes["prefix_cache"]
+        if "persistent_multi_context_cache" in supported_components:
+            return component_modes["persistent_multi_context_cache"]
+        return PerformanceCoreEvidenceMode.UNSUPPORTED
+    if family == PerformanceCoreEvidenceFamily.PREFILL_ISOLATION:
+        if "prefill_isolation" in supported_components:
+            return component_modes["prefill_isolation"]
+        if {"chunked_prefill", "prefill_optimization"} & supported_components:
+            return PerformanceCoreEvidenceMode.FALLBACK
+        return PerformanceCoreEvidenceMode.UNSUPPORTED
+    if family == PerformanceCoreEvidenceFamily.SPECULATION:
+        if "speculative_decoding" in supported_components:
+            return component_modes["speculative_decoding"]
+        if "prompt_lookup_speculation" in supported_components:
+            return component_modes["prompt_lookup_speculation"]
+        return PerformanceCoreEvidenceMode.UNSUPPORTED
+    if family == PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION:
+        fallback_requests = sum(
+            _coerce_metric_int((payload.get("metrics") or {}).get("compile_fallback_requests"))
+            + _coerce_metric_int((payload.get("metrics") or {}).get("kernel_fallback_requests"))
+            for _, payload in components
+        )
+        if fallback_requests > 0 and supported_components:
+            return PerformanceCoreEvidenceMode.FALLBACK
+    for candidate in (
+        PerformanceCoreEvidenceMode.LEWLM_OWNED,
+        PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+        PerformanceCoreEvidenceMode.FALLBACK,
+    ):
+        if any(component_modes[name] == candidate for name in supported_components):
+            return candidate
+    return PerformanceCoreEvidenceMode.UNSUPPORTED
+
+
+def _portable_performance_core_reason(
+    *,
+    family: PerformanceCoreEvidenceFamily,
+    mode: PerformanceCoreEvidenceMode,
+    components: Sequence[tuple[str, Mapping[str, Any]]],
+    supported_components: Sequence[str],
+) -> str:
+    if mode == PerformanceCoreEvidenceMode.UNSUPPORTED:
+        return _PORTABLE_PERFORMANCE_CORE_UNSUPPORTED_REASONS[family]
+    if family == PerformanceCoreEvidenceFamily.TIERED_KV and "paged_kv_cache" not in supported_components:
+        return (
+            "A runtime reports KV-cache quantization details, but LewLM does not yet have matching paged-KV "
+            "residency evidence for the same path."
+        )
+    if family == PerformanceCoreEvidenceFamily.PREFILL_ISOLATION and "prefill_isolation" not in supported_components:
+        return (
+            "A runtime reports prefill acceleration hooks, but LewLM does not see the combined scheduler and chunking "
+            "signals needed to claim portable prefill isolation."
+        )
+    reasons = [
+        str(payload.get("reason"))
+        for component_name, payload in components
+        if component_name in supported_components and isinstance(payload.get("reason"), str) and payload.get("reason")
+    ]
+    if reasons:
+        return " ".join(dict.fromkeys(reasons))
+    return _PORTABLE_PERFORMANCE_CORE_UNSUPPORTED_REASONS[family]
+
+
+def _portable_performance_core_notes(
+    *,
+    family: PerformanceCoreEvidenceFamily,
+    mode: PerformanceCoreEvidenceMode,
+    components: Sequence[tuple[str, Mapping[str, Any]]],
+) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+    for component_name, payload in components:
+        for note in payload.get("notes", []):
+            if not isinstance(note, str) or not note or note in seen:
+                continue
+            seen.add(note)
+            notes.append(note)
+    if family == PerformanceCoreEvidenceFamily.PREFILL_ISOLATION and mode == PerformanceCoreEvidenceMode.FALLBACK:
+        fallback_note = (
+            "Prefill optimization is present, but LewLM keeps prefill isolation in fallback state until the runtime "
+            "exposes truthful isolation hooks."
+        )
+        if fallback_note not in seen:
+            notes.append(fallback_note)
+    return notes
+
+
+def _coerce_metric_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class HostCapabilityReadiness(BaseModel):
     """Host-level readiness summary for one execution capability."""
 
@@ -563,12 +918,29 @@ class HostCapabilityReadiness(BaseModel):
     readiness_state: CapabilityReadinessState
     reason: str
     available_runtime_names: list[str] = Field(default_factory=list)
+    available_support_paths: list[RuntimeSupportPath] = Field(default_factory=list)
+    packaged_runtime_names: list[str] = Field(default_factory=list)
+    bridge_runtime_names: list[str] = Field(default_factory=list)
+    bridge_only: bool = False
     candidate_model_count: int = 0
     runnable_model_count: int = 0
     ready_model_ids: list[str] = Field(default_factory=list)
     blocked_model_ids: list[str] = Field(default_factory=list)
     conversion_required_model_ids: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+def runtime_support_path_for_affinity(
+    affinity: RuntimeAffinity | str | None,
+) -> RuntimeSupportPath | None:
+    """Map a runtime affinity onto LewLM's packaged-versus-bridge path label."""
+
+    if affinity is None:
+        return None
+    normalized_affinity = affinity.value if isinstance(affinity, RuntimeAffinity) else str(affinity)
+    if normalized_affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR.value:
+        return RuntimeSupportPath.BRIDGE
+    return RuntimeSupportPath.PACKAGED
 
 
 class ServiceReadinessSummary(BaseModel):
@@ -619,6 +991,7 @@ class ModelCapabilityReport(BaseModel):
     target_platforms: list[ModelTargetPlatformReport] = Field(default_factory=list)
     capabilities: list[ModelCapabilityStatus] = Field(default_factory=list)
     measured_capabilities: list[MeasuredCapabilitySummary] = Field(default_factory=list)
+    performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
 
 
 class RuntimeEstimate(BaseModel):
@@ -635,6 +1008,7 @@ class GenerateAttachment(BaseModel):
     name: str
     source_path: str | None = None
     media_type: str | None = None
+    detail: Literal["auto", "low", "high"] | None = None
     extracted_text: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -847,6 +1221,11 @@ class RuntimeContract(Protocol):
     async def generate(self, request: GenerateRequest) -> GenerateResponse: ...
 
     def stream_generate(self, request: GenerateRequest) -> AsyncIterator[str]: ...
+
+    def structured_output_runtime_status(
+        self,
+        contract: StructuredOutputRequest | None,
+    ) -> StructuredOutputRuntimeStatus | None: ...
 
     def supports_continuous_batching(self, capability: CapabilityName) -> bool: ...
 

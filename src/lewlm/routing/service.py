@@ -18,6 +18,8 @@ from lewlm.core.contracts import (
     MeasuredCapabilityProbeRecord,
     MeasuredCapabilityStatus,
     MeasuredCapabilitySummary,
+    PerformanceCoreEvidenceFamily,
+    PerformanceCoreEvidenceSource,
     ModelCapabilityReport,
     ModelCapabilityStatus,
     ModelManifest,
@@ -26,11 +28,20 @@ from lewlm.core.contracts import (
     RoutingDecision,
     RoutingModalityPath,
     RuntimeContract,
+    RuntimeSupportPath,
     ServiceReadinessState,
     ServiceReadinessSummary,
+    build_portable_performance_core_evidence,
+    performance_core_evidence_mode_from_measured_status,
+    runtime_support_path_for_affinity,
 )
 from lewlm.core.errors import RoutingError
 from lewlm.registry.service import ModelRegistry
+from lewlm.telemetry.constrained_decoding import (
+    CONSTRAINED_DECODING_CODE_PROBE_NAME,
+    CONSTRAINED_DECODING_PROBE_CONTRACT,
+    classify_constrained_decoding_runtime_status,
+)
 from lewlm.telemetry.probes import summarize_measured_capabilities
 from lewlm.routing.measured_preferences import (
     RuntimePreferenceAssessment,
@@ -100,6 +111,7 @@ class ModelRouter:
         *,
         messages: list[GenerateMessage] | None = None,
         max_tokens: int = 512,
+        structured_output_requested: bool = False,
     ) -> tuple[ModelManifest, RuntimeContract, RoutingDecision]:
         chat_profile = self._chat_request_profile(messages)
         return self.route_capability(
@@ -108,6 +120,7 @@ class ModelRouter:
             required_modalities=chat_profile.required_modalities,
             requested_context_tokens=self._estimate_chat_context_tokens(messages, max_tokens),
             request_modality=chat_profile.request_modality,
+            structured_output_requested=structured_output_requested,
         )
 
     def route_embeddings(
@@ -162,6 +175,7 @@ class ModelRouter:
         required_modalities: tuple[ModelModality, ...] = (),
         requested_context_tokens: int | None = None,
         request_modality: RequestModality | None = None,
+        structured_output_requested: bool = False,
     ) -> tuple[ModelManifest, RuntimeContract, RoutingDecision]:
         alternatives: list[str] = []
         candidates = self._candidate_manifests(
@@ -178,6 +192,7 @@ class ModelRouter:
                 required_modalities=required_modalities,
                 requested_context_tokens=requested_context_tokens,
                 request_modality=request_modality,
+                structured_output_requested=structured_output_requested,
                 alternatives=alternatives,
             )
             if not scored_candidates:
@@ -214,6 +229,7 @@ class ModelRouter:
                 required_modalities=required_modalities,
                 requested_context_tokens=requested_context_tokens,
                 request_modality=request_modality,
+                structured_output_requested=structured_output_requested,
                 alternatives=alternatives,
             )
             scored_candidates.extend(manifest_candidates)
@@ -309,7 +325,12 @@ class ModelRouter:
                     capability,
                     request_modality=request_modality,
                 )
-                runtime_reason = f"Supported via `{runtime.name}`."
+                support_path = runtime_support_path_for_affinity(runtime.affinity)
+                runtime_reason = (
+                    f"Supported via bridge-backed `{runtime.name}`."
+                    if support_path == RuntimeSupportPath.BRIDGE
+                    else f"Supported via `{runtime.name}`."
+                )
                 if runtime_preference is not None and runtime_preference.adopted:
                     runtime_reason = f"{runtime_reason[:-1]} with benchmark-backed local routing preference."
                 elif runtime_preference is not None and runtime_preference.downgrade_reason is not None:
@@ -325,6 +346,15 @@ class ModelRouter:
                 capability_notes = [*estimate.notes, *frontier_plan_notes(frontier_plan)]
                 if runtime_preference is not None:
                     capability_notes.extend(runtime_preference.notes)
+                if support_path == RuntimeSupportPath.BRIDGE:
+                    capability_notes.append(
+                        self._bridge_capability_note(
+                            capability=capability,
+                            request_modality=request_modality,
+                        ),
+                    )
+                elif support_path == RuntimeSupportPath.PACKAGED:
+                    capability_notes.append("This capability is available through a packaged local runtime on this host.")
                 if modality_path is not None:
                     capability_notes.append(f"Default `{capability.value}` report assumes `{request_modality.value}` routing.")
                 if modality_path_reason is not None:
@@ -336,6 +366,7 @@ class ModelRouter:
                         readiness_state=CapabilityReadinessState.READY,
                         runtime_name=runtime.name,
                         runtime_affinity=runtime.affinity,
+                        support_path=support_path,
                         reason=runtime_reason,
                         estimated_memory_mb=estimate.estimated_memory_mb,
                         notes=capability_notes,
@@ -352,6 +383,7 @@ class ModelRouter:
                         notes=frontier_plan_notes(frontier_plan),
                     ),
                 )
+        measured_capabilities = self._measured_capabilities_for_model(manifest.model_id)
         return ModelCapabilityReport(
             model_id=manifest.model_id,
             display_name=manifest.display_name,
@@ -370,8 +402,76 @@ class ModelRouter:
                 validation_manifests=validation_manifests,
             ),
             capabilities=capabilities,
-            measured_capabilities=self._measured_capabilities_for_model(manifest.model_id),
+            measured_capabilities=measured_capabilities,
+            performance_core_evidence=self._performance_core_evidence_for_model(
+                manifest=manifest,
+                measured_capabilities=measured_capabilities,
+            ),
         )
+
+    def _performance_core_evidence_for_model(
+        self,
+        *,
+        manifest: ModelManifest,
+        measured_capabilities: list[MeasuredCapabilitySummary],
+    ) -> list[dict[str, object]]:
+        if manifest.conversion_status != ConversionStatus.RUNNABLE:
+            return []
+        try:
+            _, runtime, _ = self.route_chat(
+                manifest.model_id,
+                messages=[GenerateMessage(role="user", content="Portable performance-core evidence probe")],
+                max_tokens=8,
+            )
+        except RoutingError:
+            return []
+        evidence = build_portable_performance_core_evidence(
+            performance_features=runtime.performance_feature_snapshot(),
+            runtime_names=[runtime.name],
+        )
+        category_to_family = {
+            MeasuredCapabilityCategory.BATCHING: PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING,
+            MeasuredCapabilityCategory.CACHE_REUSE: PerformanceCoreEvidenceFamily.PREFIX_REUSE,
+            MeasuredCapabilityCategory.SPECULATION: PerformanceCoreEvidenceFamily.SPECULATION,
+            MeasuredCapabilityCategory.CONSTRAINED_DECODING: PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING,
+            MeasuredCapabilityCategory.COMPILE_KERNELS: PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION,
+        }
+        measured_by_family = {
+            category_to_family[summary.category]: summary
+            for summary in measured_capabilities
+            if summary.category in category_to_family
+        }
+        payloads: list[dict[str, object]] = []
+        for record in evidence:
+            measured = measured_by_family.get(record.family)
+            if measured is None:
+                payloads.append(record.model_dump(mode="json"))
+                continue
+            measured_mode = performance_core_evidence_mode_from_measured_status(measured.status)
+            payloads.append(
+                record.model_copy(
+                    update={
+                        "mode": (
+                            record.mode
+                            if measured_mode.value == "unsupported"
+                            else measured_mode
+                        ),
+                        "measured_categories": [measured.category],
+                        "sources": list(
+                            dict.fromkeys([*record.sources, PerformanceCoreEvidenceSource.MEASURED_CAPABILITY]),
+                        ),
+                        "benchmark_backed": measured.status
+                        not in {MeasuredCapabilityStatus.UNMEASURED, MeasuredCapabilityStatus.NOT_APPLICABLE},
+                        "notes": list(dict.fromkeys([*record.notes, measured.reason])),
+                        "metrics": {
+                            **record.metrics,
+                            "measured_status": measured.status.value,
+                            "measured_record_count": measured.record_count,
+                        },
+                    },
+                ).model_dump(mode="json"),
+            )
+        return payloads
 
     def _measured_capabilities_for_model(self, model_id: str) -> list[MeasuredCapabilitySummary]:
         manifest = self.model_registry.get_manifest(model_id)
@@ -391,21 +491,21 @@ class ModelRouter:
                     model_id=manifest.model_id,
                     runtime_name=runtime.name,
                 ):
+                    status, reason, details = classify_constrained_decoding_runtime_status(
+                        runtime.structured_output_runtime_status(CONSTRAINED_DECODING_PROBE_CONTRACT),
+                    )
                     self.model_registry.metadata_store.upsert_capability_probe_record(
                         category=MeasuredCapabilityCategory.CONSTRAINED_DECODING.value,
-                        probe_name="prompt_guided_structured_output",
+                        probe_name=CONSTRAINED_DECODING_CODE_PROBE_NAME,
                         host_platform=host_platform,
-                        status=MeasuredCapabilityStatus.REJECTED.value,
+                        status=status.value,
                         source=MeasuredCapabilityEvidenceSource.CODE_PROBE.value,
-                        reason=(
-                            "LewLM still records structured output as prompt-guided fallback on this host; "
-                            "decode-time constrained decoding is not yet benchmark-verified for the routed runtime."
-                        ),
+                        reason=reason,
                         runtime_name=runtime.name,
                         runtime_affinity=runtime.affinity.value,
                         model_id=manifest.model_id,
                         details={
-                            "enforcement": "prompt_guided_fallback",
+                            **details,
                             "capability": CapabilityName.CHAT.value,
                         },
                     )
@@ -443,6 +543,8 @@ class ModelRouter:
         blocked_model_ids: list[str] = []
         conversion_required_model_ids: list[str] = []
         available_runtime_names: set[str] = set()
+        packaged_runtime_names: set[str] = set()
+        bridge_runtime_names: set[str] = set()
         notes: list[str] = []
         request_modality = (
             RequestModality.TEXT_ONLY if capability in {CapabilityName.CHAT, CapabilityName.STREAMING} else None
@@ -463,22 +565,42 @@ class ModelRouter:
                     request_modality=request_modality,
                     alternatives=alternatives,
                 )
-                runtime = self._preferred_runtime(
-                    manifest,
-                    capability=capability,
-                    request_modality=request_modality,
-                    runtimes=runtimes,
-                )
                 ready_model_ids.append(manifest.model_id)
-                available_runtime_names.add(runtime.name)
+                for runtime in runtimes:
+                    available_runtime_names.add(runtime.name)
+                    support_path = runtime_support_path_for_affinity(runtime.affinity)
+                    if support_path == RuntimeSupportPath.BRIDGE:
+                        bridge_runtime_names.add(runtime.name)
+                    elif support_path == RuntimeSupportPath.PACKAGED:
+                        packaged_runtime_names.add(runtime.name)
             except RoutingError as exc:
                 blocked_model_ids.append(manifest.model_id)
                 notes.extend(_string_list(exc.details.get("alternatives")))
 
         runnable_model_count = sum(1 for manifest in candidate_manifests if manifest.conversion_status == ConversionStatus.RUNNABLE)
+        available_support_paths: list[RuntimeSupportPath] = []
+        if packaged_runtime_names:
+            available_support_paths.append(RuntimeSupportPath.PACKAGED)
+        if bridge_runtime_names:
+            available_support_paths.append(RuntimeSupportPath.BRIDGE)
+        bridge_only = bool(bridge_runtime_names) and not packaged_runtime_names
         if ready_model_ids:
             readiness_state = CapabilityReadinessState.READY
-            reason = f"LewLM can serve `{capability.value}` on this host."
+            if bridge_only and capability == CapabilityName.VISION:
+                reason = (
+                    "LewLM can serve `vision` on this host only through a bridge-backed local runtime; "
+                    "packaged non-Apple vision parity is not claimed."
+                )
+            elif bridge_only and capability in {CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH}:
+                reason = self._bridge_only_audio_reason(capability)
+            elif bridge_only:
+                reason = f"LewLM can serve `{capability.value}` on this host through a bridge-backed local runtime."
+            elif bridge_runtime_names and packaged_runtime_names:
+                reason = (
+                    f"LewLM can serve `{capability.value}` on this host through packaged and bridge-backed runtime paths."
+                )
+            else:
+                reason = f"LewLM can serve `{capability.value}` on this host through a packaged local runtime."
         elif not candidate_manifests:
             readiness_state = CapabilityReadinessState.NO_MODELS
             reason = f"No discovered models currently advertise `{capability.value}`."
@@ -493,6 +615,31 @@ class ModelRouter:
             reason = f"LewLM found `{capability.value}` candidates, but none are currently ready on this host."
 
         normalized_notes = _unique_list(notes)
+        if bridge_only and capability == CapabilityName.VISION:
+            normalized_notes.append(
+                "Ready support is bridge-backed only; image-conditioned chat depends on a compatible loopback-only "
+                "local server that accepts OpenAI-style image content blocks on `/v1/chat/completions`, and LewLM "
+                "does not claim packaged non-Apple vision parity on this host.",
+            )
+        elif bridge_only and capability == CapabilityName.AUDIO_TRANSCRIPTION:
+            normalized_notes.append(
+                "Ready support is bridge-backed only; audio transcription depends on a compatible loopback-only "
+                "local `/v1/audio/transcriptions` endpoint, and LewLM does not claim packaged non-Apple audio parity "
+                "on this host.",
+            )
+        elif bridge_only and capability == CapabilityName.AUDIO_SPEECH:
+            normalized_notes.append(
+                "Ready support is bridge-backed only; audio speech depends on a compatible loopback-only local "
+                "`/v1/audio/speech` endpoint, and LewLM does not claim packaged non-Apple audio parity on this host.",
+            )
+        elif bridge_only:
+            normalized_notes.append(
+                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host.",
+            )
+        elif bridge_runtime_names and packaged_runtime_names:
+            normalized_notes.append(
+                "Packaged runtimes remain the primary local path; bridge-backed runtimes are also available for this capability.",
+            )
         if ready_model_ids and blocked_model_ids:
             normalized_notes.append(f"{len(blocked_model_ids)} candidate model(s) are still blocked for this capability.")
         if conversion_required_model_ids:
@@ -506,6 +653,10 @@ class ModelRouter:
             readiness_state=readiness_state,
             reason=reason,
             available_runtime_names=sorted(available_runtime_names),
+            available_support_paths=available_support_paths,
+            packaged_runtime_names=sorted(packaged_runtime_names),
+            bridge_runtime_names=sorted(bridge_runtime_names),
+            bridge_only=bridge_only,
             candidate_model_count=len(candidate_manifests),
             runnable_model_count=runnable_model_count,
             ready_model_ids=ready_model_ids,
@@ -533,6 +684,8 @@ class ModelRouter:
             notes.append("Discovered models exist, but none are runnable yet on this host.")
         if any(item.readiness_state == CapabilityReadinessState.CONVERSION_REQUIRED for item in capabilities):
             notes.append("Some capabilities are one conversion step away from becoming ready.")
+        if any(item.bridge_only for item in capabilities):
+            notes.append("Some capabilities are currently available only through bridge-backed local runtimes.")
         if host_platform.total_memory_mb is None:
             reason = host_platform.total_memory_reason or "Host total memory could not be determined."
             notes.append(f"Host memory telemetry is unavailable: {reason} Memory-fit routing stays estimate-based.")
@@ -640,6 +793,7 @@ class ModelRouter:
         required_modalities: tuple[ModelModality, ...],
         requested_context_tokens: int | None,
         request_modality: RequestModality | None,
+        structured_output_requested: bool,
         alternatives: list[str],
     ) -> list[_ScoredCandidate]:
         try:
@@ -660,6 +814,7 @@ class ModelRouter:
                 required_modalities=required_modalities,
                 requested_context_tokens=requested_context_tokens,
                 request_modality=request_modality,
+                structured_output_requested=structured_output_requested,
             )
             if candidate is None:
                 if rejected_reason is not None:
@@ -759,9 +914,20 @@ class ModelRouter:
             )
         if capability is not None:
             guidance.append(f"Choose a model that supports `{capability.value}` on the current host.")
+            if capability == CapabilityName.VISION:
+                guidance.append(
+                    "On Linux and Windows, image-conditioned chat is currently bridge-backed; configure the external "
+                    "accelerator bridge with a loopback `/v1/chat/completions` endpoint that accepts OpenAI-style "
+                    "image content blocks.",
+                )
         if required_modalities:
             modality_hint = ", ".join(modality.value for modality in required_modalities)
             guidance.append(f"Retry with a model that includes these modalities: {modality_hint}.")
+            if ModelModality.VISION in required_modalities:
+                guidance.append(
+                    "Image-bearing requests need a runtime path that advertises `vision`; on Linux and Windows that "
+                    "currently means the external accelerator bridge rather than packaged GGUF parity.",
+                )
         if requested_model_id is None:
             guidance.append("If the registry looks stale, rerun `lewlm scan` before retrying the request.")
         return guidance
@@ -775,6 +941,7 @@ class ModelRouter:
         required_modalities: tuple[ModelModality, ...],
         requested_context_tokens: int | None,
         request_modality: RequestModality | None,
+        structured_output_requested: bool,
     ) -> tuple[_ScoredCandidate | None, str | None]:
         score = 0.0
         reasons: list[str] = []
@@ -864,6 +1031,11 @@ class ModelRouter:
         if modality_path_reason is not None and modality_path_reason not in reasons:
             reasons.append(modality_path_reason)
 
+        if structured_output_requested:
+            structured_score, structured_reason = self._structured_output_score(runtime)
+            score += structured_score
+            reasons.append(structured_reason)
+
         runtime_preference = self._runtime_preference_assessment(
             manifest,
             capability,
@@ -893,6 +1065,15 @@ class ModelRouter:
                     reasons.append(f"measured downgrade kept `{preferred_runtime}` as the safe default")
 
         return _ScoredCandidate(manifest=manifest, runtime=runtime, score=score, reasons=reasons), None
+
+    @staticmethod
+    def _structured_output_score(runtime: RuntimeContract) -> tuple[float, str]:
+        status = runtime.structured_output_runtime_status(CONSTRAINED_DECODING_PROBE_CONTRACT)
+        if status is not None and status.decoder_enforced:
+            return 48.0, "decode-time structured output available"
+        if status is not None and status.fallback_used:
+            return -24.0, "structured output would use prompt-guided fallback"
+        return -12.0, "structured-output enforcement is not advertised on this path"
 
     def _build_routing_decision(
         self,
@@ -924,6 +1105,7 @@ class ModelRouter:
             model_id=candidate.manifest.model_id,
             runtime_name=candidate.runtime.name,
             runtime_affinity=candidate.runtime.affinity,
+            support_path=runtime_support_path_for_affinity(candidate.runtime.affinity),
             reason=reason,
             request_modality=request_modality,
             modality_path=modality_path,
@@ -940,7 +1122,9 @@ class ModelRouter:
         requested_context_tokens: int | None,
         score_reasons: list[str] | None = None,
     ) -> str:
-        notes = [f"using explicitly requested model `{manifest.model_id}` via `{runtime.name}` for `{capability.value}`"]
+        notes = [
+            f"using explicitly requested model `{manifest.model_id}` via {self._runtime_label(runtime)} for `{capability.value}`"
+        ]
         if requested_context_tokens is not None and manifest.context_length is not None:
             notes.append(f"context fit {requested_context_tokens}/{manifest.context_length} tokens")
         if manifest.estimated_memory_mb is not None:
@@ -964,8 +1148,59 @@ class ModelRouter:
     def _build_candidate_reason(self, candidate: _ScoredCandidate, capability: CapabilityName) -> str:
         detail = "; ".join(candidate.reasons)
         return (
-            f"Automatically selected `{candidate.manifest.model_id}` via `{candidate.runtime.name}` for `{capability.value}` under "
+            f"Automatically selected `{candidate.manifest.model_id}` via {self._runtime_label(candidate.runtime)} for `{capability.value}` under "
             f"`{self.settings.runtime_policy}` policy (score {candidate.score:.1f}; {detail})."
+        )
+
+    @staticmethod
+    def _runtime_label(runtime: RuntimeContract) -> str:
+        if runtime_support_path_for_affinity(runtime.affinity) == RuntimeSupportPath.BRIDGE:
+            return f"bridge-backed `{runtime.name}`"
+        return f"`{runtime.name}`"
+
+    @staticmethod
+    def _bridge_only_audio_reason(capability: CapabilityName) -> str:
+        if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+            return (
+                "LewLM can serve `audio_transcription` on this host only through the bridge-backed external audio path; "
+                "packaged non-Apple audio parity is not claimed."
+            )
+        return (
+            "LewLM can serve `audio_speech` on this host only through the bridge-backed external audio path; "
+            "packaged non-Apple audio parity is not claimed."
+        )
+
+    @staticmethod
+    def _bridge_capability_note(
+        *,
+        capability: CapabilityName,
+        request_modality: RequestModality | None,
+    ) -> str:
+        if capability == CapabilityName.VISION:
+            return (
+                "This capability is bridge-backed on this host through a loopback-only local server; LewLM keeps the "
+                "upstream runtime boundary explicit and does not claim packaged non-Apple vision parity here."
+            )
+        if capability in {CapabilityName.CHAT, CapabilityName.STREAMING} and request_modality == RequestModality.IMAGE_CONDITIONED:
+            return (
+                "This image-conditioned request is bridge-backed on this host through a loopback-only local server; "
+                "LewLM keeps the upstream runtime boundary explicit and does not claim packaged non-Apple vision parity here."
+            )
+        if capability == CapabilityName.AUDIO_TRANSCRIPTION:
+            return (
+                "This capability is bridge-backed on this host through a loopback-only local `/v1/audio/transcriptions` "
+                "endpoint; LewLM keeps the upstream runtime boundary explicit and does not claim packaged non-Apple "
+                "audio parity here."
+            )
+        if capability == CapabilityName.AUDIO_SPEECH:
+            return (
+                "This capability is bridge-backed on this host through a loopback-only local `/v1/audio/speech` "
+                "endpoint; LewLM keeps the upstream runtime boundary explicit and does not claim packaged non-Apple "
+                "audio parity here."
+            )
+        return (
+            "This capability is adapter-backed on this host through a loopback-only local server; LewLM keeps the "
+            "upstream runtime boundary explicit."
         )
 
     def _runtime_preference_payload(

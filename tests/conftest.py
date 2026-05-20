@@ -56,7 +56,12 @@ from lewlm.runtime.paged_kv import PagedKVResidencyManager, PagedKVReservation
 from lewlm.runtime.prefix_cache import InMemoryTokenPrefixCache
 from lewlm.storage.block_cache import MultimodalEncoderCache
 from lewlm.storage import FrontierExecutionTracker, PersistentPrefixCacheStore
-from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat, StructuredOutputRuntimeStatus
+from lewlm.structured_output import (
+    GrammarResponseFormat,
+    JSONSchemaResponseFormat,
+    StructuredOutputRequest,
+    StructuredOutputRuntimeStatus,
+)
 
 _TEST_MODELS_DIR_ENV = "LEWLM_TEST_MODELS_DIR"
 _EXPECTED_EXTERNAL_MODEL_FIXTURES = (
@@ -151,6 +156,65 @@ def emit_benchmark_suite_report(
         )
 
 
+def set_host_platform(
+    monkeypatch,
+    *,
+    system: str,
+    machine: str,
+    release: str = "test-release",
+    python_version: str = "3.11.9",
+) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: system)
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: machine)
+    monkeypatch.setattr("lewlm.runtime.base.platform.system", lambda: system)
+    monkeypatch.setattr("lewlm.runtime.base.platform.machine", lambda: machine)
+    monkeypatch.setattr("lewlm.runtime.catalog.platform.system", lambda: system)
+    monkeypatch.setattr("lewlm.runtime.catalog.platform.machine", lambda: machine)
+    monkeypatch.setattr("lewlm.runtime.catalog.platform.release", lambda: release)
+    monkeypatch.setattr("lewlm.runtime.catalog.platform.python_version", lambda: python_version)
+
+
+def write_external_validation_manifest(
+    path: Path,
+    *,
+    capability_report: dict[str, object],
+    system: str,
+    machine: str,
+) -> None:
+    external_model = dict(capability_report)
+    external_model["target_platforms"] = [
+        {
+            "system": system,
+            "machine": machine,
+            "supported": True,
+            "readiness_state": "verified",
+            "verification_method": "host_probe",
+            "runtime_affinities": ["llamacpp"],
+            "reason": f"Validated on {system} {machine}.",
+            "fallback_available": False,
+            "fallback_reason": None,
+            "install_hints": [],
+            "validation_manifest_count": 0,
+            "verified_hosts": [],
+            "notes": [],
+        },
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "format": "lewlm-release-manifest-v1",
+                "generated_at": "2026-04-15T00:00:00+00:00",
+                "git_commit": "abc1234def5678",
+                "platform": {"system": system, "machine": machine, "release": "validated-host"},
+                "registered_models": [external_model],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 class FakeLlamaCppRuntime(ManagedTextRuntime):
     name = "fake_llamacpp"
     affinity = RuntimeAffinity.LLAMACPP
@@ -166,6 +230,20 @@ class FakeLlamaCppRuntime(ManagedTextRuntime):
 
     def _check_environment(self) -> tuple[bool, str | None]:
         return True, None
+
+    def structured_output_runtime_status(
+        self,
+        contract: StructuredOutputRequest | None,
+    ) -> StructuredOutputRuntimeStatus | None:
+        if contract is None or contract.type == "text":
+            return None
+        return StructuredOutputRuntimeStatus(
+            runtime=self.name,
+            mode=contract.type,
+            enforcement="decode_time",
+            decoder_enforced=True,
+            fallback_used=False,
+        )
 
     def performance_feature_snapshot(self) -> dict[str, object]:
         prefix_cache_metrics = self._prefix_cache.snapshot()
@@ -1178,6 +1256,29 @@ class FakeExternalSemanticRuntime(FakeMLXSemanticRuntime):
     supported_formats = (ModelFormat.MLX, ModelFormat.GGUF)
 
 
+class FakeExternalVisionRuntime(FakeMLXVisionRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.captured_requests: list[GenerateRequest] = []
+
+    async def _generate(self, request: GenerateRequest) -> GenerateResponse:
+        self.captured_requests.append(request.model_copy(deep=True))
+        response = await super()._generate(request)
+        return response.model_copy(update={"output_text": response.output_text.replace("Vision echo", "Adapter vision echo", 1)})
+
+    async def _stream_generate(self, request: GenerateRequest) -> AsyncIterator[str]:
+        self.captured_requests.append(request.model_copy(deep=True))
+        output = _fake_vision_output_text(request).replace("Vision echo", "Adapter vision echo", 1)
+        rendered_text = output.removeprefix("Adapter vision echo: ")
+        for chunk in ("Adapter vision echo", ": ", rendered_text):
+            if chunk:
+                yield chunk
+
+
 class FakeMLXConversionBackend:
     name = "fake_mlx_lm"
 
@@ -1712,6 +1813,30 @@ def app_with_fake_external_semantic_runtime(
     services_with_fake_external_semantic_runtime,
 ):
     return create_app(temp_settings, services=services_with_fake_external_semantic_runtime)
+
+
+@pytest.fixture
+def services_with_fake_external_vision_runtime(
+    temp_settings: LewLMSettings,
+    sample_chat_models_root: Path,
+):
+    return bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalVisionRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
+        },
+    )
+
+
+@pytest.fixture
+def app_with_fake_external_vision_runtime(
+    temp_settings: LewLMSettings,
+    services_with_fake_external_vision_runtime,
+):
+    return create_app(temp_settings, services=services_with_fake_external_vision_runtime)
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ LewLM now reports one consistent `readiness_state` for capability checks:
 - `install_profiles.profiles[]` with per-profile readiness and notes
 - `readiness.status` for an overall host-app summary (`ready`, `partial`, or `blocked`)
 - `readiness.ready_capability_count` and `readiness.capability_count`
-- `readiness.capabilities[]` with per-capability readiness details and candidate model counts
+- `readiness.capabilities[]` with per-capability readiness details, candidate model counts, and support-path labels such as `packaged` vs `bridge`
 
 Use this route when your app needs a low-cost answer to "what did this LewLM install include, and can it do chat, embeddings, rerank, or audio work here?"
 
@@ -35,9 +35,12 @@ Use this route when your app needs a low-cost answer to "what did this LewLM ins
 `/v1/runtime/stats` includes the same `readiness` block plus deeper runtime detail:
 
 - per-runtime `readiness_state`
+- per-capability `available_support_paths`, `packaged_runtime_names`, `bridge_runtime_names`, and `bridge_only`
 - loaded-model and scheduler state
 - benchmark, cache, and target-platform diagnostics
 - `runtime_support_strategy` so host apps can see which runtime family is first-class on the current product line, which non-Apple path LewLM now productizes, and which paths remain bridge-only
+
+For cross-platform audio specifically, `bridge_only=true` means LewLM can serve the public audio request class on this host, but only through the loopback external-accelerator bridge rather than a packaged runtime.
 
 Use this route when your app needs to choose a degraded mode, show a diagnostics screen, or capture startup telemetry.
 
@@ -46,9 +49,21 @@ Use this route when your app needs to choose a degraded mode, show a diagnostics
 `GET /v1/models/{model_id}/capabilities` now exposes:
 
 - `runtime_candidates[].readiness_state`
+- `runtime_candidates[].support_path`
 - `capabilities[].readiness_state`
+- `capabilities[].support_path`
 
 That lets a host app answer "is this exact model ready for chat or audio on this machine?" without translating several booleans and fallback notes by hand.
+
+## Failure envelopes
+
+When a request fails because the current host or selected runtime path cannot serve it, LewLM keeps the same machine-readable diagnostics across host-app surfaces:
+
+- HTTP API responses return a top-level `error` object with `code`, `message`, and `details`
+- typed local-server helpers raise `LewLMAppClientHTTPError` with the same `code`, `status_code`, and `details`
+- `details` can carry parity-specific fields such as `support_path`, `feature_class`, `available_support_paths`, `bridge_only`, and `fallback_guidance`
+
+That means readiness checks and request-time failures use the same vocabulary when a host app needs to downgrade, explain a bridge-only path, or show operator guidance.
 
 ## Event envelopes
 

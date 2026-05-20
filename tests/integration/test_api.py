@@ -7,11 +7,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
+import pytest
 
 from lewlm.api.app import create_app
 from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.contracts import (
     CapabilityName,
+    GenerateMessage,
     GenerateRequest,
     GenerateResponse,
     ModelFormat,
@@ -19,54 +21,295 @@ from lewlm.core.contracts import (
     ModelModality,
     RuntimeAffinity,
 )
+from lewlm.documents.ingest.ocr import OcrBackendStatus
 from lewlm.runtime.base import ManagedTextRuntime
+from lewlm.runtime.catalog import RuntimeCatalog
 
-from conftest import FakeLlamaCppRuntime
+from conftest import (
+    FakeMLXAudioRuntime,
+    FakeExternalVisionRuntime,
+    FakeLlamaCppRuntime,
+    UnavailableMLXTextRuntime,
+    set_host_platform,
+    write_external_validation_manifest,
+)
+
+
+class PromptGuidedLlamaCppRuntime(FakeLlamaCppRuntime):
+    def structured_output_runtime_status(self, contract):
+        status = super().structured_output_runtime_status(contract)
+        if status is None:
+            return None
+        status.enforcement = "prompt_guided"
+        status.decoder_enforced = False
+        status.fallback_used = True
+        status.fallback_reason = "Fake runtime preserves structured-output requests without decoder enforcement."
+        return status
+
+
+class FakeExternalAudioRuntime(FakeMLXAudioRuntime):
+    name = "local_external_adapter"
+    affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    supported_formats = (ModelFormat.MLX, ModelFormat.GGUF, ModelFormat.AUDIO_FOLDER)
 
 
 def _api_upload_workspaces(temp_settings) -> list[Path]:
     return sorted(path for path in temp_settings.temp_dir.glob("api-upload-*") if path.is_dir())
 
 
-def _write_external_validation_manifest(
-    path: Path,
-    *,
-    capability_report: dict[str, object],
+def _stub_install_profile_modules(monkeypatch, installed: set[str]) -> None:
+    monkeypatch.setattr(
+        "lewlm.install_profiles._missing_modules",
+        lambda module_names: [name for name in module_names if name not in installed],
+    )
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_ocr_backend",
+        lambda: OcrBackendStatus(available=False, backend_name="pytesseract", reason="The `tesseract` binary is not installed."),
+    )
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "settings_updates", "expected_profile", "expected_feature_paths"),
+    [
+        (
+            "Darwin",
+            "arm64",
+            {},
+            "mlx_local_backend",
+            {
+                "chat": "packaged",
+                "semantic_text": "packaged",
+                "vision": "packaged",
+                "audio": "packaged",
+                "structured_output": "packaged",
+            },
+        ),
+        (
+            "Linux",
+            "x86_64",
+            {
+                "external_accelerator_enabled": True,
+                "external_accelerator_base_url": "http://127.0.0.1:8000",
+                "external_accelerator_profile": "vllm_local",
+            },
+            "gguf_fallback_backend",
+            {
+                "chat": "packaged",
+                "semantic_text": "packaged",
+                "vision": "bridge",
+                "audio": "bridge",
+                "structured_output": "packaged",
+            },
+        ),
+        (
+            "Windows",
+            "AMD64",
+            {
+                "external_accelerator_enabled": True,
+                "external_accelerator_base_url": "http://127.0.0.1:8000",
+                "external_accelerator_profile": "vllm_local",
+            },
+            "gguf_fallback_backend",
+            {
+                "chat": "packaged",
+                "semantic_text": "packaged",
+                "vision": "bridge",
+                "audio": "bridge",
+                "structured_output": "packaged",
+            },
+        ),
+    ],
+)
+def test_health_endpoint_reports_platform_matrix_payload(
+    temp_settings,
+    monkeypatch,
+    system: str,
+    machine: str,
+    settings_updates: dict[str, object],
+    expected_profile: str,
+    expected_feature_paths: dict[str, str],
+) -> None:
+    set_host_platform(monkeypatch, system=system, machine=machine)
+    _stub_install_profile_modules(
+        monkeypatch,
+        {
+            "mlx",
+            "mlx_lm",
+            "mlx_vlm",
+            "mlx_audio",
+            "llama_cpp",
+        },
+    )
+    monkeypatch.setattr(
+        RuntimeCatalog,
+        "host_total_memory_snapshot",
+        staticmethod(lambda: (24 * 1024, "synthetic", None)),
+    )
+    settings = temp_settings.with_updates(**settings_updates)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    recommendations = {
+        item["feature_class"]: item
+        for item in payload["install_profiles"]["recommended_feature_paths"]
+    }
+
+    assert payload["install_profiles"]["recommended_profile_id"] == expected_profile
+    assert payload["readiness"]["host_platform"]["system"] == system
+    assert payload["readiness"]["host_platform"]["machine"] == machine
+    assert payload["readiness"]["host_platform"]["total_memory_source"] == "synthetic"
+    for feature_class, support_path in expected_feature_paths.items():
+        assert recommendations[feature_class]["support_path"] == support_path
+
+
+@pytest.mark.parametrize(
+    ("system", "machine"),
+    [
+        ("Linux", "x86_64"),
+        ("Windows", "AMD64"),
+    ],
+)
+def test_health_endpoint_reports_bridge_only_vision_readiness_on_non_apple_hosts(
+    temp_settings,
+    sample_chat_models_root,
+    monkeypatch,
     system: str,
     machine: str,
 ) -> None:
-    external_model = dict(capability_report)
-    external_model["target_platforms"] = [
-        {
-            "system": system,
-            "machine": machine,
-            "supported": True,
-            "readiness_state": "verified",
-            "verification_method": "host_probe",
-            "runtime_affinities": ["llamacpp"],
-            "reason": f"Validated on {system} {machine}.",
-            "fallback_available": False,
-            "fallback_reason": None,
-            "install_hints": [],
-            "validation_manifest_count": 0,
-            "verified_hosts": [],
-            "notes": [],
-        },
-    ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "format": "lewlm-release-manifest-v1",
-                "generated_at": "2026-04-15T00:00:00+00:00",
-                "git_commit": "abc1234def5678",
-                "platform": {"system": system, "machine": machine, "release": "validated-host"},
-                "registered_models": [external_model],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    set_host_platform(monkeypatch, system=system, machine=machine)
+    _stub_install_profile_modules(monkeypatch, {"llama_cpp"})
+    monkeypatch.setattr(
+        RuntimeCatalog,
+        "host_total_memory_snapshot",
+        staticmethod(lambda: (24 * 1024, "synthetic", None)),
     )
+    settings = temp_settings.with_updates(
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8000",
+        external_accelerator_profile="vllm_local",
+    )
+    services = bootstrap_services(
+        settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalVisionRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(),
+        },
+    )
+    try:
+        app = create_app(settings, services=services)
+        with TestClient(app) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            assert scan_response.status_code == 200
+            health_response = client.get("/v1/health")
+    finally:
+        services.close()
+
+    assert health_response.status_code == 200
+    payload = health_response.json()
+    readiness_vision = next(
+        item
+        for item in payload["readiness"]["capabilities"]
+        if item["capability"] == CapabilityName.VISION.value
+    )
+    recommendations = {
+        item["feature_class"]: item
+        for item in payload["install_profiles"]["recommended_feature_paths"]
+    }
+    profiles = {
+        item["profile"]: item
+        for item in payload["install_profiles"]["profiles"]
+    }
+
+    assert payload["readiness"]["host_platform"]["system"] == system
+    assert payload["readiness"]["host_platform"]["machine"] == machine
+    assert readiness_vision["ready"] is True
+    assert readiness_vision["bridge_only"] is True
+    assert readiness_vision["available_support_paths"] == ["bridge"]
+    assert readiness_vision["available_runtime_names"] == ["local_external_adapter"]
+    assert recommendations["vision"]["support_path"] == "bridge"
+    assert profiles["external_accelerator_bridge_backend"]["ready"] is True
+
+
+@pytest.mark.parametrize(
+    ("system", "machine"),
+    [
+        ("Linux", "x86_64"),
+        ("Windows", "AMD64"),
+    ],
+)
+def test_health_endpoint_reports_bridge_only_audio_readiness_on_non_apple_hosts(
+    temp_settings,
+    monkeypatch,
+    system: str,
+    machine: str,
+) -> None:
+    set_host_platform(monkeypatch, system=system, machine=machine)
+    _stub_install_profile_modules(monkeypatch, {"llama_cpp"})
+    monkeypatch.setattr(
+        RuntimeCatalog,
+        "host_total_memory_snapshot",
+        staticmethod(lambda: (24 * 1024, "synthetic", None)),
+    )
+    audio_dir = temp_settings.models_dir[0] / "whisper-mini-audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "config.json").write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
+    (audio_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+    settings = temp_settings.with_updates(
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8000",
+        external_accelerator_profile="vllm_local",
+    )
+    services = bootstrap_services(
+        settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalAudioRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(),
+        },
+    )
+    try:
+        app = create_app(settings, services=services)
+        with TestClient(app) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            assert scan_response.status_code == 200
+            health_response = client.get("/v1/health")
+    finally:
+        services.close()
+
+    assert health_response.status_code == 200
+    payload = health_response.json()
+    readiness_by_capability = {
+        item["capability"]: item
+        for item in payload["readiness"]["capabilities"]
+    }
+    recommendations = {
+        item["feature_class"]: item
+        for item in payload["install_profiles"]["recommended_feature_paths"]
+    }
+    profiles = {
+        item["profile"]: item
+        for item in payload["install_profiles"]["profiles"]
+    }
+
+    for capability_name, expected_endpoint in (
+        (CapabilityName.AUDIO_TRANSCRIPTION.value, "/v1/audio/transcriptions"),
+        (CapabilityName.AUDIO_SPEECH.value, "/v1/audio/speech"),
+    ):
+        readiness = readiness_by_capability[capability_name]
+        assert readiness["ready"] is True
+        assert readiness["bridge_only"] is True
+        assert readiness["available_support_paths"] == ["bridge"]
+        assert readiness["available_runtime_names"] == ["local_external_adapter"]
+        assert expected_endpoint in " ".join(readiness["notes"])
+
+    assert recommendations["audio"]["support_path"] == "bridge"
+    assert "bridge-only" in recommendations["audio"]["summary"]
+    assert profiles["external_accelerator_bridge_backend"]["ready"] is True
 
 
 def test_health_endpoint_reports_service_status(temp_settings) -> None:
@@ -82,6 +325,11 @@ def test_health_endpoint_reports_service_status(temp_settings) -> None:
     assert any(
         item["profile"] == "external_accelerator_bridge_backend"
         for item in payload["install_profiles"]["profiles"]
+    )
+    assert len(payload["install_profiles"]["recommended_feature_paths"]) == 5
+    assert any(
+        item["feature_class"] == "structured_output"
+        for item in payload["install_profiles"]["recommended_feature_paths"]
     )
     assert payload["readiness"]["status"] == "blocked"
     assert payload["readiness"]["ready_capability_count"] == 0
@@ -217,7 +465,7 @@ def test_model_capabilities_endpoint_reports_runtime_candidates_and_validation_m
         baseline_services.close()
 
     validation_manifest_path = temp_settings.data_dir / "validation" / "linux-validation.json"
-    _write_external_validation_manifest(
+    write_external_validation_manifest(
         validation_manifest_path,
         capability_report=baseline_capability,
         system="Linux",
@@ -256,8 +504,10 @@ def test_model_capabilities_endpoint_reports_runtime_candidates_and_validation_m
         and item["readiness_state"] == "ready"
         for item in payload["capabilities"]
     )
+    assert any(item["family"] == "constrained_decoding" for item in payload["performance_core_evidence"])
     measured = {item["category"]: item for item in payload["measured_capabilities"]}
-    assert measured["constrained_decoding"]["status"] == "rejected"
+    assert measured["constrained_decoding"]["status"] == "supported"
+    assert "decode-time constrained decoding" in measured["constrained_decoding"]["reason"]
     linux_target = next(item for item in payload["target_platforms"] if item["system"] == "Linux" and item["machine"] == "x86_64")
     assert linux_target["readiness_state"] == "verified_external"
     assert linux_target["verification_method"] == "external_release_manifest"
@@ -265,6 +515,36 @@ def test_model_capabilities_endpoint_reports_runtime_candidates_and_validation_m
 
     assert missing_response.status_code == 404
     assert missing_response.json()["error"]["code"] == "model_not_found"
+
+
+def test_model_capabilities_endpoint_reports_constrained_decoding_fallback_for_non_enforcing_runtime(
+    temp_settings,
+    sample_models_root: Path,
+) -> None:
+    services = bootstrap_services(
+        temp_settings,
+        runtime_overrides={RuntimeAffinity.LLAMACPP: PromptGuidedLlamaCppRuntime()},
+    )
+    try:
+        app = create_app(temp_settings, services=services)
+        with TestClient(app) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            manifests = scan_response.json()["manifests"]
+            gguf_model_id = next(
+                manifest["model_id"]
+                for manifest in manifests
+                if manifest["format_type"] == "gguf"
+            )
+            capability_response = client.get(f"/v1/models/{gguf_model_id}/capabilities")
+    finally:
+        services.close()
+
+    assert capability_response.status_code == 200
+    payload = capability_response.json()
+    assert any(item["family"] == "constrained_decoding" for item in payload["performance_core_evidence"])
+    measured = {item["category"]: item for item in payload["measured_capabilities"]}
+    assert measured["constrained_decoding"]["status"] == "fallback"
+    assert "without decoder enforcement" in measured["constrained_decoding"]["reason"]
 
 
 def test_skill_and_tool_catalog_endpoints_and_execution(
@@ -1738,6 +2018,98 @@ def test_chat_attachment_feature_cache_reuses_and_invalidates_local_artifacts(
     assert runtime_features["block_disk_cache"]["supported"] is True
     assert runtime_features["multimodal_feature_caching"]["supported"] is True
     assert runtime_features["multimodal_encoder_caching"]["supported"] is True
+
+
+def test_api_routes_image_conditioned_chat_through_external_bridge(
+    app_with_fake_external_vision_runtime,
+    services_with_fake_external_vision_runtime,
+    sample_attachment_sources,
+) -> None:
+    with TestClient(app_with_fake_external_vision_runtime) as client:
+        scan_response = client.post("/v1/models/scan", json={})
+        assert scan_response.status_code == 200
+        vision_model_id = next(
+            manifest["model_id"]
+            for manifest in scan_response.json()["manifests"]
+            if manifest["display_name"] == "qwen2-vl-vision-mlx"
+        )
+        chat_response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": vision_model_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe this image through the bridge."},
+                            {
+                                "type": "input_image",
+                                "path": str(sample_attachment_sources["image_one"]),
+                                "detail": "low",
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+        responses_response = client.post(
+            "/v1/responses",
+            json={
+                "model": vision_model_id,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe this image through the bridge."},
+                            {
+                                "type": "input_image",
+                                "path": str(sample_attachment_sources["image_one"]),
+                                "detail": "high",
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+        capability_response = client.get(f"/v1/models/{vision_model_id}/capabilities")
+        readiness_response = client.get("/v1/health")
+
+    assert chat_response.status_code == 200
+    payload = chat_response.json()
+    assert payload["choices"][0]["message"]["content"].startswith("Adapter vision echo:")
+    assert payload["metadata"]["model"]["runtime_name"] == "local_external_adapter"
+    assert payload["metadata"]["model"]["runtime_affinity"] == "external_accelerator"
+    assert payload["metadata"]["routing"]["request_modality"] == "image_conditioned"
+    bridge_runtime = services_with_fake_external_vision_runtime.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    assert isinstance(bridge_runtime, FakeExternalVisionRuntime)
+    user_message = next(
+        message for message in bridge_runtime.captured_requests[-1].messages if message.role == "user" and message.attachments
+    )
+    assert user_message.attachments[0].detail == "high"
+
+    assert responses_response.status_code == 200
+    responses_payload = responses_response.json()
+    assert responses_payload["output_text"].startswith("Adapter vision echo:")
+    assert responses_payload["metadata"]["model"]["runtime_name"] == "local_external_adapter"
+    assert responses_payload["metadata"]["model"]["runtime_affinity"] == "external_accelerator"
+    assert responses_payload["metadata"]["routing"]["request_modality"] == "image_conditioned"
+
+    assert capability_response.status_code == 200
+    vision_capability = next(
+        item for item in capability_response.json()["capabilities"] if item["capability"] == CapabilityName.VISION.value
+    )
+    assert vision_capability["runtime_affinity"] == "external_accelerator"
+    assert vision_capability["support_path"] == "bridge"
+    assert any("does not claim packaged non-Apple vision parity" in note for note in vision_capability["notes"])
+
+    assert readiness_response.status_code == 200
+    readiness_vision = next(
+        item for item in readiness_response.json()["readiness"]["capabilities"] if item["capability"] == CapabilityName.VISION.value
+    )
+    assert readiness_vision["bridge_only"] is True
+    assert readiness_vision["available_support_paths"] == ["bridge"]
+    assert "packaged non-Apple vision parity is not claimed" in readiness_vision["reason"]
+    assert any("OpenAI-style image content blocks" in note for note in readiness_vision["notes"])
 
 
 def test_session_endpoints_support_create_chat_export_import_and_messages(

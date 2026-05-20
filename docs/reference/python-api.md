@@ -22,7 +22,7 @@ The facade also supports async context-manager usage and `create_app()` for bind
 | `create_app()` | build a FastAPI app bound to the facade |
 | `app_client()` | typed app-helper surface for embedded callers |
 | `config_snapshot()` | redacted settings snapshot |
-| `health()` | in-process install-profile, health, and readiness snapshot |
+| `health()` | in-process install-profile, recommended-feature-path, health, and readiness snapshot |
 | `close()` / `aclose()` | release owned resources |
 
 ### Models and capabilities
@@ -125,11 +125,14 @@ These helpers stay intentionally narrow and do not replace the raw `LewLM` facad
 
 For host-app adoption, two details matter in particular:
 
+- `health()` includes `install_profiles.recommended_feature_paths`, which mirrors the current-host operator defaults printed by `lewlm doctor`.
+- each recommended feature-path entry carries `feature_class`, `profile`, `label`, `support_path`, `summary`, and `fallback_guidance`, so embedded and local-server callers can consume the same packaged-versus-bridge contract.
 - `chat_completion()` and `responses()` accept `response_format` plus `include_prompt_trace` so apps can request structured output and inspect the returned contract; `response_format_path` is available when you want the same contract loaded from a local file, and the legacy `output_schema` / `output_schema_path` aliases remain available for compatibility.
-- `chat_completion()` and `responses()` return `structured_output` metadata so host apps can distinguish prompt-guided fallback from future decode-time enforcement and inspect post-generation validation details.
+- `chat_completion()` and `responses()` return `structured_output` metadata so host apps can distinguish prompt-guided fallback from decode-time enforcement on supported runtimes and inspect post-generation validation details.
 - `chat_completion()` and `responses()` accept `citation_context` so host apps can round-trip LewLM ingest packaging into grounded answers and receive stable `citations[]` back.
 - `ingest_documents()` returns the same `sources[]` and `chunks[]` packages as the HTTP API, including `source_id`, `chunk_id`, `section_id`, `source_label`, and `section_label` fields that are useful for citation packaging.
 - `retrieve_context()` consumes those same caller-provided `sources[]` and `chunks[]` packages and returns ranked context items plus stage metadata for embedding and rerank passes.
+- `LewLMAppClient.from_http()` raises `LewLMAppClientHTTPError` for non-success responses, and that exception keeps the HTTP `error.code`, `error.message`, `error.details`, and `status_code` fields available to the caller.
 
 ## Example
 

@@ -98,7 +98,6 @@ from lewlm.serving_profiles import (
 from lewlm.storage import MetadataStore
 from lewlm.structured_output import (
     StructuredOutputResult,
-    StructuredOutputRuntimeStatus,
     build_structured_output_request,
 )
 from lewlm.telemetry.runtime_metrics import RuntimeMetricsRecorder
@@ -273,11 +272,13 @@ class ChatOrchestrator:
         serving_profile: ServingProfileApplication | None = None,
     ) -> ChatExecution:
         routed_target: tuple[ModelManifest, RuntimeContract, RoutingDecision] | None = None
+        structured_output_requested = prompt_request is not None and prompt_request.requests_structured_output()
         if self.metadata_store is not None and serving_profile is None:
             routed_target = self.model_router.route_chat(
                 model_id,
                 messages=messages,
                 max_tokens=max_tokens,
+                structured_output_requested=structured_output_requested,
             )
         resolved_serving_profile = serving_profile or self._resolve_serving_profile(
             model_id=model_id,
@@ -340,11 +341,13 @@ class ChatOrchestrator:
         serving_profile: ServingProfileApplication | None = None,
     ) -> ChatStreamSession:
         routed_target: tuple[ModelManifest, RuntimeContract, RoutingDecision] | None = None
+        structured_output_requested = prompt_request is not None and prompt_request.requests_structured_output()
         if self.metadata_store is not None and serving_profile is None:
             routed_target = self.model_router.route_chat(
                 model_id,
                 messages=messages,
                 max_tokens=max_tokens,
+                structured_output_requested=structured_output_requested,
             )
         resolved_serving_profile = serving_profile or self._resolve_serving_profile(
             model_id=model_id,
@@ -409,11 +412,13 @@ class ChatOrchestrator:
     ) -> _ChatInvocationContext:
         request_id = str(uuid4())
         created_at = int(utc_now().timestamp())
+        structured_output_requested = prompt_request is not None and prompt_request.requests_structured_output()
         if routed_target is None:
             manifest, runtime, routing = self.model_router.route_chat(
                 model_id,
                 messages=messages,
                 max_tokens=max_tokens,
+                structured_output_requested=structured_output_requested,
             )
         else:
             manifest, runtime, routing = routed_target
@@ -451,6 +456,15 @@ class ChatOrchestrator:
             max_tokens=max_tokens,
             preferred_mode=preferred_speculation_mode,
         )
+        structured_output_request = build_structured_output_request(
+            format=prompt_trace.output_contract.format,
+            schema=prompt_trace.output_contract.schema_payload,
+            grammar=prompt_trace.output_contract.grammar,
+            syntax=prompt_trace.output_contract.syntax,
+            name=prompt_trace.output_contract.name,
+            strict=prompt_trace.output_contract.strict,
+        )
+        structured_output_runtime = runtime.structured_output_runtime_status(structured_output_request)
         request = GenerateRequest(
             model_id=manifest.model_id,
             messages=compiled_messages,
@@ -458,14 +472,7 @@ class ChatOrchestrator:
             temperature=temperature,
             reasoning_visibility=reasoning_visibility,
             speculation=planned_speculation.request if planned_speculation is not None else None,
-            structured_output=build_structured_output_request(
-                format=prompt_trace.output_contract.format,
-                schema=prompt_trace.output_contract.schema_payload,
-                grammar=prompt_trace.output_contract.grammar,
-                syntax=prompt_trace.output_contract.syntax,
-                name=prompt_trace.output_contract.name,
-                strict=prompt_trace.output_contract.strict,
-            ),
+            structured_output=structured_output_request,
             request_id=request_id,
             metadata={
                 **(
@@ -492,20 +499,9 @@ class ChatOrchestrator:
                 **self._speculation_request_metadata(planned_speculation),
                 **(
                     {
-                        "structured_output_runtime": StructuredOutputRuntimeStatus(
-                            runtime=runtime.name,
-                            mode=prompt_trace.output_contract.format,
-                            enforcement="prompt_guided",
-                            decoder_enforced=False,
-                            fallback_used=True,
-                            fallback_reason=(
-                                f"LewLM recorded the structured-output contract, but `{runtime.name}` "
-                                f"does not expose decode-time constrained decoding for "
-                                f"`{prompt_trace.output_contract.format}` requests on this path."
-                            ),
-                        ).model_dump(mode="json")
+                        "structured_output_runtime": structured_output_runtime.model_dump(mode="json"),
                     }
-                    if prompt_trace.output_contract.format != "text"
+                    if structured_output_runtime is not None
                     else {}
                 ),
             },

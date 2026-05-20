@@ -134,6 +134,8 @@ def _normalize_path_attachment(
             source_path=str(resolved_path),
         )
         if cached_attachment is not None:
+            if isinstance(part, InputImagePart) and cached_attachment.attachment_type == "image":
+                return cached_attachment.model_copy(update={"detail": part.detail})
             return cached_attachment
     if resolved_path.is_file() and suffix in TEXT_SUFFIXES:
         _, text = read_scoped_text_file(
@@ -195,6 +197,7 @@ def _normalize_path_attachment(
         name=resolved_path.name,
         source_path=str(resolved_path),
         media_type=_source_media_type(source.source_type),
+        detail=part.detail if isinstance(part, InputImagePart) and attachment_type == "image" else None,
         extracted_text=_document_to_prompt_text(ingest_result.document),
         metadata={
             "source_type": source.source_type.value,

@@ -42,7 +42,7 @@ from lewlm.runtime.metal import MLXAccelerationTracker
 from lewlm.runtime.paged_kv import PagedKVReservation, PagedKVResidencyManager
 from lewlm.runtime.prefix_cache import InMemoryTokenPrefixCache, longest_token_prefix
 from lewlm.storage import FrontierExecutionTracker, PersistentPrefixCacheStore
-from lewlm.structured_output import StructuredOutputRuntimeStatus
+from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 
 _KV_CACHE_CONFIG_PARAMETERS = ("kv_cache_config", "cache_config")
@@ -798,6 +798,23 @@ class MLXTextRuntime(ManagedTextRuntime):
                     fallback_count=self._speculation_fallback_count,
                 ),
             ),
+            "constrained_decoding": runtime_performance_feature_report(
+                ownership=PerformanceFeatureOwnership.PARTIAL,
+                active=False,
+                modes=["prompt_guided"],
+                reason=(
+                    "LewLM preserves structured-output requests on MLX text through prompt-guided validation fallback, "
+                    "but the installed backend does not expose portable decode-time constrained decoding hooks."
+                ),
+                metrics={
+                    "decoder_enforced": False,
+                    "fallback_used": True,
+                    "enforcement": "prompt_guided",
+                },
+                notes=[
+                    "MLX text keeps the structured-output contract visible without over-claiming decode-time enforcement parity.",
+                ],
+            ),
             "paged_kv_cache": runtime_performance_feature_report(
                 ownership=PerformanceFeatureOwnership.LEWLM_OWNED,
                 active=self._paged_kv_request_count > 0,
@@ -1186,23 +1203,31 @@ class MLXTextRuntime(ManagedTextRuntime):
         return _generate_response_from_result(result=result, model_id=request.model_id)
 
     def _record_structured_output_runtime(self, request: GenerateRequest) -> None:
-        contract = request.structured_output
-        if contract is None or contract.type == "text":
+        status = self.structured_output_runtime_status(request.structured_output)
+        if status is None:
             return
+        request.metadata["structured_output_runtime"] = status.model_dump(mode="json")
+
+    def structured_output_runtime_status(
+        self,
+        contract: StructuredOutputRequest | None,
+    ) -> StructuredOutputRuntimeStatus | None:
+        if contract is None or contract.type == "text":
+            return None
         fallback_reason = (
             "MLX text does not expose decode-time constrained decoding for JSON-schema output; "
             "LewLM records the contract and validates generated JSON after generation."
             if contract.type == "json_schema"
             else "MLX text does not expose grammar-based decode-time constrained decoding."
         )
-        request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+        return StructuredOutputRuntimeStatus(
             runtime=self.name,
             mode=contract.type,
             enforcement="prompt_guided",
             decoder_enforced=False,
             fallback_used=True,
             fallback_reason=fallback_reason,
-        ).model_dump(mode="json")
+        )
 
     async def generate_batch(self, requests: Sequence[GenerateRequest]) -> list[GenerateResponse]:
         self._ensure_available()

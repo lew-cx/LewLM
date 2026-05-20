@@ -23,6 +23,22 @@ LewLM still relies on **MLX**, **MLX-VLM**, **MLX-Audio**, **llama.cpp**, and op
 
 That means LewLM already owns meaningful middleware and performance behavior on its first-class path, while still staying honest about backend-dependent execution details on secondary paths.
 
+## Parity acceptance contract
+
+Full parity in LewLM means **stable local-first middleware surfaces plus explicit support-path reporting**, not that every backend is equally packaged or equally LewLM-owned.
+
+| Feature class | Accepted packaged path | Accepted bridge path | Explicit boundary |
+| --- | --- | --- | --- |
+| Chat + streaming | Apple MLX on Apple Silicon; GGUF/llama.cpp on Darwin, Linux, and Windows | loopback-only external accelerator bridge when another local server already owns execution | bridge wins do not become LewLM-owned packaged parity |
+| Semantic text | Apple MLX on Apple Silicon; GGUF/llama.cpp with embedding-capable semantic GGUF models; rerank stays packaged through LewLM's embedding-similarity fallback when the backend lacks a native rerank API | bridge-backed semantic routes remain supported when another local server already owns `/v1/embeddings` and `/v1/rerank` | compatible semantic GGUF models stay the packaged non-Apple default, while adapter-backed semantic bridges remain explicit instead of becoming packaged parity |
+| Vision | Apple MLX vision on Apple Silicon | external bridge with OpenAI-style image content blocks | no packaged non-Apple vision parity is claimed today |
+| Audio | Apple MLX audio on Apple Silicon | external bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints | bridge-only non-Apple audio parity is accepted today; no packaged non-Apple audio path is claimed |
+| Structured output | GGUF/llama.cpp is the first-class packaged decode-time enforcement path; MLX keeps prompt-guided fallback | bridge may preserve request shape but is not the portable decode-time enforcement default | LewLM reports fallback explicitly instead of overclaiming equal runtime parity |
+| Documents | `.[documents]` stays additive across supported hosts | not a bridge-backed runtime class | LewLM remains a middleware backend, not a vector database or workflow framework |
+| Performance-core evidence | strongest on the Apple MLX text path, with selective benchmark-backed GGUF reporting | bridge paths can report preserved backend-native or partial behavior | LewLM does not claim universal performance-core ownership on every backend |
+
+The machine-readable acceptance signals are already exposed through `install_profiles.recommended_feature_paths[].support_path`, target-platform `verification_method` values such as `host_probe`, and runtime support strategy or performance-core reports with `benchmark_backed` evidence flags. The full acceptance matrix lives in [docs/reference/runtime-capability-matrix.md](docs/reference/runtime-capability-matrix.md).
+
 ## Install
 
 ```bash
@@ -52,7 +68,7 @@ Choose the install profile that matches what you want LewLM to do:
 | --- | --- | --- | --- | --- |
 | Core only | `python -m pip install -e .` | contract-first integration, registry, health, and config work | CLI, local API, model registry, routing, readiness surfaces | No inference runtime or documents extras |
 | Apple MLX local backend | `python -m pip install -e ".[mlx]"` | Apple Silicon local text, vision, and audio serving | MLX runtime adapters on supported hosts | First-class packaged runtime on Apple Silicon |
-| Cross-platform GGUF backend | `python -m pip install -e ".[llamacpp]"` | packaged local serving on macOS, Linux, and Windows | llama.cpp-backed GGUF runtime | First-class non-Apple runtime family |
+| Cross-platform GGUF backend | `python -m pip install -e ".[llamacpp]"` | packaged local serving on macOS, Linux, and Windows | llama.cpp-backed GGUF runtime for chat, embeddings, and packaged rerank fallback | First-class non-Apple runtime family; non-Apple audio still uses the bridge path |
 | Cross-platform external accelerator bridge | `python -m pip install -e .` | LewLM in front of another local loopback server | base package plus the built-in bridge runtime pack | Requires `LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true` and `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL`; LewLM does not install the external server |
 | Documents add-on | `python -m pip install -e ".[documents]"` | local ingest, render, and transform workflows | PDF, DOCX, XLSX, OCR-oriented, and deterministic artifact packages | Additive; pair with a runtime profile when you also want inference |
 
@@ -64,9 +80,19 @@ Common combinations:
 - `python -m pip install -e ".[llamacpp,documents]"` for cross-platform GGUF plus document workflows
 - `python -m pip install -e ".[dev,documents]"` for repository development and tests
 
-On **Linux** and **Windows**, start with `.[llamacpp]` when you want packaged local model execution. This is now LewLM's first-class non-Apple path. If you already run a local OpenAI-compatible server, including an NVIDIA-oriented Linux/Windows service, the external accelerator bridge is the intended path for that topology. LewLM does not bundle the server itself; embeddings require a compatible local `/v1/embeddings` endpoint, and rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension.
+On **Linux** and **Windows**, start with `.[llamacpp]` when you want packaged local model execution. This is now LewLM's first-class non-Apple path for text workloads and semantic GGUF models. Embeddings stay packaged there for compatible GGUF models, and rerank stays honest by using LewLM's packaged embedding-similarity fallback when llama.cpp does not expose a native rerank API. If you already run a local OpenAI-compatible server, including an NVIDIA-oriented Linux/Windows service, the external accelerator bridge remains the intended path for that topology and the current bridge-only non-Apple audio parity path. LewLM does not bundle the server itself; bridge-backed semantic routes still require compatible local `/v1/embeddings` and `/v1/rerank` endpoints or equivalent extensions, and audio requires compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints that LewLM probes separately.
 
-`lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
+`lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host, plus `recommended_feature_paths` for the current host's default operator routes. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
+
+## Recommended feature paths by platform
+
+| Platform | Chat | Semantic text | Vision | Audio | Structured output |
+| --- | --- | --- | --- | --- | --- |
+| macOS | Apple MLX on Apple Silicon; GGUF on non-MLX Macs | Apple MLX on Apple Silicon; external bridge on non-MLX Macs | Apple MLX vision on Apple Silicon; external bridge on non-MLX Macs | Apple MLX audio on Apple Silicon; external bridge on non-MLX Macs | GGUF/llama.cpp when you need decode-time enforcement; MLX remains prompt-guided fallback |
+| Linux | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
+| Windows | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
+
+`semantic text` covers embeddings and rerank, and `structured output` here means requests that need decode-time JSON-schema or grammar enforcement. On non-Apple hosts, GGUF keeps the packaged semantic default while the bridge remains explicit adapter guidance when another local server owns semantic execution, and `lewlm doctor` plus `GET /v1/health` surface the current-host mapping directly.
 
 ## Quick start
 
@@ -99,7 +125,7 @@ Use the quick path that matches the profile you installed:
 
 3. **Cross-platform external accelerator bridge**
 
-   Use this when LewLM should front a loopback-only local OpenAI-compatible server instead of importing a runtime package directly. This is where NVIDIA-oriented Linux/Windows local servers fit conceptually. LewLM does not replace the packaged GGUF runtime path for LewLM-managed execution, and benchmark wins on this bridge do not promote it over the first-class packaged runtime when that path is available. The bridge remains a documented cross-platform path for adapter-backed chat, streaming, embeddings, and rerank when the local server exposes the needed endpoints.
+   Use this when LewLM should front a loopback-only local OpenAI-compatible server instead of importing a runtime package directly. This is where NVIDIA-oriented Linux/Windows local servers fit conceptually. LewLM does not replace the packaged GGUF runtime path for LewLM-managed execution, and benchmark wins on this bridge do not promote it over the first-class packaged runtime when that path is available. The bridge remains a documented cross-platform path for adapter-backed chat, streaming, embeddings, and rerank when the local server exposes the needed endpoints, even though non-Apple semantic defaults now stay packaged on compatible GGUF models.
 
    ```text
    LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true
@@ -142,7 +168,7 @@ LewLM's strongest performance-ownership claim is still the first-class Apple Sil
 
 A few other boundaries matter too:
 
-- **Structured output and constrained decoding are runtime-dependent.** LewLM enforces JSON-schema and grammar contracts at decode time on supported paths and returns explicit prompt-guided fallback metadata when a selected runtime cannot honor the requested constraint mode.
+- **Structured output and constrained decoding are runtime-dependent.** The packaged llama.cpp/GGUF path is LewLM's first-class cross-platform decode-time enforcement path for JSON-schema and grammar contracts today. Other runtimes still return explicit prompt-guided fallback metadata when the selected backend cannot honor the requested constraint mode.
 - **Performance-core ownership is selective, not universal.** LewLM can own serving-core state, batching, paged-KV accounting, prefix reuse, speculation control, and benchmark-backed defaults where it has a first-class path, without claiming parity across every backend.
 - **Optional modules stay optional.** Documents and local-tooling surfaces add real value, but they should not be mistaken for LewLM's always-on core identity.
 - **Frontier architecture reporting is partly planning and diagnostics.** LewLM can detect and annotate hybrid SSM/MoE traits, but some frontier reporting is still metadata-driven rather than proof of a custom execution core.

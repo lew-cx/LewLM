@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 from urllib.error import HTTPError, URLError
@@ -16,6 +18,7 @@ from lewlm.api.routes.chat import (
     _prompt_request_from_payload,
     _reasoning_visibility_from_request,
 )
+from lewlm.api.routes.multimodal import _decode_audio_bytes
 from lewlm.api.schemas.chat import (
     ChatCompletionChoice,
     ChatCompletionChoiceMessage,
@@ -32,6 +35,11 @@ from lewlm.api.schemas.tools import ToolListResponse
 from lewlm.core.citations import CitationContextPackage
 from lewlm.api.schemas.health import HealthResponse
 from lewlm.api.schemas.multimodal import (
+    AudioSpeechCreateRequest,
+    AudioSpeechCreateResponse,
+    AudioTranscriptionCreateRequest,
+    AudioTranscriptionCreateResponse,
+    AudioTranscriptionSegment,
     EmbeddingCreateRequest,
     EmbeddingCreateResponse,
     EmbeddingDatum,
@@ -44,6 +52,7 @@ from lewlm.api.schemas.multimodal import (
     RerankResultItem,
 )
 from lewlm.core.contracts import ReasoningVisibility
+from lewlm.core.errors import LewLMError, error_from_dict
 from lewlm.core.execution_metadata import build_tool_execution_metadata
 from lewlm.documents.ingest.models import DocumentChunk, IngestedDocumentSource
 from lewlm.structured_output import StructuredOutputRequest
@@ -60,17 +69,31 @@ if TYPE_CHECKING:
     from lewlm.library import LewLM
 
 
-class LewLMAppClientHTTPError(RuntimeError):
+class LewLMAppClientHTTPError(LewLMError):
     """Raised when the HTTP-backed helper receives a non-success response."""
 
-    def __init__(self, *, url: str, status_code: int, body: str | None = None) -> None:
-        message = f"LewLM app client request failed with HTTP {status_code} for {url}."
-        if body:
-            message = f"{message} {body}"
-        super().__init__(message)
+    def __init__(
+        self,
+        *,
+        url: str,
+        status_code: int,
+        body: str | None = None,
+        api_error: LewLMError | None = None,
+    ) -> None:
+        if api_error is not None:
+            message = str(api_error)
+            code = api_error.code
+            details = api_error.details
+        else:
+            message = f"LewLM app client request failed with HTTP {status_code} for {url}."
+            if body:
+                message = f"{message} {body}"
+            code = "http_error"
+            details = {}
+        super().__init__(message, code=code, status_code=status_code, details=details)
         self.url = url
-        self.status_code = status_code
         self.body = body
+        self.api_error = api_error
 
 
 class _AppClientBackend(Protocol):
@@ -93,6 +116,10 @@ class _AppClientBackend(Protocol):
     def rerank(self, payload: RerankCreateRequest) -> RerankCreateResponse: ...
 
     def retrieve_context(self, payload: RetrievalContextRequest) -> RetrievalContextResponse: ...
+
+    def transcribe_audio(self, payload: AudioTranscriptionCreateRequest) -> AudioTranscriptionCreateResponse: ...
+
+    def synthesize_speech(self, payload: AudioSpeechCreateRequest) -> AudioSpeechCreateResponse: ...
 
     def ingest_documents(self, payload: DocumentIngestRequest) -> DocumentIngestResponse: ...
 
@@ -403,6 +430,69 @@ class LewLMAppClient:
             rerank_model=rerank_model,
         )
         return self._backend.retrieve_context(payload)
+
+    def transcribe_audio(
+        self,
+        request: AudioTranscriptionCreateRequest | None = None,
+        *,
+        model: str | None = None,
+        audio_bytes: bytes | None = None,
+        file_name: str = "audio.wav",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionCreateResponse:
+        """Transcribe audio with API-shaped requests and responses."""
+
+        if request is not None and any(
+            (
+                model is not None,
+                audio_bytes is not None,
+                file_name != "audio.wav",
+                language is not None,
+                prompt is not None,
+            ),
+        ):
+            raise ValueError("Pass either `request` or keyword arguments to transcribe_audio(), not both.")
+        if request is None and audio_bytes is None:
+            raise ValueError("audio_bytes is required when request is not provided.")
+        payload = request or AudioTranscriptionCreateRequest(
+            model=model,
+            audio_base64=base64.b64encode(audio_bytes or b"").decode("ascii"),
+            file_name=file_name,
+            language=language,
+            prompt=prompt,
+        )
+        return self._backend.transcribe_audio(payload)
+
+    def synthesize_speech(
+        self,
+        request: AudioSpeechCreateRequest | None = None,
+        *,
+        model: str | None = None,
+        input_text: str | None = None,
+        voice: str | None = None,
+        audio_format: str = "wav",
+    ) -> AudioSpeechCreateResponse:
+        """Synthesize speech with API-shaped requests and responses."""
+
+        if request is not None and any(
+            (
+                model is not None,
+                input_text is not None,
+                voice is not None,
+                audio_format != "wav",
+            ),
+        ):
+            raise ValueError("Pass either `request` or keyword arguments to synthesize_speech(), not both.")
+        if request is None and input_text is None:
+            raise ValueError("input_text is required when request is not provided.")
+        payload = request or AudioSpeechCreateRequest(
+            model=model,
+            input=input_text or "",
+            voice=voice,
+            format=audio_format,
+        )
+        return self._backend.synthesize_speech(payload)
 
     def ingest_documents(
         self,
@@ -723,6 +813,71 @@ class _EmbeddedAppClientBackend:
             async_name="LewLM.services.multimodal_orchestrator.retrieve_context",
         )
 
+    def transcribe_audio(self, payload: AudioTranscriptionCreateRequest) -> AudioTranscriptionCreateResponse:
+        from lewlm.library import _run_sync
+
+        async def run_transcription() -> AudioTranscriptionCreateResponse:
+            execution = await self._lewlm.services.multimodal_orchestrator.transcribe_audio(
+                model_id=payload.model,
+                audio_bytes=_decode_audio_bytes(payload.audio_base64, file_name=payload.file_name),
+                file_name=payload.file_name,
+                language=payload.language,
+                prompt=payload.prompt,
+            )
+            return AudioTranscriptionCreateResponse(
+                request_id=execution.request_id,
+                created=execution.created_at,
+                model=execution.response.model_id,
+                text=execution.response.text,
+                language=execution.response.language,
+                duration_seconds=execution.response.duration_seconds,
+                segments=[
+                    AudioTranscriptionSegment(
+                        start_seconds=segment.start_seconds,
+                        end_seconds=segment.end_seconds,
+                        text=segment.text,
+                    )
+                    for segment in execution.response.segments
+                ],
+                routing=execution.routing,
+                metadata=execution.metadata,
+            )
+
+        return _run_sync(
+            run_transcription,
+            helper_name="LewLMAppClient.transcribe_audio",
+            async_name="LewLM.services.multimodal_orchestrator.transcribe_audio",
+        )
+
+    def synthesize_speech(self, payload: AudioSpeechCreateRequest) -> AudioSpeechCreateResponse:
+        from lewlm.library import _run_sync
+
+        async def run_speech() -> AudioSpeechCreateResponse:
+            execution = await self._lewlm.services.multimodal_orchestrator.synthesize_speech(
+                model_id=payload.model,
+                input_text=payload.input,
+                voice=payload.voice,
+                audio_format=payload.format,
+            )
+            return AudioSpeechCreateResponse(
+                request_id=execution.request_id,
+                created=execution.created_at,
+                model=execution.response.model_id,
+                media_type=execution.response.media_type,
+                content_type=execution.response.media_type,
+                audio_base64=base64.b64encode(execution.response.audio_bytes).decode("ascii"),
+                voice=execution.response.voice,
+                duration_seconds=execution.response.duration_seconds,
+                routing=execution.routing,
+                metadata=execution.metadata,
+            )
+
+        return _run_sync(
+            run_speech,
+            helper_name="LewLMAppClient.synthesize_speech",
+            async_name="LewLM.services.multimodal_orchestrator.synthesize_speech",
+        )
+
     def ingest_documents(self, payload: DocumentIngestRequest) -> DocumentIngestResponse:
         services = self._lewlm.services
         envelope = services.tool_execution_service.execute(
@@ -838,6 +993,22 @@ class _HttpAppClientBackend:
             response_type=RetrievalContextResponse,
         )
 
+    def transcribe_audio(self, payload: AudioTranscriptionCreateRequest) -> AudioTranscriptionCreateResponse:
+        return self._request_json(
+            "POST",
+            "/v1/audio/transcriptions",
+            payload=payload,
+            response_type=AudioTranscriptionCreateResponse,
+        )
+
+    def synthesize_speech(self, payload: AudioSpeechCreateRequest) -> AudioSpeechCreateResponse:
+        return self._request_json(
+            "POST",
+            "/v1/audio/speech",
+            payload=payload,
+            response_type=AudioSpeechCreateResponse,
+        )
+
     def ingest_documents(self, payload: DocumentIngestRequest) -> DocumentIngestResponse:
         return self._request_json(
             "POST",
@@ -861,10 +1032,32 @@ class _HttpAppClientBackend:
                 raw = response.read()
         except HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace").strip() or None
-            raise LewLMAppClientHTTPError(url=url, status_code=exc.code, body=body_text) from exc
+            raise LewLMAppClientHTTPError(
+                url=url,
+                status_code=exc.code,
+                body=body_text,
+                api_error=_parse_http_error_payload(body_text, status_code=exc.code),
+            ) from exc
         except URLError as exc:
             raise RuntimeError(f"LewLM app client could not reach {url}: {exc.reason}") from exc
         return response_type.model_validate_json(raw)
+
+
+def _parse_http_error_payload(body_text: str | None, *, status_code: int) -> LewLMError | None:
+    if not body_text:
+        return None
+    try:
+        payload = json.loads(body_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error_payload = payload.get("error")
+    if not isinstance(error_payload, dict):
+        return None
+    normalized_payload = dict(error_payload)
+    normalized_payload.setdefault("status_code", status_code)
+    return error_from_dict(normalized_payload)
 
 
 def _normalize_paths(paths: Sequence[Path | str] | Path | str | None) -> list[str]:

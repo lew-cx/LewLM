@@ -39,6 +39,10 @@ from lewlm.core.contracts import (
     MeasuredCapabilitySummary,
     ModelManifest,
     ModelModality,
+    PerformanceCoreEvidenceFamily,
+    PerformanceCoreEvidenceMode,
+    PerformanceCoreEvidenceRecord,
+    PerformanceCoreEvidenceSource,
     PerformanceFeatureOwnership,
     RerankRequest,
     RerankResponse,
@@ -47,7 +51,10 @@ from lewlm.core.contracts import (
     RuntimeContract,
     ServiceReadinessSummary,
     SpeculationMode,
+    build_portable_performance_core_evidence,
+    normalize_performance_core_evidence_mode,
     normalize_performance_feature_ownership,
+    performance_core_evidence_mode_from_measured_status,
     normalize_runtime_performance_feature_report,
     quantization_profile_label,
     utc_now,
@@ -88,7 +95,7 @@ from lewlm.serving_profiles import (
 )
 from lewlm.storage.metadata import MetadataStore
 from lewlm.storage import BlockDiskCache
-from lewlm.structured_output import JSONSchemaResponseFormat, analyze_structured_output
+from lewlm.structured_output import analyze_structured_output
 from lewlm.telemetry.models import (
     FRONTIER_ARCHITECTURE_SUBTYPES as _FRONTIER_ARCHITECTURE_SUBTYPES,
     OPTIMIZATION_CLASS_NAMES,
@@ -122,6 +129,12 @@ from lewlm.telemetry.models import (
     ServingProfileRecommendation,
     TargetPlatformValidation,
     WorkloadOptimizationDefault,
+)
+from lewlm.telemetry.constrained_decoding import (
+    CONSTRAINED_DECODING_CODE_PROBE_NAME,
+    CONSTRAINED_DECODING_PROBE_CONTRACT,
+    classify_constrained_decoding_result,
+    classify_constrained_decoding_runtime_status,
 )
 from lewlm.telemetry.probes import summarize_measured_capabilities
 from lewlm.telemetry.runtime_metrics import RuntimeMetricsRecorder
@@ -159,14 +172,12 @@ _MEASURED_CACHE_REUSE_SCENARIOS = frozenset(
     },
 )
 
-_BENCHMARK_CONSTRAINED_DECODING_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "status": {"type": "string", "const": "ok"},
-        "request_kind": {"type": "string", "const": "benchmark_probe"},
-    },
-    "required": ["status", "request_kind"],
-    "additionalProperties": False,
+_PERFORMANCE_CORE_FAMILY_TO_MEASURED_CATEGORY: dict[PerformanceCoreEvidenceFamily, MeasuredCapabilityCategory] = {
+    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING: MeasuredCapabilityCategory.BATCHING,
+    PerformanceCoreEvidenceFamily.PREFIX_REUSE: MeasuredCapabilityCategory.CACHE_REUSE,
+    PerformanceCoreEvidenceFamily.SPECULATION: MeasuredCapabilityCategory.SPECULATION,
+    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING: MeasuredCapabilityCategory.CONSTRAINED_DECODING,
+    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION: MeasuredCapabilityCategory.COMPILE_KERNELS,
 }
 
 class TelemetryService:
@@ -308,8 +319,15 @@ class TelemetryService:
                 request_metrics=request_metrics,
                 cache_stats=cache_stats,
             ),
+            performance_core_evidence=self._runtime_health_performance_core_evidence(
+                runtime_health=runtime_health,
+                measured_registry=measured_registry,
+            ),
             optimization_defaults=optimization_defaults,
-            runtime_support_strategy=self._runtime_support_strategy(optimization_defaults=optimization_defaults),
+            runtime_support_strategy=self._runtime_support_strategy(
+                optimization_defaults=optimization_defaults,
+                runtime_health=runtime_health,
+            ),
         )
 
     def optimization_defaults(
@@ -363,7 +381,16 @@ class TelemetryService:
         self,
         *,
         optimization_defaults: OptimizationDefaultsSummary,
+        runtime_health: Sequence[dict[str, Any]],
     ) -> RuntimeSupportStrategy:
+        mlx_benchmark_families = self._runtime_path_benchmark_backed_families(
+            optimization_defaults=optimization_defaults,
+            runtime_affinity=RuntimeAffinity.MLX_TEXT,
+        )
+        gguf_benchmark_families = self._runtime_path_benchmark_backed_families(
+            optimization_defaults=optimization_defaults,
+            runtime_affinity=RuntimeAffinity.LLAMACPP,
+        )
         return RuntimeSupportStrategy(
             primary_path_id="apple_mlx",
             first_class_non_apple_path_id="gguf_llamacpp",
@@ -379,10 +406,7 @@ class TelemetryService:
                         RuntimeAffinity.MLX_VISION.value,
                         RuntimeAffinity.MLX_AUDIO.value,
                     ],
-                    benchmark_backed_defaults=self._runtime_path_has_benchmark_backed_defaults(
-                        optimization_defaults=optimization_defaults,
-                        runtime_affinity=RuntimeAffinity.MLX_TEXT,
-                    ),
+                    benchmark_backed_defaults=bool(mlx_benchmark_families),
                     lewlm_managed_layers=[
                         "stable CLI/API/Python/backend contract",
                         "capability truth, readiness, and routing honesty",
@@ -394,6 +418,16 @@ class TelemetryService:
                         "MLX model execution and decode kernels",
                         "backend attention/kernel implementation details",
                     ],
+                    performance_core_evidence=self._runtime_support_path_evidence(
+                        path_id="apple_mlx",
+                        runtime_health=runtime_health,
+                        runtime_affinities=(
+                            RuntimeAffinity.MLX_TEXT.value,
+                            RuntimeAffinity.MLX_VISION.value,
+                            RuntimeAffinity.MLX_AUDIO.value,
+                        ),
+                        benchmark_backed_families=mlx_benchmark_families,
+                    ),
                     notes=[
                         "This remains LewLM's deepest ownership path.",
                     ],
@@ -405,10 +439,7 @@ class TelemetryService:
                     install_profile="gguf_fallback_backend",
                     host_scope="Linux, Windows, and non-MLX macOS",
                     runtime_affinities=[RuntimeAffinity.LLAMACPP.value],
-                    benchmark_backed_defaults=self._runtime_path_has_benchmark_backed_defaults(
-                        optimization_defaults=optimization_defaults,
-                        runtime_affinity=RuntimeAffinity.LLAMACPP,
-                    ),
+                    benchmark_backed_defaults=bool(gguf_benchmark_families),
                     lewlm_managed_layers=[
                         "install/readiness guidance and packaged local runtime selection",
                         "model lifecycle, routing, fallback reporting, and benchmark capture",
@@ -420,6 +451,12 @@ class TelemetryService:
                         "llama.cpp-native prefix cache and prompt-lookup primitives",
                         "paged-KV, quantization, and prefill behavior when exposed by llama.cpp bindings",
                     ],
+                    performance_core_evidence=self._runtime_support_path_evidence(
+                        path_id="gguf_llamacpp",
+                        runtime_health=runtime_health,
+                        runtime_affinities=(RuntimeAffinity.LLAMACPP.value,),
+                        benchmark_backed_families=gguf_benchmark_families,
+                    ),
                     notes=[
                         "LewLM productizes one non-Apple runtime family here instead of promising equal ownership across every backend.",
                         "Benchmark-backed defaults on this path flow through serving profiles and runtime-local tuning, not adapter promotion.",
@@ -443,6 +480,12 @@ class TelemetryService:
                         "scheduler, cache, and KV residency internals",
                         "speculation and semantic-endpoint implementation details",
                     ],
+                    performance_core_evidence=self._runtime_support_path_evidence(
+                        path_id="external_accelerator_bridge",
+                        runtime_health=runtime_health,
+                        runtime_affinities=(RuntimeAffinity.EXTERNAL_ACCELERATOR.value,),
+                        benchmark_backed_families=set(),
+                    ),
                     notes=[
                         "Use this when another local server already owns low-level execution.",
                         "Bridge evidence remains useful, but this path does not replace a packaged first-class local runtime default.",
@@ -461,14 +504,456 @@ class TelemetryService:
         optimization_defaults: OptimizationDefaultsSummary,
         runtime_affinity: RuntimeAffinity,
     ) -> bool:
+        return bool(
+            TelemetryService._runtime_path_benchmark_backed_families(
+                optimization_defaults=optimization_defaults,
+                runtime_affinity=runtime_affinity,
+            ),
+        )
+
+    @staticmethod
+    def _runtime_path_benchmark_backed_families(
+        *,
+        optimization_defaults: OptimizationDefaultsSummary,
+        runtime_affinity: RuntimeAffinity,
+    ) -> set[PerformanceCoreEvidenceFamily]:
+        decision_family_map = {
+            "continuous_batching": PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING,
+            "prefix_reuse": PerformanceCoreEvidenceFamily.PREFIX_REUSE,
+            "tiered_kv_cache": PerformanceCoreEvidenceFamily.TIERED_KV,
+            "speculation": PerformanceCoreEvidenceFamily.SPECULATION,
+        }
+        benchmark_backed_families: set[PerformanceCoreEvidenceFamily] = set()
         for model in optimization_defaults.models:
             if model.runtime_affinity != runtime_affinity.value:
                 continue
-            if any(item.benchmark_backed for item in model.workload_defaults):
-                return True
-            if any(decision.benchmark_backed for decision in model.decisions.values()):
-                return True
-        return False
+            for decision_name, family in decision_family_map.items():
+                decision = model.decisions.get(decision_name)
+                if decision is not None and decision.benchmark_backed:
+                    benchmark_backed_families.add(family)
+        return benchmark_backed_families
+
+    def _measured_capability_performance_core_evidence(
+        self,
+        categories: Sequence[MeasuredCapabilitySummary],
+    ) -> list[PerformanceCoreEvidenceRecord]:
+        categories_by_family = {
+            family: next(
+                (
+                    category
+                    for category in categories
+                    if _PERFORMANCE_CORE_FAMILY_TO_MEASURED_CATEGORY.get(family) == category.category
+                ),
+                None,
+            )
+            for family in PerformanceCoreEvidenceFamily
+        }
+        evidence: list[PerformanceCoreEvidenceRecord] = []
+        for family in PerformanceCoreEvidenceFamily:
+            category = categories_by_family.get(family)
+            if category is None:
+                evidence.append(
+                    PerformanceCoreEvidenceRecord(
+                        family=family,
+                        mode=PerformanceCoreEvidenceMode.UNSUPPORTED,
+                        reason=f"No measured evidence has been recorded for `{family.value}` on this host yet.",
+                        measured_categories=[],
+                        sources=[PerformanceCoreEvidenceSource.MEASURED_CAPABILITY],
+                    ),
+                )
+                continue
+            evidence.append(
+                PerformanceCoreEvidenceRecord(
+                    family=family,
+                    mode=performance_core_evidence_mode_from_measured_status(category.status),
+                    reason=category.reason,
+                    runtime_names=list(category.runtime_names),
+                    measured_categories=[category.category],
+                    sources=[PerformanceCoreEvidenceSource.MEASURED_CAPABILITY],
+                    benchmark_backed=category.status
+                    not in {MeasuredCapabilityStatus.UNMEASURED, MeasuredCapabilityStatus.NOT_APPLICABLE},
+                    notes=[f"sources={','.join(category.sources)}"] if category.sources else [],
+                    metrics={
+                        "record_count": category.record_count,
+                        "measured_status": category.status.value,
+                    },
+                ),
+            )
+        return evidence
+
+    def _runtime_health_performance_core_evidence(
+        self,
+        *,
+        runtime_health: Sequence[dict[str, Any]],
+        measured_registry: MeasuredCapabilityRegistrySummary | None,
+    ) -> list[PerformanceCoreEvidenceRecord]:
+        runtime_records: dict[PerformanceCoreEvidenceFamily, list[PerformanceCoreEvidenceRecord]] = {
+            family: []
+            for family in PerformanceCoreEvidenceFamily
+        }
+        for runtime in runtime_health:
+            for payload in runtime.get("performance_core_evidence", []):
+                if not isinstance(payload, dict):
+                    continue
+                record = PerformanceCoreEvidenceRecord.model_validate(payload)
+                runtime_records[record.family].append(record)
+        measured_records = {
+            record.family: record
+            for record in (
+                measured_registry.performance_core_evidence
+                if measured_registry is not None
+                else []
+            )
+        }
+        aggregated: list[PerformanceCoreEvidenceRecord] = []
+        for family in PerformanceCoreEvidenceFamily:
+            records = runtime_records[family]
+            measured_record = measured_records.get(family)
+            mode = PerformanceCoreEvidenceMode.UNSUPPORTED
+            for candidate in (
+                PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                PerformanceCoreEvidenceMode.FALLBACK,
+            ):
+                if any(record.mode == candidate for record in records):
+                    mode = candidate
+                    break
+            if (
+                measured_record is not None
+                and measured_record.mode == PerformanceCoreEvidenceMode.FALLBACK
+                and mode != PerformanceCoreEvidenceMode.LEWLM_OWNED
+            ):
+                mode = PerformanceCoreEvidenceMode.FALLBACK
+            elif mode == PerformanceCoreEvidenceMode.UNSUPPORTED and measured_record is not None:
+                mode = measured_record.mode
+            runtime_names = sorted(
+                {
+                    runtime_name
+                    for record in records
+                    for runtime_name in record.runtime_names
+                },
+            )
+            feature_names = sorted(
+                {
+                    feature_name
+                    for record in records
+                    for feature_name in record.feature_names
+                },
+            )
+            notes = list(
+                dict.fromkeys(
+                    note
+                    for record in records
+                    for note in record.notes
+                    if isinstance(note, str) and note
+                ),
+            )
+            if measured_record is not None and measured_record.benchmark_backed:
+                notes = list(dict.fromkeys([*notes, measured_record.reason]))
+            reason = self._performance_core_evidence_reason_from_runtime_records(
+                family=family,
+                records=records,
+                measured_record=measured_record,
+            )
+            metrics: dict[str, Any] = {
+                "lewlm_owned_runtime_count": sum(
+                    1 for record in records if record.mode == PerformanceCoreEvidenceMode.LEWLM_OWNED
+                ),
+                "backend_native_runtime_count": sum(
+                    1 for record in records if record.mode == PerformanceCoreEvidenceMode.BACKEND_NATIVE
+                ),
+                "fallback_runtime_count": sum(
+                    1 for record in records if record.mode == PerformanceCoreEvidenceMode.FALLBACK
+                ),
+            }
+            if measured_record is not None:
+                metrics["measured_status"] = measured_record.metrics.get("measured_status")
+                metrics["measured_record_count"] = measured_record.metrics.get("record_count")
+            aggregated.append(
+                PerformanceCoreEvidenceRecord(
+                    family=family,
+                    mode=mode,
+                    reason=reason,
+                    runtime_names=runtime_names,
+                    feature_names=feature_names,
+                    measured_categories=(
+                        list(measured_record.measured_categories)
+                        if measured_record is not None
+                        else []
+                    ),
+                    sources=list(
+                        dict.fromkeys(
+                            source
+                            for record in records
+                            for source in record.sources
+                        ),
+                    )
+                    + (
+                        [PerformanceCoreEvidenceSource.MEASURED_CAPABILITY]
+                        if measured_record is not None
+                        else []
+                    ),
+                    benchmark_backed=bool(measured_record and measured_record.benchmark_backed),
+                    notes=notes,
+                    metrics=metrics,
+                ),
+            )
+        return aggregated
+
+    def _performance_core_evidence_reason_from_runtime_records(
+        self,
+        *,
+        family: PerformanceCoreEvidenceFamily,
+        records: Sequence[PerformanceCoreEvidenceRecord],
+        measured_record: PerformanceCoreEvidenceRecord | None,
+    ) -> str:
+        if records:
+            fragments: list[str] = []
+            for mode, label in (
+                (PerformanceCoreEvidenceMode.LEWLM_OWNED, "LewLM-owned"),
+                (PerformanceCoreEvidenceMode.BACKEND_NATIVE, "backend-native"),
+                (PerformanceCoreEvidenceMode.FALLBACK, "fallback"),
+            ):
+                runtime_names = sorted(
+                    {
+                        runtime_name
+                        for record in records
+                        if record.mode == mode
+                        for runtime_name in record.runtime_names
+                    },
+                )
+                if runtime_names:
+                    fragments.append(label + " on " + ", ".join(f"`{name}`" for name in runtime_names))
+            if fragments:
+                reason = f"{family.value} evidence is " + "; ".join(fragments) + "."
+                if measured_record is not None and measured_record.benchmark_backed:
+                    return reason + f" Measured evidence: {measured_record.reason}"
+                return reason
+        if measured_record is not None:
+            return measured_record.reason
+        return f"No portable `{family.value}` evidence is currently reported on this host."
+
+    def _runtime_support_path_evidence(
+        self,
+        *,
+        path_id: str,
+        runtime_health: Sequence[dict[str, Any]],
+        runtime_affinities: Sequence[str],
+        benchmark_backed_families: set[PerformanceCoreEvidenceFamily],
+    ) -> list[PerformanceCoreEvidenceRecord]:
+        runtime_records = self._runtime_support_path_runtime_records(
+            runtime_health=runtime_health,
+            runtime_affinities=runtime_affinities,
+        )
+        fallback_records = self._runtime_support_path_fallback_records(path_id=path_id)
+        fallback_by_family = {family: (mode, reason) for family, mode, reason in fallback_records}
+        resolved_records: list[PerformanceCoreEvidenceRecord] = []
+        for family in PerformanceCoreEvidenceFamily:
+            runtime_record = runtime_records.get(family)
+            fallback_mode, fallback_reason = fallback_by_family.get(
+                family,
+                (
+                    PerformanceCoreEvidenceMode.UNSUPPORTED,
+                    f"No portable `{family.value}` evidence is currently reported for `{path_id}`.",
+                ),
+            )
+            if runtime_record is not None:
+                resolved_records.append(
+                    PerformanceCoreEvidenceRecord(
+                        family=family,
+                        mode=normalize_performance_core_evidence_mode(
+                            mode=runtime_record.get("mode"),
+                            ownership=runtime_record.get("ownership"),
+                            supported=runtime_record.get("supported"),
+                            support_level=runtime_record.get("support_level"),
+                        ),
+                        reason=_string_or_none(runtime_record.get("reason")) or fallback_reason,
+                        runtime_names=_string_list(runtime_record.get("runtime_names")),
+                        feature_names=_string_list(runtime_record.get("feature_names")),
+                        measured_categories=[],
+                        sources=[
+                            PerformanceCoreEvidenceSource(source)
+                            for source in _string_list(runtime_record.get("sources"))
+                            if source in {candidate.value for candidate in PerformanceCoreEvidenceSource}
+                        ]
+                        or [PerformanceCoreEvidenceSource.RUNTIME_SUPPORT_STRATEGY],
+                        benchmark_backed=family in benchmark_backed_families,
+                        notes=_string_list(runtime_record.get("notes")),
+                        metrics=dict(runtime_record.get("metrics", {}))
+                        if isinstance(runtime_record.get("metrics"), dict)
+                        else {},
+                    ),
+                )
+                continue
+            resolved_records.append(
+                PerformanceCoreEvidenceRecord(
+                    family=family,
+                    mode=fallback_mode,
+                    reason=fallback_reason,
+                    sources=[PerformanceCoreEvidenceSource.RUNTIME_SUPPORT_STRATEGY],
+                    benchmark_backed=family in benchmark_backed_families,
+                ),
+            )
+        return resolved_records
+
+    @staticmethod
+    def _runtime_support_path_runtime_records(
+        *,
+        runtime_health: Sequence[dict[str, Any]],
+        runtime_affinities: Sequence[str],
+    ) -> dict[PerformanceCoreEvidenceFamily, dict[str, Any]]:
+        records: dict[PerformanceCoreEvidenceFamily, dict[str, Any]] = {}
+        for runtime in runtime_health:
+            if runtime.get("affinity") not in runtime_affinities:
+                continue
+            for payload in runtime.get("performance_core_evidence", []):
+                if not isinstance(payload, dict):
+                    continue
+                family_value = payload.get("family")
+                if not isinstance(family_value, str):
+                    continue
+                try:
+                    family = PerformanceCoreEvidenceFamily(family_value)
+                except ValueError:
+                    continue
+                existing = records.get(family)
+                if existing is None or TelemetryService._performance_core_evidence_rank(payload) > TelemetryService._performance_core_evidence_rank(existing):
+                    records[family] = payload
+        return records
+
+    @staticmethod
+    def _performance_core_evidence_rank(payload: dict[str, Any]) -> int:
+        mode = normalize_performance_core_evidence_mode(
+            mode=payload.get("mode"),
+            ownership=payload.get("ownership"),
+            supported=payload.get("supported"),
+            support_level=payload.get("support_level"),
+        )
+        return {
+            PerformanceCoreEvidenceMode.LEWLM_OWNED: 4,
+            PerformanceCoreEvidenceMode.BACKEND_NATIVE: 3,
+            PerformanceCoreEvidenceMode.FALLBACK: 2,
+            PerformanceCoreEvidenceMode.UNSUPPORTED: 1,
+        }.get(mode, 0)
+
+    @staticmethod
+    def _runtime_support_path_fallback_records(
+        path_id: str,
+    ) -> tuple[tuple[PerformanceCoreEvidenceFamily, PerformanceCoreEvidenceMode, str], ...]:
+        records_by_path: dict[str, tuple[tuple[PerformanceCoreEvidenceFamily, PerformanceCoreEvidenceMode, str], ...]] = {
+            "apple_mlx": (
+                (
+                    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING,
+                    PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                    "LewLM owns the persistent continuous-batching controller on the primary MLX text path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.TIERED_KV,
+                    PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                    "LewLM owns paged-KV residency accounting and lane-aware pressure control on the MLX text path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFIX_REUSE,
+                    PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                    "LewLM owns resident and persisted prefix-reuse tiers on the MLX text path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFILL_ISOLATION,
+                    PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                    "LewLM can combine chunked prefill with scheduler-side decode headroom reservation on the MLX text path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.SPECULATION,
+                    PerformanceCoreEvidenceMode.LEWLM_OWNED,
+                    "LewLM owns the draft/verify speculation controller on the first-class MLX path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "MLX keeps structured-output fallback visible, but decode-time constrained decoding is still a fallback contract on this path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION,
+                    PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                    "Kernel acceleration remains backend-native on MLX even when LewLM selects or benchmarks the path.",
+                ),
+            ),
+            "gguf_llamacpp": (
+                (
+                    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING,
+                    PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                    "llama.cpp remains the packaged non-Apple backend-native batching path when batched entrypoints are available.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.TIERED_KV,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "GGUF tiered-KV evidence stays fallback-shaped because paged-KV and quantization detail depend on the installed llama.cpp bindings.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFIX_REUSE,
+                    PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                    "llama.cpp can preserve prompt-prefix reuse natively when cache hooks are available.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFILL_ISOLATION,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "GGUF runtimes may expose prefill controls, but LewLM does not claim full portable prefill isolation on this path.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.SPECULATION,
+                    PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                    "llama.cpp can expose backend-native prompt-lookup or grammar-backed speculation paths when bindings support them.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING,
+                    PerformanceCoreEvidenceMode.BACKEND_NATIVE,
+                    "llama.cpp is LewLM's portable decode-time constrained-decoding path when grammar hooks are present.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION,
+                    PerformanceCoreEvidenceMode.UNSUPPORTED,
+                    "LewLM does not publish portable kernel-acceleration evidence for the packaged GGUF path.",
+                ),
+            ),
+            "external_accelerator_bridge": (
+                (
+                    PerformanceCoreEvidenceFamily.CONTINUOUS_BATCHING,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "Adapter paths preserve only the portable batching contract and do not claim ownership of the upstream scheduler.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.TIERED_KV,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "Adapter paths can preserve some KV behavior, but allocator-level tiered-KV truth remains upstream-owned.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFIX_REUSE,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "Adapter paths can preserve prefix reuse as a fallback contract without exposing upstream cache internals.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.PREFILL_ISOLATION,
+                    PerformanceCoreEvidenceMode.UNSUPPORTED,
+                    "LewLM does not claim portable prefill isolation through the external adapter bridge.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.SPECULATION,
+                    PerformanceCoreEvidenceMode.UNSUPPORTED,
+                    "LewLM does not preserve portable speculation control through the external adapter bridge today.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING,
+                    PerformanceCoreEvidenceMode.FALLBACK,
+                    "Adapter paths keep structured-output fallback visible, but not portable decoder-level constrained decoding.",
+                ),
+                (
+                    PerformanceCoreEvidenceFamily.KERNEL_ACCELERATION,
+                    PerformanceCoreEvidenceMode.UNSUPPORTED,
+                    "Kernel acceleration details remain upstream-owned and are not reported as a portable LewLM bridge contract.",
+                ),
+            ),
+        }
+        return records_by_path.get(path_id, ())
 
     def _model_optimization_defaults(self, manifest: ModelManifest) -> ModelOptimizationDefaults | None:
         if manifest.conversion_status != ConversionStatus.RUNNABLE:
@@ -537,6 +1022,12 @@ class TelemetryService:
             ),
             "continuous_batching": self._continuous_batching_decision(
                 runtime=runtime,
+                serving_profile=serving_profile,
+                profile_payload=profile_payload,
+            ),
+            "prefix_reuse": self._prefix_reuse_decision(
+                runtime=runtime,
+                runtime_features=runtime_features,
                 serving_profile=serving_profile,
                 profile_payload=profile_payload,
             ),
@@ -876,6 +1367,74 @@ class TelemetryService:
                 kv_cache_max_pages=_coerce_int(effective_settings.get("kv_cache_max_pages")),
                 kv_cache_quantization_bits=_coerce_int(effective_settings.get("kv_cache_quantization_bits")),
                 active_cache_features=active_cache_features,
+            ),
+        )
+
+    def _prefix_reuse_decision(
+        self,
+        *,
+        runtime: RuntimeContract,
+        runtime_features: dict[str, object],
+        serving_profile: ServingProfileApplication,
+        profile_payload: dict[str, Any] | None,
+    ) -> OptimizationDefaultDecision:
+        prefix_cache_supported = self._feature_supported(runtime_features, PerformanceFeatureName.PREFIX_CACHE)
+        persistent_cache_supported = self._feature_supported(
+            runtime_features,
+            PerformanceFeatureName.PERSISTENT_MULTI_CONTEXT_CACHE,
+        )
+        if serving_profile.status == "runtime_mismatch":
+            return OptimizationDefaultDecision(
+                status="deferred",
+                reason="The persisted serving profile targets a different runtime, so prefix-reuse defaults should be re-benchmarked for the current route.",
+                source="serving_profile",
+                metrics=_compact_metrics(runtime=runtime.name, profile_runtime=_string_or_none((profile_payload or {}).get("runtime"))),
+            )
+        if not prefix_cache_supported and not persistent_cache_supported:
+            return OptimizationDefaultDecision(
+                status="rejected",
+                reason=f"Runtime `{runtime.name}` does not advertise a compatible prefix-reuse or persistent prompt-cache path on this host.",
+                source="runtime_features",
+            )
+        if profile_payload is None:
+            return OptimizationDefaultDecision(
+                status="deferred",
+                reason="Prefix reuse is supported, but no benchmark-backed serving profile has been recorded for this model on this host.",
+                source="serving_profile",
+            )
+        profile_artifact = self._profile_artifact_payload(profile_payload)
+        active_cache_features = [
+            item
+            for item in _string_list(profile_payload.get("active_cache_features"))
+            if item in {"prefix_cache", "persistent_multi_context_cache"}
+        ]
+        repeated_prefix = self._artifact_scenario(profile_artifact, "repeated_prefix")
+        warm_chat_cache = self._artifact_scenario(profile_artifact, "warm_chat_cache")
+        if active_cache_features or repeated_prefix is not None or warm_chat_cache is not None:
+            return OptimizationDefaultDecision(
+                status="adopted",
+                reason="The persisted serving profile keeps repeated-prefix and warm-cache reuse benchmark-backed for this model/runtime pair.",
+                benchmark_backed=True,
+                source="serving_profile",
+                metrics=_compact_metrics(
+                    prefix_cache_supported=prefix_cache_supported,
+                    persistent_multi_context_cache_supported=persistent_cache_supported,
+                    active_cache_features=active_cache_features,
+                    repeated_prefix_observed=repeated_prefix is not None,
+                    warm_chat_cache_observed=warm_chat_cache is not None,
+                ),
+            )
+        return OptimizationDefaultDecision(
+            status="rejected",
+            reason="Benchmarks compared cache-aware runs and kept the effectively cold-prefix path as the safe default.",
+            benchmark_backed=True,
+            source="serving_profile",
+            metrics=_compact_metrics(
+                prefix_cache_supported=prefix_cache_supported,
+                persistent_multi_context_cache_supported=persistent_cache_supported,
+                active_cache_features=active_cache_features,
+                repeated_prefix_observed=False,
+                warm_chat_cache_observed=False,
             ),
         )
 
@@ -2129,6 +2688,12 @@ class TelemetryService:
             selected_mode=selected_mode,
             workload_class=speculation_workload_class,
         )
+        record_scenarios = [
+            scenario,
+            constrained_decoding_scenario,
+            *([distributed_scenario] if distributed_scenario is not None else []),
+            *([frontier_scenario] if frontier_scenario is not None else []),
+        ]
         record = BenchmarkResult(
             benchmark_id=benchmark_id,
             model_id=manifest.model_id,
@@ -2156,13 +2721,12 @@ class TelemetryService:
             completion_tokens_per_second=completion_tokens_per_second,
             created_at=utc_now(),
             performance_features=performance_features,
+            performance_core_evidence=self._benchmark_performance_core_evidence(
+                runtime=runtime,
+                scenarios=record_scenarios,
+            ),
             serving_profile=serving_profile,
-            scenarios=[
-                scenario,
-                constrained_decoding_scenario,
-                *([distributed_scenario] if distributed_scenario is not None else []),
-                *([frontier_scenario] if frontier_scenario is not None else []),
-            ],
+            scenarios=record_scenarios,
         )
         self.metadata_store.append_benchmark_record(record.model_dump(mode="json"))
         self._persist_benchmark_probe_records(record)
@@ -2685,11 +3249,7 @@ class TelemetryService:
             messages=[message.model_copy(deep=True) for message in messages],
             max_tokens=32,
             temperature=0.0,
-            structured_output=JSONSchemaResponseFormat(
-                schema=_BENCHMARK_CONSTRAINED_DECODING_SCHEMA,
-                name="lewlm_benchmark_probe",
-                strict=True,
-            ),
+            structured_output=CONSTRAINED_DECODING_PROBE_CONTRACT.model_copy(deep=True),
         )
         try:
             response, load_seconds, generate_seconds, total_seconds = await self._execute_benchmark_request(
@@ -2721,29 +3281,12 @@ class TelemetryService:
         structured_result = analyze_structured_output(
             format="json_schema",
             output_text=response.output_text,
-            schema=_BENCHMARK_CONSTRAINED_DECODING_SCHEMA,
-            name="lewlm_benchmark_probe",
+            schema=CONSTRAINED_DECODING_PROBE_CONTRACT.schema_payload,
+            name=CONSTRAINED_DECODING_PROBE_CONTRACT.name,
             strict=True,
             runtime_status=request.metadata.get("structured_output_runtime"),
         )
-        validation = structured_result.validation if structured_result is not None else None
-        decoder_enforced = bool(structured_result.decoder_enforced) if structured_result is not None else False
-        fallback_used = bool(structured_result.fallback_used) if structured_result is not None else False
-        enforcement = structured_result.enforcement if structured_result is not None else "none"
-        validation_state = validation.state if validation is not None else "unavailable"
-        if decoder_enforced and validation_state == "valid":
-            reason = "Benchmark verified decode-time constrained decoding on the routed runtime."
-        elif fallback_used:
-            reason = "Benchmark observed prompt-guided structured-output fallback instead of decode-time constrained decoding."
-        elif validation_state == "valid":
-            reason = "Benchmark observed structured output, but the runtime did not report decode-time decoder enforcement."
-        else:
-            reason = "Benchmark could not verify decode-time constrained decoding from the routed runtime response."
-        notes: list[str] = []
-        if validation is not None and validation.message:
-            notes.append(validation.message)
-        if structured_result is not None and structured_result.fallback_reason:
-            notes.append(structured_result.fallback_reason)
+        status, reason, details, notes = classify_constrained_decoding_result(structured_result)
         return BenchmarkScenarioReport(
             scenario="constrained_decoding",
             capability=CapabilityName.CHAT.value,
@@ -2751,11 +3294,8 @@ class TelemetryService:
             reason=reason,
             metrics=_compact_metrics(
                 sample_count=1,
-                enforcement=enforcement,
-                decoder_enforced=decoder_enforced,
-                fallback_used=fallback_used,
-                validation_state=validation_state,
-                validation_issue_count=len(validation.issues) if validation is not None else 0,
+                **details,
+                measured_status=status.value,
                 load_seconds=round(float(load_seconds), 4),
                 generate_seconds=round(float(generate_seconds), 4),
                 total_seconds=round(float(total_seconds), 4),
@@ -2765,13 +3305,7 @@ class TelemetryService:
                 BenchmarkScenarioSample(
                     model_id=manifest.model_id,
                     runtime=runtime.name,
-                    metrics=_compact_metrics(
-                        enforcement=enforcement,
-                        decoder_enforced=decoder_enforced,
-                        fallback_used=fallback_used,
-                        validation_state=validation_state,
-                        validation_issue_count=len(validation.issues) if validation is not None else 0,
-                    ),
+                    metrics=_compact_metrics(**details, measured_status=status.value),
                 ),
             ],
             notes=notes,
@@ -3158,6 +3692,7 @@ class TelemetryService:
                 runtime=runtime,
                 capability=CapabilityName.EMBEDDINGS.value,
             ),
+            performance_core_evidence=self._benchmark_performance_core_evidence(runtime=runtime),
         )
         self.metadata_store.append_benchmark_record(record.model_dump(mode="json"))
         self._persist_benchmark_probe_records(record)
@@ -3220,6 +3755,7 @@ class TelemetryService:
                 runtime=runtime,
                 capability=CapabilityName.RERANK.value,
             ),
+            performance_core_evidence=self._benchmark_performance_core_evidence(runtime=runtime),
         )
         self.metadata_store.append_benchmark_record(record.model_dump(mode="json"))
         self._persist_benchmark_probe_records(record)
@@ -3276,6 +3812,7 @@ class TelemetryService:
                 runtime=runtime,
                 capability=CapabilityName.AUDIO_TRANSCRIPTION.value,
             ),
+            performance_core_evidence=self._benchmark_performance_core_evidence(runtime=runtime),
         )
         self.metadata_store.append_benchmark_record(record.model_dump(mode="json"))
         self._persist_benchmark_probe_records(record)
@@ -3400,6 +3937,56 @@ class TelemetryService:
             capability_focus=capability,
         )
 
+    def _benchmark_performance_core_evidence(
+        self,
+        *,
+        runtime: RuntimeContract,
+        scenarios: Sequence[BenchmarkScenarioReport] = (),
+    ) -> list[PerformanceCoreEvidenceRecord]:
+        evidence = build_portable_performance_core_evidence(
+            performance_features=runtime.performance_feature_snapshot(),
+            runtime_names=[runtime.name],
+            benchmark_backed=True,
+            source=PerformanceCoreEvidenceSource.BENCHMARK_FEATURE,
+        )
+        constrained_scenario = next(
+            (scenario for scenario in scenarios if scenario.scenario == "constrained_decoding"),
+            None,
+        )
+        if constrained_scenario is None:
+            return evidence
+        if bool(constrained_scenario.metrics.get("decoder_enforced")):
+            constrained_mode = PerformanceCoreEvidenceMode.BACKEND_NATIVE
+        elif bool(constrained_scenario.metrics.get("fallback_used")) or (
+            constrained_scenario.metrics.get("enforcement") == "prompt_guided"
+        ):
+            constrained_mode = PerformanceCoreEvidenceMode.FALLBACK
+        else:
+            constrained_mode = PerformanceCoreEvidenceMode.UNSUPPORTED
+        updated: list[PerformanceCoreEvidenceRecord] = []
+        for record in evidence:
+            if record.family != PerformanceCoreEvidenceFamily.CONSTRAINED_DECODING:
+                updated.append(record)
+                continue
+            updated.append(
+                record.model_copy(
+                    update={
+                        "mode": constrained_mode,
+                        "reason": constrained_scenario.reason,
+                        "sources": [
+                            PerformanceCoreEvidenceSource.BENCHMARK_FEATURE,
+                            PerformanceCoreEvidenceSource.BENCHMARK_SCENARIO,
+                        ],
+                        "notes": list(dict.fromkeys([*record.notes, *constrained_scenario.notes])),
+                        "metrics": {
+                            **record.metrics,
+                            **constrained_scenario.metrics,
+                        },
+                    },
+                ),
+            )
+        return updated
+
     def _persist_benchmark_probe_records(self, result: BenchmarkResult) -> None:
         host_platform = self.runtime_catalog.host_platform_snapshot().model_dump(mode="json")
         runtime = self.runtime_catalog.find_runtime_by_name(result.runtime)
@@ -3487,6 +4074,8 @@ class TelemetryService:
             PerformanceFeatureName.PROMPT_LOOKUP_SPECULATION,
         }:
             return MeasuredCapabilityCategory.SPECULATION
+        if feature_name == PerformanceFeatureName.CONSTRAINED_DECODING:
+            return MeasuredCapabilityCategory.CONSTRAINED_DECODING
         if feature_name in {
             PerformanceFeatureName.GRAPH_COMPILATION,
             PerformanceFeatureName.ATTENTION_KERNEL_ACCELERATION,
@@ -3697,11 +4286,13 @@ class TelemetryService:
             )
         ]
         latest_recorded_at = max((record.recorded_at for record in records), default=None)
+        categories = summarize_measured_capabilities(records)
         return MeasuredCapabilityRegistrySummary(
             host_platform=host_platform,
             total_records=self.metadata_store.capability_probe_record_count(host_platform=host_payload),
             latest_recorded_at=latest_recorded_at,
-            categories=summarize_measured_capabilities(records),
+            categories=categories,
+            performance_core_evidence=self._measured_capability_performance_core_evidence(categories),
         )
 
     def _record_builtin_capability_probes(self, manifests: Sequence[ModelManifest]) -> None:
@@ -3723,21 +4314,21 @@ class TelemetryService:
                 runtime_name=runtime.name,
             ):
                 continue
+            status, reason, details = classify_constrained_decoding_runtime_status(
+                runtime.structured_output_runtime_status(CONSTRAINED_DECODING_PROBE_CONTRACT),
+            )
             self.metadata_store.upsert_capability_probe_record(
                 category=MeasuredCapabilityCategory.CONSTRAINED_DECODING.value,
-                probe_name="prompt_guided_structured_output",
+                probe_name=CONSTRAINED_DECODING_CODE_PROBE_NAME,
                 host_platform=host_platform,
-                status=MeasuredCapabilityStatus.REJECTED.value,
+                status=status.value,
                 source=MeasuredCapabilityEvidenceSource.CODE_PROBE.value,
-                reason=(
-                    "LewLM still records structured output as prompt-guided fallback on this host; "
-                    "decode-time constrained decoding is not yet benchmark-verified for the routed runtime."
-                ),
+                reason=reason,
                 runtime_name=runtime.name,
                 runtime_affinity=runtime.affinity.value,
                 model_id=manifest.model_id,
                 details={
-                    "enforcement": "prompt_guided_fallback",
+                    **details,
                     "capability": CapabilityName.CHAT.value,
                 },
             )
@@ -6893,6 +7484,10 @@ class TelemetryService:
             runtime_health,
             PerformanceFeatureName.PROMPT_LOOKUP_SPECULATION.value,
         )
+        constrained_decoding_entries = self._runtime_feature_entries(
+            runtime_health,
+            PerformanceFeatureName.CONSTRAINED_DECODING.value,
+        )
         prefix_cache_entries = self._runtime_feature_entries(
             runtime_health,
             PerformanceFeatureName.PREFIX_CACHE.value,
@@ -6903,10 +7498,12 @@ class TelemetryService:
         )
         speculative_runtime_names = self._runtime_feature_runtime_names(speculative_entries)
         prompt_lookup_runtime_names = self._runtime_feature_runtime_names(prompt_lookup_entries)
+        constrained_decoding_runtime_names = self._runtime_feature_runtime_names(constrained_decoding_entries)
         prefix_cache_runtime_names = self._runtime_feature_runtime_names(prefix_cache_entries)
         persistent_multi_context_runtime_names = self._runtime_feature_runtime_names(persistent_multi_context_entries)
         speculative_ownership_modes = self._runtime_feature_ownership_modes(speculative_entries)
         prompt_lookup_ownership_modes = self._runtime_feature_ownership_modes(prompt_lookup_entries)
+        constrained_decoding_ownership_modes = self._runtime_feature_ownership_modes(constrained_decoding_entries)
         prefix_cache_ownership_modes = self._runtime_feature_ownership_modes(prefix_cache_entries)
         persistent_multi_context_ownership_modes = self._runtime_feature_ownership_modes(
             persistent_multi_context_entries,
@@ -6979,6 +7576,31 @@ class TelemetryService:
         else:
             prompt_lookup_reason = "LewLM does not implement prompt-lookup or n-gram speculative decoding paths today."
             prompt_lookup_notes = []
+        constrained_decoding_supported = bool(constrained_decoding_runtime_names) and capability_focus in {
+            None,
+            CapabilityName.CHAT.value,
+            CapabilityName.STREAMING.value,
+        }
+        if constrained_decoding_supported:
+            constrained_decoding_reason = self._runtime_feature_reason(
+                feature_label="Constrained decoding",
+                entries=constrained_decoding_entries,
+                unsupported_reason="LewLM does not detect portable constrained-decoding support on the active runtimes.",
+            )
+            constrained_decoding_notes = self._runtime_feature_notes(constrained_decoding_entries)
+        elif capability_focus is not None and capability_focus not in {
+            CapabilityName.CHAT.value,
+            CapabilityName.STREAMING.value,
+        }:
+            constrained_decoding_reason = (
+                f"Selected `{capability_focus}` requests do not use chat constrained-decoding reporting."
+            )
+            constrained_decoding_notes = []
+        else:
+            constrained_decoding_reason = (
+                "LewLM does not detect portable constrained-decoding support on the active runtimes."
+            )
+            constrained_decoding_notes = self._runtime_feature_notes(constrained_decoding_entries)
         prefix_cache_supported = bool(prefix_cache_runtime_names) and capability_focus in {
             None,
             CapabilityName.CHAT.value,
@@ -7924,6 +8546,30 @@ class TelemetryService:
                 notes=prompt_lookup_notes,
             ),
             self._feature_status(
+                feature=PerformanceFeatureName.CONSTRAINED_DECODING,
+                supported=constrained_decoding_supported,
+                active=self._runtime_feature_active(constrained_decoding_entries),
+                ownership_modes=constrained_decoding_ownership_modes,
+                supported_capabilities=(
+                    [CapabilityName.CHAT.value, CapabilityName.STREAMING.value]
+                    if constrained_decoding_runtime_names
+                    else []
+                ),
+                runtime_names=constrained_decoding_runtime_names,
+                reason=constrained_decoding_reason,
+                metrics=self._runtime_feature_metrics(
+                    constrained_decoding_entries,
+                    sum_keys=(),
+                    passthrough_keys=("decoder_enforced", "fallback_used", "enforcement"),
+                ),
+                fallback_guidance=(
+                    []
+                    if constrained_decoding_supported
+                    else self._performance_fallback_guidance(PerformanceFeatureName.CONSTRAINED_DECODING)
+                ),
+                notes=constrained_decoding_notes,
+            ),
+            self._feature_status(
                 feature=PerformanceFeatureName.KEEP_WARM_MODEL_RESIDENCY,
                 supported=bool(available_runtime_names),
                 active=bool(available_runtime_names) and self.settings.runtime_policy == "keep_warm",
@@ -8473,6 +9119,11 @@ class TelemetryService:
         }:
             return [
                 "Use a faster local model or lower `max_tokens` when speculative decoding is unavailable.",
+            ]
+        if feature == PerformanceFeatureName.CONSTRAINED_DECODING:
+            return [
+                "Prefer a runtime that exposes decode-time grammar or JSON-schema enforcement when structured output must be decoder-enforced on this host.",
+                "Use benchmark artifacts for the constrained-decoding scenario to confirm whether LewLM is still on prompt-guided fallback.",
             ]
         if feature in {
             PerformanceFeatureName.KEEP_WARM_MODEL_RESIDENCY,

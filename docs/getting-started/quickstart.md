@@ -60,7 +60,9 @@ After `lewlm doctor`, confirm the recommended runtime profile matches this insta
 
 Use this when LewLM should front a loopback-only local OpenAI-compatible server instead of importing a runtime package directly.
 
-This is where Linux/Windows operators with NVIDIA-backed local servers fit conceptually. LewLM does **not** install that server for you, and this bridge does **not** replace the first-class packaged GGUF runtime path for LewLM-managed execution. Treat it as an adapter-backed path: embeddings require a compatible local `/v1/embeddings` endpoint, and rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension.
+This is where Linux/Windows operators with NVIDIA-backed local servers fit conceptually. LewLM does **not** install that server for you, and this bridge does **not** replace the first-class packaged GGUF runtime path for LewLM-managed execution. Treat it as an adapter-backed path: bridge-backed embeddings require a compatible local `/v1/embeddings` endpoint, bridge-backed rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension, and bridge-only non-Apple audio parity depends on compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints that LewLM probes separately.
+
+For image-conditioned chat on this path, use the same public LewLM surfaces as macOS: `lewlm chat --attach-image`, `/v1/chat/completions` or `/v1/responses` with `input_image`, `LewLM.chat()` / `LewLM.chat_sync()` with image attachments, or the typed `LewLMAppClient` helpers with `InputImagePart`.
 
 **macOS / Linux**
 
@@ -85,6 +87,17 @@ lewlm doctor
 lewlm scan
 lewlm list-models
 ```
+
+## Platform default feature guide
+
+Use `lewlm doctor` as the current-host source of truth: it now prints the same recommended feature paths exposed by `GET /v1/health.install_profiles.recommended_feature_paths`.
+
+| Platform | Chat | Semantic text | Vision | Audio | Structured output |
+| --- | --- | --- | --- | --- | --- |
+| macOS | Apple MLX on Apple Silicon; GGUF on non-MLX Macs | Apple MLX on Apple Silicon; external bridge on non-MLX Macs | Apple MLX vision on Apple Silicon; external bridge on non-MLX Macs | Apple MLX audio on Apple Silicon; external bridge on non-MLX Macs | GGUF/llama.cpp when you need decode-time enforcement |
+| Linux / Windows | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for compatible semantic GGUF models; bridge remains optional | external accelerator bridge | external accelerator bridge; bridge-only audio parity | GGUF/llama.cpp packaged default |
+
+`structured output` is intentionally split from the default chat path: on Apple Silicon macOS, LewLM still recommends GGUF when the request needs decode-time JSON-schema or grammar enforcement.
 
 ## Documents add-on
 
@@ -119,6 +132,12 @@ from lewlm import LewLM
 
 with LewLM() as lewlm:
     print(lewlm.health()["install_profiles"]["active_profile_ids"])
+    print(
+        {
+            item["feature_class"]: f'{item["label"]} [{item["support_path"]}]'
+            for item in lewlm.health()["install_profiles"]["recommended_feature_paths"]
+        }
+    )
     lewlm.scan_models()
 ```
 

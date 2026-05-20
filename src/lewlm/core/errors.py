@@ -350,6 +350,7 @@ _ERROR_CLASS_BY_CODE: dict[str, type[LewLMError]] = {
     "model_not_found": ModelNotFoundError,
     "routing_error": RoutingError,
     "runtime_unavailable": RuntimeUnavailableError,
+    "pack_unavailable": PackUnavailableError,
     "unsupported_capability": UnsupportedCapabilityError,
     "idempotency_conflict": IdempotencyConflictError,
     "document_validation_error": DocumentValidationError,
