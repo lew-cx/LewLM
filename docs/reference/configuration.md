@@ -100,7 +100,9 @@ Built-in feature pack names: `documents`.
 | `LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS` | `10` | adapter timeout |
 
 Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
-`openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, and `sglang_local`.
+`openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, `sglang_local`, `ollama_local`, and `llamacpp_server`.
+
+`ollama_local` and `llamacpp_server` keep the generic OpenAI-compatible bridge contract explicit for local servers that present themselves through those loopback shapes; they do not promote backend-native behavior to LewLM-owned packaged parity.
 
 `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` must point to a loopback-only local server such as
 `http://127.0.0.1:8000`; remote/cloud endpoints are intentionally rejected.

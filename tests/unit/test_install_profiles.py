@@ -6,14 +6,17 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import set_host_platform
+from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
     ModelTargetPlatformReport,
     PerformanceCoreEvidenceFamily,
     PerformanceCoreEvidenceMode,
     RuntimeSupportPath,
+    StandardsAcceptanceState,
+    StandardsVocabularyTerm,
 )
 from lewlm.documents.ingest.ocr import OcrBackendStatus
-from lewlm.install_profiles import FeaturePathRecommendation, summarize_install_profiles
+from lewlm.install_profiles import FeaturePathRecommendation, InstallProfileSummary, summarize_install_profiles
 from lewlm.telemetry.models import RuntimeSupportPathSummary
 
 
@@ -251,7 +254,34 @@ def test_install_profiles_report_external_accelerator_ready_on_windows(monkeypat
     assert recommendations["audio"].profile == "external_accelerator_bridge_backend"
 
 
+def test_install_profiles_report_windows_llamacpp_build_prerequisites_when_backend_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Windows")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "AMD64")
+
+    def fake_missing_modules(module_names: tuple[str, ...]) -> list[str]:
+        if module_names == ("llama_cpp",):
+            return ["llama_cpp"]
+        return []
+
+    monkeypatch.setattr("lewlm.install_profiles._missing_modules", fake_missing_modules)
+    monkeypatch.setattr("lewlm.install_profiles._has_command", lambda command: False)
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_ocr_backend",
+        lambda: OcrBackendStatus(available=False, backend_name="pytesseract", reason="The `tesseract` binary is not installed."),
+    )
+
+    summary = summarize_install_profiles()
+    profiles = {profile.profile: profile for profile in summary.profiles}
+    gguf = profiles["gguf_fallback_backend"]
+
+    assert gguf.ready is False
+    assert any("Microsoft C++ Build Tools" in note for note in gguf.notes)
+    assert any("CMake is not currently on PATH" in note for note in gguf.notes)
+    assert any("Ninja is optional" in note for note in gguf.notes)
+
+
 def test_parity_contract_fields_stay_machine_readable() -> None:
+    install_profile_summary = InstallProfileSummary()
     feature = FeaturePathRecommendation(
         feature_class="semantic_text",
         profile="external_accelerator_bridge_backend",
@@ -285,10 +315,33 @@ def test_parity_contract_fields_stay_machine_readable() -> None:
 
     assert feature.model_dump(mode="json")["support_path"] == "bridge"
     assert target.model_dump(mode="json")["verification_method"] == "host_probe"
+    standards_contract = install_profile_summary.model_dump(mode="json")["standards_acceptance_contract"]
+    assert standards_contract["format"] == "lewlm-standards-acceptance-contract-v1"
+    assert {item["state"] for item in standards_contract["acceptance_states"]} == {
+        state.value for state in StandardsAcceptanceState
+    }
+    assert {item["name"] for item in standards_contract["vocabulary"]} >= {
+        StandardsVocabularyTerm.KV_OFFLOAD.value,
+        StandardsVocabularyTerm.RESPONSES_API_EVENTS.value,
+        StandardsVocabularyTerm.LOCAL_AGENT_SANDBOX.value,
+    }
     payload = strategy.model_dump(mode="json")
     assert payload["benchmark_backed_defaults"] is True
     assert payload["performance_core_evidence"][0]["benchmark_backed"] is True
     assert payload["performance_core_evidence"][0]["mode"] == "backend_native"
+
+
+def test_install_profiles_describe_ollama_bridge_alias() -> None:
+    settings = LewLMSettings(
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+        external_accelerator_profile="ollama_local",
+    )
+
+    summary = summarize_install_profiles(settings)
+    external = next(profile for profile in summary.profiles if profile.profile == "external_accelerator_bridge_backend")
+
+    assert any("Ollama-compatible bridge profile" in note for note in external.notes)
 
 
 def test_install_profile_docs_cover_cross_platform_matrix() -> None:
@@ -308,6 +361,10 @@ def test_install_profile_docs_cover_cross_platform_matrix() -> None:
             "support_path",
             "host_probe",
             "benchmark_backed",
+            "standards_acceptance_contract",
+            "kv_offload",
+            "local_agent_sandbox",
+            "unverified",
         ),
         repo_root / "docs" / "getting-started" / "installation.md": (
             "Apple MLX local backend",
@@ -323,6 +380,9 @@ def test_install_profile_docs_cover_cross_platform_matrix() -> None:
             "host_probe",
             "benchmark_backed",
             "support_path",
+            "standards_acceptance_contract",
+            "kv_offload",
+            "unverified",
         ),
         repo_root / "docs" / "getting-started" / "quickstart.md": (
             "## Apple MLX local backend",
@@ -332,6 +392,15 @@ def test_install_profile_docs_cover_cross_platform_matrix() -> None:
             "first-class non-Apple",
             "Platform default feature guide",
             "structured output",
+            "standards_acceptance_contract",
+            "local_agent_sandbox",
+        ),
+        repo_root / "docs" / "architecture" / "runtime-routing-and-serving.md": (
+            "Standards acceptance contract",
+            "kv_offload",
+            "local_agent_sandbox",
+            "lewlm_owned",
+            "unverified",
         ),
         repo_root / "docs" / "reference" / "runtime-capability-matrix.md": (
             "`external_accelerator`",
@@ -347,6 +416,11 @@ def test_install_profile_docs_cover_cross_platform_matrix() -> None:
             "host_probe",
             "benchmark_backed",
             "support_path",
+            "standards_acceptance_contract",
+            "kv_offload",
+            "responses_api_events",
+            "local_agent_sandbox",
+            "unverified",
         ),
     }
 

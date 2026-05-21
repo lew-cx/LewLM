@@ -39,6 +39,17 @@ Full parity in LewLM means **stable local-first middleware surfaces plus explici
 
 The machine-readable acceptance signals are already exposed through `install_profiles.recommended_feature_paths[].support_path`, target-platform `verification_method` values such as `host_probe`, and runtime support strategy or performance-core reports with `benchmark_backed` evidence flags. The full acceptance matrix lives in [docs/reference/runtime-capability-matrix.md](docs/reference/runtime-capability-matrix.md).
 
+LewLM also now ships a shared `standards_acceptance_contract` through `GET /v1/health` under `install_profiles`, `GET /v1/runtime/stats`, and `GET /v1/models/{model_id}/capabilities`. That contract defines the Milestone 120 acceptance states `lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, and `unverified`, and reserves the 2026 vocabulary keys without pretending that every path already implements them.
+
+- `memory and context`: `kv_offload`, `kv_quantization`, `hybrid_memory`, `pd_disaggregation`, `distributed_kv_transfer`
+- `structured output and reasoning`: `strict_tool_parser`, `reasoning_tags`, `parallel_tool_calls`, `streaming_tool_calls`, `responses_api_events`
+- `speculation`: `mtp_speculation`, `eagle_speculation`, `dflash_speculation`, `ngram_draft_speculation`, `reasoning_budget_speculation`
+- `dependency baselines`: `transformers_v5_ready`, `cuda13_ready`, `pytorch211_ready`, `cxx20_ready`
+- `multimodal, document, and semantic`: `multimodal_omni`, `document_ocr_transformer`, `long_context_embedding`
+- `agent interoperability`: `local_agent_sandbox`
+
+Release artifacts now carry the same closure contract. `release-manifest.json` includes `install_profiles`, `dependency_audit.compatibility_gates`, and `standards_refresh_acceptance`, and `validate_release_candidate.py` fails when a target manifest is missing the completed Milestones 121-132 standards-refresh summary alongside the existing host, dependency, frontier, optimization, and performance-core proof checks.
+
 ## Install
 
 ```bash
@@ -82,6 +93,8 @@ Common combinations:
 
 On **Linux** and **Windows**, start with `.[llamacpp]` when you want packaged local model execution. This is now LewLM's first-class non-Apple path for text workloads and semantic GGUF models. Embeddings stay packaged there for compatible GGUF models, and rerank stays honest by using LewLM's packaged embedding-similarity fallback when llama.cpp does not expose a native rerank API. If you already run a local OpenAI-compatible server, including an NVIDIA-oriented Linux/Windows service, the external accelerator bridge remains the intended path for that topology and the current bridge-only non-Apple audio parity path. LewLM does not bundle the server itself; bridge-backed semantic routes still require compatible local `/v1/embeddings` and `/v1/rerank` endpoints or equivalent extensions, and audio requires compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints that LewLM probes separately.
 
+On Windows, `.[llamacpp]` now also installs CMake and Ninja helper packages, but `llama-cpp-python` may still need to build from source when a wheel is not published for your Python and architecture combination. In that case, install Microsoft C++ Build Tools first. If you do not want that local build step, use the external accelerator bridge with a loopback-only local server that already owns GGUF execution.
+
 `lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host, plus `recommended_feature_paths` for the current host's default operator routes. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
 
 ## Recommended feature paths by platform
@@ -122,6 +135,8 @@ Use the quick path that matches the profile you installed:
    ```
 
    Use **Apple MLX** only on Apple Silicon macOS. On Linux, Windows, and non-MLX Mac hosts, use the **Cross-platform GGUF backend** instead. It is the first-class non-Apple path LewLM now productizes.
+
+   On Windows, make sure the `.[llamacpp]` install completed successfully before expecting this step to run. If `llama-cpp-python` had to build from source and your host lacks Microsoft C++ Build Tools, packaged GGUF inference will stay unavailable until that compiler toolchain is installed.
 
 3. **Cross-platform external accelerator bridge**
 

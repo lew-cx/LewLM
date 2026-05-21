@@ -354,6 +354,10 @@ def test_health_endpoint_reports_service_status(temp_settings) -> None:
     assert payload["configuration"]["parser_sandbox_enabled"] is True
     assert payload["configuration"]["tool_sandbox_enabled"] is True
     assert payload["configuration"]["conversion_sandbox_enabled"] is True
+    standards_contract = payload["install_profiles"]["standards_acceptance_contract"]
+    assert standards_contract["format"] == "lewlm-standards-acceptance-contract-v1"
+    assert any(item["state"] == "unverified" for item in standards_contract["acceptance_states"])
+    assert any(item["name"] == "kv_offload" for item in standards_contract["vocabulary"])
 
 
 def test_documents_feature_pack_disabled_hides_optional_surfaces(temp_settings) -> None:
@@ -492,6 +496,10 @@ def test_model_capabilities_endpoint_reports_runtime_candidates_and_validation_m
     payload = capability_response.json()
     assert payload["model_id"] == gguf_model_id
     assert payload["host_platform"]["system"]
+    standards_contract = payload["standards_acceptance_contract"]
+    assert standards_contract["format"] == "lewlm-standards-acceptance-contract-v1"
+    assert any(item["name"] == "strict_tool_parser" for item in standards_contract["vocabulary"])
+    assert any(item["name"] == "local_agent_sandbox" for item in standards_contract["vocabulary"])
     assert any(
         item["runtime_name"] == "fake_llamacpp"
         and item["available"] is True

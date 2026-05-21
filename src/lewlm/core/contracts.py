@@ -473,6 +473,261 @@ class PerformanceCoreEvidenceSource(str, Enum):
     RUNTIME_SUPPORT_STRATEGY = "runtime_support_strategy"
 
 
+class StandardsAcceptanceState(str, Enum):
+    """Normalized Milestone 120 acceptance states for 2026 standards terms."""
+
+    LEWLM_OWNED = "lewlm_owned"
+    BACKEND_NATIVE = "backend_native"
+    PARTIAL = "partial"
+    FALLBACK = "fallback"
+    UNSUPPORTED = "unsupported"
+    UNVERIFIED = "unverified"
+
+
+class StandardsVocabularyCategory(str, Enum):
+    """High-level grouping for the shared 2026 standards vocabulary."""
+
+    MEMORY_AND_CONTEXT = "memory_and_context"
+    STRUCTURED_OUTPUT_AND_REASONING = "structured_output_and_reasoning"
+    SPECULATION = "speculation"
+    DEPENDENCY_BASELINE = "dependency_baseline"
+    MULTIMODAL_DOCUMENT_AND_SEMANTIC = "multimodal_document_and_semantic"
+    AGENT_INTEROPERABILITY = "agent_interoperability"
+
+
+class StandardsVocabularyTerm(str, Enum):
+    """Normative vocabulary keys reserved by the 2026 standards contract."""
+
+    KV_OFFLOAD = "kv_offload"
+    KV_QUANTIZATION = "kv_quantization"
+    HYBRID_MEMORY = "hybrid_memory"
+    PD_DISAGGREGATION = "pd_disaggregation"
+    DISTRIBUTED_KV_TRANSFER = "distributed_kv_transfer"
+    STRICT_TOOL_PARSER = "strict_tool_parser"
+    REASONING_TAGS = "reasoning_tags"
+    PARALLEL_TOOL_CALLS = "parallel_tool_calls"
+    STREAMING_TOOL_CALLS = "streaming_tool_calls"
+    RESPONSES_API_EVENTS = "responses_api_events"
+    MTP_SPECULATION = "mtp_speculation"
+    EAGLE_SPECULATION = "eagle_speculation"
+    DFLASH_SPECULATION = "dflash_speculation"
+    NGRAM_DRAFT_SPECULATION = "ngram_draft_speculation"
+    REASONING_BUDGET_SPECULATION = "reasoning_budget_speculation"
+    TRANSFORMERS_V5_READY = "transformers_v5_ready"
+    CUDA13_READY = "cuda13_ready"
+    PYTORCH211_READY = "pytorch211_ready"
+    CXX20_READY = "cxx20_ready"
+    MULTIMODAL_OMNI = "multimodal_omni"
+    DOCUMENT_OCR_TRANSFORMER = "document_ocr_transformer"
+    LONG_CONTEXT_EMBEDDING = "long_context_embedding"
+    LOCAL_AGENT_SANDBOX = "local_agent_sandbox"
+
+
+class StandardsAcceptanceStateDefinition(BaseModel):
+    """Human-readable definition for one Milestone 120 acceptance state."""
+
+    state: StandardsAcceptanceState
+    summary: str
+
+
+class StandardsVocabularyEntry(BaseModel):
+    """One reserved 2026 standards vocabulary term and its intended meaning."""
+
+    name: StandardsVocabularyTerm
+    category: StandardsVocabularyCategory
+    summary: str
+    accepted_states: list[StandardsAcceptanceState] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class StandardsAcceptanceContract(BaseModel):
+    """Shared 2026 standards vocabulary and state legend for public LewLM surfaces."""
+
+    format: str = "lewlm-standards-acceptance-contract-v1"
+    acceptance_states: list[StandardsAcceptanceStateDefinition] = Field(default_factory=list)
+    vocabulary: list[StandardsVocabularyEntry] = Field(default_factory=list)
+    related_signal_fields: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+def _standards_vocabulary_entry(
+    *,
+    name: StandardsVocabularyTerm,
+    category: StandardsVocabularyCategory,
+    summary: str,
+    notes: Sequence[str] | None = None,
+) -> StandardsVocabularyEntry:
+    return StandardsVocabularyEntry(
+        name=name,
+        category=category,
+        summary=summary,
+        accepted_states=list(StandardsAcceptanceState),
+        notes=list(notes or []),
+    )
+
+
+def build_standards_acceptance_contract() -> StandardsAcceptanceContract:
+    """Return the shared Milestone 120 vocabulary contract without claiming per-runtime support."""
+
+    return StandardsAcceptanceContract(
+        acceptance_states=[
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.LEWLM_OWNED,
+                summary="LewLM implements, controls, and can directly validate the behavior on the documented path.",
+            ),
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.BACKEND_NATIVE,
+                summary="The backend owns the behavior and LewLM only detects, preserves, or reports it honestly.",
+            ),
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.PARTIAL,
+                summary="Only part of the intended behavior is preserved, observable, or contractually exposed.",
+            ),
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.FALLBACK,
+                summary="LewLM keeps the public request contract but downgrades to a narrower or translated execution path.",
+            ),
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.UNSUPPORTED,
+                summary="LewLM does not claim the behavior on that path or host today.",
+            ),
+            StandardsAcceptanceStateDefinition(
+                state=StandardsAcceptanceState.UNVERIFIED,
+                summary="The vocabulary term is reserved, but LewLM does not yet have host proof or probe-backed evidence for a stronger claim.",
+            ),
+        ],
+        vocabulary=[
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.KV_OFFLOAD,
+                category=StandardsVocabularyCategory.MEMORY_AND_CONTEXT,
+                summary="Reports whether KV cache state can move to a secondary residency tier while preserving honest ownership boundaries.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.KV_QUANTIZATION,
+                category=StandardsVocabularyCategory.MEMORY_AND_CONTEXT,
+                summary="Reports whether KV cache compression or quantized KV residency is available on the selected path.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.HYBRID_MEMORY,
+                category=StandardsVocabularyCategory.MEMORY_AND_CONTEXT,
+                summary="Reports whether model or cache residency can span device, host, or other local memory tiers under one serving contract.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.PD_DISAGGREGATION,
+                category=StandardsVocabularyCategory.MEMORY_AND_CONTEXT,
+                summary="Reports whether prefill and decode can be separated into distinct execution or scheduling stages.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.DISTRIBUTED_KV_TRANSFER,
+                category=StandardsVocabularyCategory.MEMORY_AND_CONTEXT,
+                summary="Reports whether KV state can be transferred or shared across cooperating local workers or bridge-visible runtimes.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.STRICT_TOOL_PARSER,
+                category=StandardsVocabularyCategory.STRUCTURED_OUTPUT_AND_REASONING,
+                summary="Reports whether tool calls are emitted or validated through a strict parser or grammar-backed path instead of prompt-only heuristics.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.REASONING_TAGS,
+                category=StandardsVocabularyCategory.STRUCTURED_OUTPUT_AND_REASONING,
+                summary="Reports whether a runtime or bridge can surface machine-readable reasoning tags or segments separately from final answer text.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.PARALLEL_TOOL_CALLS,
+                category=StandardsVocabularyCategory.STRUCTURED_OUTPUT_AND_REASONING,
+                summary="Reports whether a single response can preserve multiple tool-call records without flattening them into plain text.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.STREAMING_TOOL_CALLS,
+                category=StandardsVocabularyCategory.STRUCTURED_OUTPUT_AND_REASONING,
+                summary="Reports whether tool-call deltas stay machine-readable while the response is still streaming.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.RESPONSES_API_EVENTS,
+                category=StandardsVocabularyCategory.STRUCTURED_OUTPUT_AND_REASONING,
+                summary="Reports whether a path preserves Responses-style event envelopes rather than only chat-completions style output.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.MTP_SPECULATION,
+                category=StandardsVocabularyCategory.SPECULATION,
+                summary="Reports whether multi-token prediction style speculative decoding is available or faithfully preserved.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.EAGLE_SPECULATION,
+                category=StandardsVocabularyCategory.SPECULATION,
+                summary="Reports whether EAGLE-style speculative decoding families are available or faithfully preserved.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.DFLASH_SPECULATION,
+                category=StandardsVocabularyCategory.SPECULATION,
+                summary="Reports whether DFLASH-style speculative decoding is available or faithfully preserved.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.NGRAM_DRAFT_SPECULATION,
+                category=StandardsVocabularyCategory.SPECULATION,
+                summary="Reports whether n-gram, prompt-lookup, or other draft-assisted speculation can be surfaced honestly.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.REASONING_BUDGET_SPECULATION,
+                category=StandardsVocabularyCategory.SPECULATION,
+                summary="Reports whether speculation policy can react to explicit reasoning or token-budget controls.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.TRANSFORMERS_V5_READY,
+                category=StandardsVocabularyCategory.DEPENDENCY_BASELINE,
+                summary="Reports whether a path has an explicit compatibility claim for the Transformers v5 dependency baseline.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.CUDA13_READY,
+                category=StandardsVocabularyCategory.DEPENDENCY_BASELINE,
+                summary="Reports whether a path has an explicit compatibility claim for CUDA 13 dependent builds or binaries.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.PYTORCH211_READY,
+                category=StandardsVocabularyCategory.DEPENDENCY_BASELINE,
+                summary="Reports whether a path has an explicit compatibility claim for the PyTorch 2.11 baseline.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.CXX20_READY,
+                category=StandardsVocabularyCategory.DEPENDENCY_BASELINE,
+                summary="Reports whether a path depends on or has been validated against current C++20 runtime/toolchain expectations.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.MULTIMODAL_OMNI,
+                category=StandardsVocabularyCategory.MULTIMODAL_DOCUMENT_AND_SEMANTIC,
+                summary="Reports whether one local model path can honestly cover mixed text, image, audio, or document-adjacent interaction.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.DOCUMENT_OCR_TRANSFORMER,
+                category=StandardsVocabularyCategory.MULTIMODAL_DOCUMENT_AND_SEMANTIC,
+                summary="Reports whether transformer-style OCR or document-parsing backends are available on a local-first or bridge-compatible path.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.LONG_CONTEXT_EMBEDDING,
+                category=StandardsVocabularyCategory.MULTIMODAL_DOCUMENT_AND_SEMANTIC,
+                summary="Reports whether semantic guidance covers long-context embedding models rather than only short retrieval defaults.",
+            ),
+            _standards_vocabulary_entry(
+                name=StandardsVocabularyTerm.LOCAL_AGENT_SANDBOX,
+                category=StandardsVocabularyCategory.AGENT_INTEROPERABILITY,
+                summary="Reports whether LewLM can describe the sandbox, locality, and permission boundaries expected by a host-managed local agent harness.",
+            ),
+        ],
+        related_signal_fields=[
+            "install_profiles.recommended_feature_paths[].support_path",
+            "runtime_support_strategy.paths[].performance_core_evidence[].mode",
+            "performance_features[].ownership_modes[]",
+            "measured_capabilities[].status",
+            "target_platforms[].verification_method",
+        ],
+        notes=[
+            "Milestone 120 defines normalized vocabulary and acceptance states only; it does not claim that every term is already implemented on every runtime path.",
+            "Support-path labels such as packaged and bridge remain orthogonal to acceptance states such as lewlm_owned, backend_native, partial, fallback, unsupported, and unverified.",
+            "Later milestones should reuse these exact vocabulary keys instead of introducing new near-duplicates for runtime, bridge, semantic, document, or agent-surface reporting.",
+        ],
+    )
+
+
 class PerformanceCoreEvidenceRecord(BaseModel):
     """Portable performance-core evidence summary shared across reporting surfaces."""
 
@@ -991,6 +1246,9 @@ class ModelCapabilityReport(BaseModel):
     target_platforms: list[ModelTargetPlatformReport] = Field(default_factory=list)
     capabilities: list[ModelCapabilityStatus] = Field(default_factory=list)
     measured_capabilities: list[MeasuredCapabilitySummary] = Field(default_factory=list)
+    standards_acceptance_contract: StandardsAcceptanceContract = Field(
+        default_factory=build_standards_acceptance_contract,
+    )
     performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
 
 

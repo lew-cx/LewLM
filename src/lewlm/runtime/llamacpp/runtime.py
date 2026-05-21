@@ -10,6 +10,8 @@ import math
 from collections.abc import AsyncIterator, Sequence
 from importlib import import_module
 from pathlib import Path
+import platform
+import shutil
 from typing import Any
 
 from lewlm.config.settings import LewLMSettings
@@ -32,6 +34,7 @@ from lewlm.core.contracts import (
     runtime_performance_feature_report,
 )
 from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
 from lewlm.runtime.prefix_cache import longest_token_prefix
@@ -44,6 +47,8 @@ from lewlm.structured_output import (
 
 _LLAMA_PREFILL_BATCH_PARAMETERS = ("n_batch", "batch_size", "prompt_batch_size")
 _LLAMA_PREFILL_UBATCH_PARAMETERS = ("n_ubatch", "ubatch_size", "prompt_ubatch_size")
+_WINDOWS_REQUIRED_BUILD_TOOLS = ("cmake",)
+_WINDOWS_OPTIONAL_BUILD_TOOLS = ("ninja",)
 
 
 class LlamaCppRuntime(ManagedTextRuntime):
@@ -67,7 +72,11 @@ class LlamaCppRuntime(ManagedTextRuntime):
         },
     )
     supported_systems = ("Darwin", "Linux", "Windows")
-    platform_guidance = "Install the `llamacpp` extra or another compatible llama-cpp-python build on the target host."
+    platform_guidance = (
+        "Install the `llamacpp` extra or another compatible llama-cpp-python build on the target host. "
+        "On Windows, when no prebuilt wheel is available, install Microsoft C++ Build Tools; the `llamacpp` extra "
+        "can supply CMake and Ninja helper packages but still needs a compiler toolchain."
+    )
 
     def __init__(self, *, settings: LewLMSettings | None = None) -> None:
         super().__init__()
@@ -116,7 +125,9 @@ class LlamaCppRuntime(ManagedTextRuntime):
         try:
             import_module("llama_cpp")
         except ImportError:
-            return False, "llama-cpp-python is not installed"
+            if platform.system() == "Windows":
+                return False, _windows_llamacpp_unavailable_reason()
+            return False, "llama-cpp-python is not installed. Install the `llamacpp` extra or another compatible llama-cpp-python build."
         return True, None
 
     async def _load_model(self, manifest: ModelManifest) -> None:
@@ -146,7 +157,19 @@ class LlamaCppRuntime(ManagedTextRuntime):
         if prompt_lookup_helper is not None:
             kwargs["draft_model"] = prompt_lookup_helper
             self._prompt_lookup_enabled_model_ids.add(manifest.model_id)
-        client = llama_class(**kwargs)
+        try:
+            client = llama_class(**kwargs)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeUnavailableError(
+                _llamacpp_load_failure_reason(exc),
+                details={
+                    "runtime": self.name,
+                    "model_id": manifest.model_id,
+                    "model_path": effective_model_path,
+                    "cause_type": type(exc).__name__,
+                    "cause": str(exc),
+                },
+            ) from exc
         prefix_cache_surface = self._prefix_cache_surface(llama_cpp=llama_cpp, client=client)
         prefix_cache = self._build_prefix_cache_wrapper(
             llama_cpp=llama_cpp,
@@ -1156,6 +1179,37 @@ class LlamaCppRuntime(ManagedTextRuntime):
             raise ConfigurationError(
                 "Prompt-lookup speculation was requested for a llama.cpp model that was loaded without the prompt-lookup helper.",
             )
+
+
+def _windows_llamacpp_unavailable_reason() -> str:
+    missing_required = [tool for tool in _WINDOWS_REQUIRED_BUILD_TOOLS if shutil.which(tool) is None]
+    missing_optional = [tool for tool in _WINDOWS_OPTIONAL_BUILD_TOOLS if shutil.which(tool) is None]
+    parts = [
+        "llama-cpp-python is not installed.",
+        "Install the `llamacpp` extra.",
+        "On Windows, pip may need to build llama-cpp-python from source when no prebuilt wheel is available.",
+        "Install Microsoft C++ Build Tools for that source-build path.",
+    ]
+    if missing_required:
+        parts.append(f"Missing required build tool(s) on PATH: {', '.join(missing_required)}.")
+    else:
+        parts.append("Ensure CMake is available on PATH if pip falls back to a source build.")
+    if missing_optional:
+        parts.append(f"Optional tool for faster builds: {', '.join(missing_optional)}.")
+    else:
+        parts.append("Ninja is optional for faster local source builds.")
+    return " ".join(parts)
+
+
+def _llamacpp_load_failure_reason(exc: BaseException) -> str:
+    detail = str(exc)
+    if isinstance(exc, OSError) and ("0xc000001d" in detail or getattr(exc, "winerror", None) == -1073741795):
+        return (
+            "llama.cpp failed to load the model because the installed llama-cpp-python build used CPU instructions "
+            "that are not available on this host. Install a CPU-compatible wheel or rebuild llama-cpp-python locally "
+            "with conservative GGML CPU flags."
+        )
+    return f"llama.cpp failed to load the selected model: {detail}"
 
 
 class _InstrumentedLlamaRamCache:

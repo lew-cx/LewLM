@@ -47,12 +47,16 @@ def test_release_manifest_includes_registered_model_reports(
     assert payload["registered_model_count"] == 3
     assert payload["runtime_stats"]["platform"]["system"]
     assert payload["performance_core_acceptance"]["format"] == "lewlm-performance-core-acceptance-v1"
+    assert payload["install_profiles"]["profiles"]
+    assert payload["standards_refresh_acceptance"]["format"] == "lewlm-standards-refresh-acceptance-v1"
+    assert payload["standards_refresh_acceptance"]["completed_milestones"] == list(range(121, 133))
     assert payload["registered_models"]
     assert payload["registered_models"][0]["validation_key"]
     assert "target_platforms" in payload["registered_models"][0]
     assert "capabilities" in payload["registered_models"][0]
     assert payload["dependency_audit"]["format"] == "lewlm-dependency-audit-v1"
     assert payload["dependency_audit"]["consistency_check"]["status"] == "passed"
+    assert payload["dependency_audit"]["compatibility_gates"]["gates"]["mlx_031_plus"]["classification"] == "watchlisted"
 
 
 def test_release_manifest_includes_frontier_acceptance_evidence(
@@ -100,6 +104,7 @@ def test_release_manifest_includes_frontier_acceptance_evidence(
     assert payload["frontier_acceptance"]["format"] == "lewlm-frontier-acceptance-v1"
     assert payload["optimization_defaults"]["format"] == "lewlm-optimization-defaults-v1"
     assert payload["performance_core_acceptance"]["format"] == "lewlm-performance-core-acceptance-v1"
+    assert payload["standards_refresh_acceptance"]["operator_summary"]["current"]
     assert payload["optimization_defaults"]["complete"] is True
     assert payload["optimization_defaults"]["model_count"] >= 1
     assert payload["frontier_acceptance"]["recommended_profile_count"] >= 1

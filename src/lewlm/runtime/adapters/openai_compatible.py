@@ -267,6 +267,10 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
         ),
     },
 }
+_PROFILE_ALIASES = {
+    "ollama_local": "openai_compatible",
+    "llamacpp_server": "openai_compatible",
+}
 
 
 def summarize_feature_preservation(
@@ -1046,7 +1050,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
 
 def _profile_feature_map(settings: LewLMSettings) -> dict[str, tuple[PerformanceFeatureOwnership, str]]:
-    return _PROFILE_FEATURES.get(settings.external_accelerator_profile, _PROFILE_FEATURES["openai_compatible"])
+    profile = _PROFILE_ALIASES.get(settings.external_accelerator_profile, settings.external_accelerator_profile)
+    return _PROFILE_FEATURES.get(profile, _PROFILE_FEATURES["openai_compatible"])
 
 
 def _remote_model_candidates(manifest: ModelManifest) -> tuple[str, ...]:

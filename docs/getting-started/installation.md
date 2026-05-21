@@ -66,6 +66,8 @@ Operator guidance by host:
 
 LewLM keeps install-profile guidance machine-readable so host apps and release validation can distinguish packaged, bridge-backed, fallback, unsupported, benchmark-backed, and host-probed states without inferring them from prose.
 
+`install_profiles.standards_acceptance_contract` now adds the Milestone 120 acceptance-state legend (`lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, `unverified`) plus the reserved 2026 vocabulary keys. Terms such as `kv_offload`, `responses_api_events`, `transformers_v5_ready`, and `local_agent_sandbox` live there now so later milestones can report them without inventing new field names.
+
 | State | Meaning in install-profile and runtime docs | Machine-readable signal |
 | --- | --- | --- |
 | Packaged | LewLM ships or imports the runtime path directly on the current host or target host | `install_profiles.recommended_feature_paths[].support_path = "packaged"` |
@@ -74,6 +76,15 @@ LewLM keeps install-profile guidance machine-readable so host apps and release v
 | Unsupported | the current host, target host, or runtime path is outside the documented product promise | `supported = false` plus readiness such as `blocked`, `unsupported`, or `runtime_unavailable` |
 | Benchmark-backed | LewLM has persisted host/model/runtime evidence for the documented default or performance behavior | `benchmark_backed = true` or `benchmark_backed_defaults = true` |
 | Host-probed | the current host has been checked directly instead of inheriting a declared target-platform contract | `verification_method = "host_probe"` |
+
+| Acceptance state | Meaning in the 2026 vocabulary contract | Machine-readable signal |
+| --- | --- | --- |
+| `lewlm_owned` | LewLM implements and validates the named behavior directly | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
+| `backend_native` | the backend owns the behavior and LewLM only detects or preserves it | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
+| `partial` | only part of the behavior is preserved or observable | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
+| `fallback` | LewLM keeps the request contract but downgrades execution | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
+| `unsupported` | LewLM does not claim the named behavior on that path | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
+| `unverified` | the term is reserved but not yet backed by host proof or a stronger probe | `install_profiles.standards_acceptance_contract.acceptance_states[]` |
 
 See the [Runtime and capability matrix](../reference/runtime-capability-matrix.md) for the per-feature acceptance matrix that uses this vocabulary.
 

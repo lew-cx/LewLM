@@ -148,17 +148,20 @@ Non-success responses use one top-level machine-readable shape:
 For host applications, the main machine-readable readiness fields are:
 
 - `/v1/health.install_profiles.recommended_feature_paths[]`
+- `/v1/health.install_profiles.standards_acceptance_contract`
 - `/v1/health.readiness`
 - `/v1/health.readiness.capabilities[].available_support_paths`
 - `/v1/health.readiness.capabilities[].bridge_only`
 - `/v1/health.configuration.runtime_packs[]`
 - `/v1/health.configuration.feature_packs[]`
 - `/v1/runtime/stats.readiness`
+- `/v1/runtime/stats.standards_acceptance_contract`
 - `/v1/runtime/stats.runtime_packs[]`
 - `/v1/runtime/stats.feature_packs[]`
 - `/v1/runtime/stats.runtimes[].readiness_state`
 - `/v1/runtime/stats.measured_capability_registry`
 - `/v1/runtime/stats.runtime_support_strategy`
+- `/v1/models/{model_id}/capabilities.standards_acceptance_contract`
 - `/v1/models/{model_id}/capabilities.runtime_candidates[].support_path`
 - `/v1/models/{model_id}/capabilities.runtime_candidates[].readiness_state`
 - `/v1/models/{model_id}/capabilities.capabilities[].support_path`

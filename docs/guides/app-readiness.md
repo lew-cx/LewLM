@@ -24,6 +24,7 @@ LewLM now reports one consistent `readiness_state` for capability checks:
 
 - `install_profiles.active_profile_ids` so host apps can tell which documented install profile is actually present
 - `install_profiles.profiles[]` with per-profile readiness and notes
+- `install_profiles.standards_acceptance_contract` for the shared Milestone 120 vocabulary and acceptance-state legend
 - `readiness.status` for an overall host-app summary (`ready`, `partial`, or `blocked`)
 - `readiness.ready_capability_count` and `readiness.capability_count`
 - `readiness.capabilities[]` with per-capability readiness details, candidate model counts, and support-path labels such as `packaged` vs `bridge`
@@ -39,6 +40,7 @@ Use this route when your app needs a low-cost answer to "what did this LewLM ins
 - loaded-model and scheduler state
 - benchmark, cache, and target-platform diagnostics
 - `runtime_support_strategy` so host apps can see which runtime family is first-class on the current product line, which non-Apple path LewLM now productizes, and which paths remain bridge-only
+- `standards_acceptance_contract` so host apps can map later 2026 feature reports back to one fixed vocabulary and state legend
 
 For cross-platform audio specifically, `bridge_only=true` means LewLM can serve the public audio request class on this host, but only through the loopback external-accelerator bridge rather than a packaged runtime.
 
@@ -52,6 +54,7 @@ Use this route when your app needs to choose a degraded mode, show a diagnostics
 - `runtime_candidates[].support_path`
 - `capabilities[].readiness_state`
 - `capabilities[].support_path`
+- `standards_acceptance_contract` for the shared Milestone 120 vocabulary and acceptance-state legend
 
 That lets a host app answer "is this exact model ready for chat or audio on this machine?" without translating several booleans and fallback notes by hand.
 

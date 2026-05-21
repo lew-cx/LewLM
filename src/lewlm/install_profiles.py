@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import platform
+import shutil
 from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from lewlm.core.contracts import RuntimeSupportPath
+from lewlm.core.contracts import RuntimeSupportPath, StandardsAcceptanceContract, build_standards_acceptance_contract
 from lewlm.documents.ingest.ocr import detect_ocr_backend
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -20,7 +21,13 @@ _EXTERNAL_ACCELERATOR_PROFILE_NOTES = {
     "vllm_mlx": "vLLM-style bridge profile for a compatible local loopback server.",
     "vllm_local": "vLLM-style bridge profile for a compatible local loopback server.",
     "sglang_local": "SGLang-style bridge profile for a compatible local loopback server.",
+    "ollama_local": "Ollama-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
+    "llamacpp_server": "llama.cpp-server-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
 }
+
+
+def _has_command(command: str) -> bool:
+    return shutil.which(command) is not None
 
 
 class InstallProfileStatus(BaseModel):
@@ -42,6 +49,9 @@ class InstallProfileSummary(BaseModel):
     active_profile_ids: list[str] = Field(default_factory=list)
     recommended_profile_id: str | None = None
     recommended_feature_paths: list["FeaturePathRecommendation"] = Field(default_factory=list)
+    standards_acceptance_contract: StandardsAcceptanceContract = Field(
+        default_factory=build_standards_acceptance_contract,
+    )
     profiles: list[InstallProfileStatus] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -152,6 +162,27 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
                         "Packaged GGUF support on non-Apple hosts covers LewLM's first-class text runtime family plus embedding-capable semantic GGUF models; rerank stays packaged through LewLM's embedding-similarity fallback when the backend lacks a native rerank API. Non-Apple audio transcription and speech intentionally remain bridge-only through the external accelerator path.",
                     ]
                     if system in {"Linux", "Windows"}
+                    else []
+                ),
+                *(
+                    [
+                        "On Windows, the `llamacpp` extra also installs CMake and Ninja helper packages, but source builds still require Microsoft C++ Build Tools when no prebuilt llama-cpp-python wheel is available.",
+                    ]
+                    if system == "Windows"
+                    else []
+                ),
+                *(
+                    [
+                        "CMake is not currently on PATH. Existing Windows environments may still need it available before retrying a local llama.cpp source build.",
+                    ]
+                    if system == "Windows" and gguf_missing and not _has_command("cmake")
+                    else []
+                ),
+                *(
+                    [
+                        "Ninja is optional for faster Windows llama.cpp source builds.",
+                    ]
+                    if system == "Windows" and gguf_missing and not _has_command("ninja")
                     else []
                 ),
                 *(

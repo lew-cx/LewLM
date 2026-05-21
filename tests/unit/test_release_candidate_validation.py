@@ -26,6 +26,7 @@ def _release_manifest(
     covered_families: list[str] | None = None,
     resolved_optimization_classes: list[str] | None = None,
     covered_performance_core_pillars: list[str] | None = None,
+    completed_milestones: list[int] | None = None,
 ) -> dict[str, object]:
     registered_models = []
     for index in range(2):
@@ -122,6 +123,19 @@ def _release_manifest(
                 for pillar in (covered_performance_core_pillars or [])
             },
         },
+        "standards_refresh_acceptance": {
+            "format": "lewlm-standards-refresh-acceptance-v1",
+            "completed_milestones": completed_milestones or list(range(121, 133)),
+            "milestones": [
+                {
+                    "milestone": milestone,
+                    "status": "completed",
+                    "required_manifest_sections": ["runtime_stats", "dependency_audit"],
+                }
+                for milestone in (completed_milestones or list(range(121, 133)))
+            ],
+            "operator_summary": {"current": ["chat: packaged default"]},
+        },
     }
 
 
@@ -160,6 +174,8 @@ def test_release_candidate_validation_passes_for_consistent_hosts(tmp_path) -> N
     assert payload["checks"]["required_targets_verified"]["passed"] is True
     assert payload["checks"]["minimum_verified_models_per_target"]["passed"] is True
     assert payload["checks"]["required_frontier_families_verified"]["passed"] is True
+    assert payload["checks"]["standards_refresh_milestones_completed"]["passed"] is True
+    assert payload["standards_refresh_coverage"]["Windows:AMD64"]["all_required_milestones_completed"] is True
     assert payload["verified_model_coverage"]["Windows:AMD64"]["verified_model_count"] == 2
     assert {item["reason"] for item in payload["skipped_files"]} == {"not_release_manifest"}
 
@@ -200,9 +216,37 @@ def test_release_candidate_validation_detects_drift_missing_target_and_insuffici
     assert payload["checks"]["required_systems_verified"]["passed"] is False
     assert payload["checks"]["required_targets_covered"]["passed"] is False
     assert payload["checks"]["minimum_verified_models_per_target"]["passed"] is False
+    assert payload["checks"]["standards_refresh_milestones_completed"]["passed"] is False
     assert "Darwin" in payload["checks"]["required_systems_covered"]["reason"]
     assert "Darwin:arm64" in payload["checks"]["required_targets_covered"]["reason"]
     assert "Windows:AMD64" in payload["checks"]["minimum_verified_models_per_target"]["reason"]
+
+
+def test_release_candidate_validation_reports_missing_standards_refresh_milestone(tmp_path) -> None:
+    module = _load_release_validation_module()
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+    (manifests_dir / "darwin-release-manifest.json").write_text(
+        json.dumps(
+            _release_manifest(
+                system="Darwin",
+                machine="arm64",
+                git_commit="abc123",
+                spec_digest="spec-1",
+                completed_milestones=list(range(121, 131)),
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    payload = module.build_release_candidate_validation(
+        [manifests_dir],
+        required_targets=["Darwin:arm64"],
+    )
+
+    assert payload["overall_status"] == "failed"
+    assert payload["checks"]["standards_refresh_milestones_completed"]["passed"] is False
+    assert payload["checks"]["standards_refresh_milestones_completed"]["failed_targets"] == ["Darwin:arm64"]
 
 
 def test_release_candidate_validation_can_require_frontier_families(tmp_path) -> None:

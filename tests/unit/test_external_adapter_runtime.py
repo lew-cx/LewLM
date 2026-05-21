@@ -264,6 +264,27 @@ def test_external_adapter_runtime_surfaces_non_apple_local_profile_features(tmp_
     assert snapshot["constrained_decoding"]["metrics"]["fallback_used"] is True
 
 
+@pytest.mark.parametrize("profile", ["ollama_local", "llamacpp_server"])
+def test_external_adapter_runtime_supports_generic_bridge_alias_profiles(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    settings = LewLMSettings(
+        data_dir=tmp_path / "state",
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+        external_accelerator_profile=profile,
+    )
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=settings)
+
+    snapshot = runtime.performance_feature_snapshot()
+
+    assert snapshot["continuous_batching"]["ownership"] == "partial"
+    assert snapshot["prefix_cache"]["ownership"] == "unsupported"
+    assert snapshot["constrained_decoding"]["ownership"] == "partial"
+    assert snapshot["constrained_decoding"]["metrics"]["adapter_profile"] == profile
+
+
 def test_external_adapter_runtime_records_prompt_guided_structured_output_metadata(
     tmp_path: Path,
     monkeypatch,

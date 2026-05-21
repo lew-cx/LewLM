@@ -11,6 +11,7 @@ import sys
 from typing import Any
 
 RELEASE_MANIFEST_FORMAT = "lewlm-release-manifest-v1"
+REQUIRED_STANDARDS_REFRESH_MILESTONES = tuple(range(121, 133))
 
 
 def build_release_candidate_validation(
@@ -49,6 +50,7 @@ def build_release_candidate_validation(
     frontier_family_coverage = _frontier_family_coverage(manifest_summaries)
     optimization_class_coverage = _optimization_class_coverage(manifest_summaries)
     performance_core_pillar_coverage = _performance_core_pillar_coverage(manifest_summaries)
+    standards_refresh_coverage = _standards_refresh_coverage(manifest_summaries)
     dependency_failures = [
         summary["path"]
         for summary in manifest_summaries
@@ -109,6 +111,11 @@ def build_release_candidate_validation(
         target
         for target in dict.fromkeys(targets_to_enforce)
         if verified_model_coverage.get(target, {}).get("verified_model_count", 0) < minimum_verified_models
+    )
+    incomplete_standards_refresh_targets = sorted(
+        target
+        for target in dict.fromkeys(targets_to_enforce or targets_present)
+        if not standards_refresh_coverage.get(target, {}).get("all_required_milestones_completed", False)
     )
 
     checks = {
@@ -291,6 +298,22 @@ def build_release_candidate_validation(
             "required_performance_core_pillars": required_performance_core,
             "failed_pairs": missing_required_performance_core_pairs,
         },
+        "standards_refresh_milestones_completed": {
+            "passed": bool(targets_to_enforce or targets_present) and not incomplete_standards_refresh_targets,
+            "reason": (
+                "All enforced targets carry a completed 2026 standards-refresh summary."
+                if bool(targets_to_enforce or targets_present) and not incomplete_standards_refresh_targets
+                else (
+                    "No release-manifest targets were available for standards-refresh checks."
+                    if not (targets_to_enforce or targets_present)
+                    else "Targets missing completed standards-refresh milestones: "
+                    + ", ".join(incomplete_standards_refresh_targets)
+                    + "."
+                )
+            ),
+            "required_milestones": list(REQUIRED_STANDARDS_REFRESH_MILESTONES),
+            "failed_targets": incomplete_standards_refresh_targets,
+        },
     }
     overall_passed = all(check["passed"] for check in checks.values())
 
@@ -312,6 +335,7 @@ def build_release_candidate_validation(
         "frontier_family_coverage": frontier_family_coverage,
         "optimization_class_coverage": optimization_class_coverage,
         "performance_core_pillar_coverage": performance_core_pillar_coverage,
+        "standards_refresh_coverage": standards_refresh_coverage,
         "manifests": manifest_summaries,
         "skipped_files": skipped_files,
         "checks": checks,
@@ -363,6 +387,7 @@ def _manifest_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     frontier_acceptance = payload.get("frontier_acceptance", {})
     optimization_defaults = payload.get("optimization_defaults", {})
     performance_core_acceptance = payload.get("performance_core_acceptance", {})
+    standards_refresh_acceptance = payload.get("standards_refresh_acceptance", {})
     return {
         "path": str(path),
         "platform": {
@@ -409,6 +434,15 @@ def _manifest_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
             "covered_pillars": _covered_performance_core_pillars(performance_core_acceptance),
             "supported_unproved_pillars": _supported_unproved_performance_core_pillars(performance_core_acceptance),
             "missing_pillars": _missing_performance_core_pillars(performance_core_acceptance),
+        },
+        "standards_refresh_acceptance": {
+            "present": isinstance(standards_refresh_acceptance, dict) and bool(standards_refresh_acceptance),
+            "completed_milestones": _completed_standards_refresh_milestones(standards_refresh_acceptance),
+            "operator_summary_present": _standards_refresh_operator_summary_present(standards_refresh_acceptance),
+            "required_sections_present": _standards_refresh_required_sections_present(
+                payload,
+                standards_refresh_acceptance,
+            ),
         },
     }
 
@@ -582,6 +616,31 @@ def _performance_core_pillar_coverage(manifest_summaries: list[dict[str, Any]]) 
     return coverage
 
 
+def _standards_refresh_coverage(manifest_summaries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    coverage: dict[str, dict[str, Any]] = {}
+    for summary in manifest_summaries:
+        if summary["host_platform_validation"]["passed"] is False:
+            continue
+        target = summary["platform"]["target"]
+        current = summary["standards_refresh_acceptance"]
+        existing = coverage.get(target)
+        if existing is None or len(current["completed_milestones"]) > len(existing["completed_milestones"]):
+            missing = [
+                milestone
+                for milestone in REQUIRED_STANDARDS_REFRESH_MILESTONES
+                if milestone not in current["completed_milestones"]
+            ]
+            coverage[target] = {
+                "completed_milestones": list(current["completed_milestones"]),
+                "operator_summary_present": bool(current["operator_summary_present"]),
+                "required_sections_present": bool(current["required_sections_present"]),
+                "all_required_milestones_completed": not missing and bool(current["required_sections_present"]),
+                "missing_milestones": missing,
+                "path": summary["path"],
+            }
+    return coverage
+
+
 def _resolved_optimization_classes(optimization_defaults: Any) -> list[str]:
     if not isinstance(optimization_defaults, dict):
         return []
@@ -589,6 +648,62 @@ def _resolved_optimization_classes(optimization_defaults: Any) -> list[str]:
     if isinstance(resolved, list):
         return sorted(str(item) for item in resolved if item)
     return []
+
+
+def _completed_standards_refresh_milestones(standards_refresh_acceptance: Any) -> list[int]:
+    if not isinstance(standards_refresh_acceptance, dict):
+        return []
+    completed = standards_refresh_acceptance.get("completed_milestones")
+    if isinstance(completed, list):
+        return sorted(
+            int(item)
+            for item in completed
+            if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+        )
+    milestones = standards_refresh_acceptance.get("milestones")
+    if not isinstance(milestones, list):
+        return []
+    return sorted(
+        int(item.get("milestone"))
+        for item in milestones
+        if isinstance(item, dict)
+        and item.get("status") == "completed"
+        and (isinstance(item.get("milestone"), int) or str(item.get("milestone", "")).isdigit())
+    )
+
+
+def _standards_refresh_operator_summary_present(standards_refresh_acceptance: Any) -> bool:
+    if not isinstance(standards_refresh_acceptance, dict):
+        return False
+    operator_summary = standards_refresh_acceptance.get("operator_summary")
+    return isinstance(operator_summary, dict) and bool(operator_summary)
+
+
+def _standards_refresh_required_sections_present(payload: dict[str, Any], standards_refresh_acceptance: Any) -> bool:
+    if not isinstance(standards_refresh_acceptance, dict):
+        return False
+    milestones = standards_refresh_acceptance.get("milestones")
+    if not isinstance(milestones, list):
+        return False
+    for milestone_entry in milestones:
+        if not isinstance(milestone_entry, dict):
+            return False
+        required_sections = milestone_entry.get("required_manifest_sections", [])
+        if not isinstance(required_sections, list):
+            return False
+        for section_path in required_sections:
+            if not isinstance(section_path, str) or not _manifest_has_section(payload, section_path):
+                return False
+    return True
+
+
+def _manifest_has_section(payload: Any, dotted_path: str) -> bool:
+    current = payload
+    for segment in dotted_path.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            return False
+        current = current[segment]
+    return True
 
 
 def _benchmark_backed_optimization_classes(optimization_defaults: Any) -> list[str]:

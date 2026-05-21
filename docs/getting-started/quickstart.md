@@ -99,6 +99,8 @@ Use `lewlm doctor` as the current-host source of truth: it now prints the same r
 
 `structured output` is intentionally split from the default chat path: on Apple Silicon macOS, LewLM still recommends GGUF when the request needs decode-time JSON-schema or grammar enforcement.
 
+`lewlm doctor --json` and `GET /v1/runtime/stats` now also expose `standards_acceptance_contract`, which carries the shared Milestone 120 vocabulary keys from `kv_offload` through `local_agent_sandbox` plus the acceptance-state legend that later milestones reuse.
+
 ## Documents add-on
 
 Use this when you want local document ingest, render, or transform workflows, with or without model execution.

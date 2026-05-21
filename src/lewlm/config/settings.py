@@ -105,6 +105,8 @@ class LewLMSettings(BaseSettings):
         "vllm_mlx",
         "vllm_local",
         "sglang_local",
+        "ollama_local",
+        "llamacpp_server",
     ] = "openai_compatible"
     external_accelerator_base_url: str | None = None
     external_accelerator_timeout_seconds: int = 10

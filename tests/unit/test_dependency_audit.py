@@ -41,6 +41,14 @@ def test_dependency_audit_captures_reproducibility_inputs(monkeypatch) -> None:
     assert payload["dependency_spec"]["dependencies"]
     assert "dev" in payload["dependency_spec"]["optional_groups"]
     assert len(payload["dependency_spec"]["digest"]) == 64
+    assert payload["compatibility_gates"]["format"] == "lewlm-dependency-compatibility-gates-v1"
+    assert payload["compatibility_gates"]["gates"]["llama_cpp_python_bindings"]["classification"] == "optional"
+    assert any(
+        requirement.startswith("cmake>=")
+        for requirement in payload["compatibility_gates"]["gates"]["llama_cpp_python_bindings"]["requirements"]
+    )
+    assert payload["compatibility_gates"]["gates"]["optional_bridge_clients"]["classification"] == "bridge_owned"
+    assert payload["compatibility_gates"]["gates"]["mlx_031_plus"]["classification"] == "watchlisted"
     assert payload["resolved_environment"]["package_count"] == 3
     assert len(payload["resolved_environment"]["package_digest"]) == 64
     assert payload["consistency_check"]["status"] == "passed"

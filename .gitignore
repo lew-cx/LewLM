@@ -18,3 +18,4 @@ src/lewlm/models/
 .venv311/*
 .github/
 agent_prompts.md
+milestone_prompts.md

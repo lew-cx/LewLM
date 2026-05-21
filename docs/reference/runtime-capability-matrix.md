@@ -4,7 +4,25 @@ LewLM's parity contract is about a stable **local-first middleware backend** sur
 
 ## Acceptance state legend
 
+LewLM keeps two separate axes in the 2026 standards contract:
+
+- support-path labels explain how a request reaches execution on the current host or target host
+- acceptance states explain who owns or validates a named Milestone 120 vocabulary term
+
+### 2026 acceptance states
+
 | State | Meaning | Machine-readable contract |
+| --- | --- | --- |
+| `lewlm_owned` | LewLM directly implements, controls, and validates the behavior on that path | `standards_acceptance_contract.acceptance_states[].state`; later milestones can also surface it through `performance_features[].ownership_modes[]` or `runtime_support_strategy.paths[].performance_core_evidence[].mode` |
+| `backend_native` | the backend owns the behavior and LewLM only detects, preserves, or reports it honestly | `standards_acceptance_contract.acceptance_states[].state`; stronger per-path evidence can appear under runtime support strategy or performance-core evidence |
+| `partial` | only part of the intended behavior is preserved, observable, or exposed through LewLM | `standards_acceptance_contract.acceptance_states[].state`; adapter-preservation details can also surface through `performance_features[].ownership_modes[]` |
+| `fallback` | LewLM keeps the public request contract but downgrades to a narrower or translated execution path | `standards_acceptance_contract.acceptance_states[].state`; runtime-specific fallback detail still lives in `fallback_used`, `fallback_reason`, `readiness_state`, or performance-core evidence `mode = "fallback"` |
+| `unsupported` | LewLM does not claim the behavior on that path or host | `standards_acceptance_contract.acceptance_states[].state`; runtime-specific rejection detail still lives in `supported = false` and readiness fields |
+| `unverified` | the term is reserved in the contract, but LewLM does not yet have host proof or probe-backed evidence for a stronger claim | `standards_acceptance_contract.acceptance_states[].state`; target validation still uses fields such as `verification_method` separately |
+
+### Support-path and evidence signals
+
+| Signal | Meaning | Machine-readable contract |
 | --- | --- | --- |
 | Packaged | LewLM imports or ships the runtime path directly on the relevant host | `support_path = "packaged"` in install-profile recommendations and runtime candidates |
 | Bridge-backed | LewLM keeps the public contract but delegates execution to a loopback-only local server | `support_path = "bridge"` plus the `external_accelerator` runtime path |
@@ -37,6 +55,21 @@ LewLM's parity contract is about a stable **local-first middleware backend** sur
 | local OpenAI-compatible adapter | `external_accelerator` | Cross-platform external accelerator bridge | `mlx`, `gguf`, `audio_folder` | text, vision, audio, embedding, rerank, multimodal | chat, streaming, vision, audio transcription, audio speech, embeddings, rerank | Darwin, Linux, Windows | Bridge to a loopback-only OpenAI-compatible local server. Vision uses OpenAI-style image content blocks on `/v1/chat/completions`; audio uses `/v1/audio/transcriptions` and `/v1/audio/speech`, which LewLM probes separately; embeddings and rerank remain adapter-backed through compatible local semantic endpoints. This is LewLM's current bridge-only non-Apple public audio parity path. LewLM does not claim MLX-level multimodal optimization or telemetry parity on this path, and structured-output requests stay bridge-backed with explicit fallback metadata rather than packaged decode-time parity. Bridge wins do not replace the first-class non-Apple packaged default. |
 | frontier experimental | `experimental` | n/a | `gguf`, `mlx`, `huggingface` | text | planning/diagnostics only | diagnostic surface | Experimental only |
 | distributed experimental | `distributed_experimental` | n/a | multiple | text, multimodal | chat, streaming | experimental cluster mode | Experimental only |
+
+## 2026 standards vocabulary
+
+The Milestone 120 vocabulary ships in `standards_acceptance_contract.vocabulary[].name` on `GET /v1/health.install_profiles`, `GET /v1/runtime/stats`, and `GET /v1/models/{model_id}/capabilities`. These names are normative reporting keys, not automatic support claims.
+
+- `memory and context`: `kv_offload`, `kv_quantization`, `hybrid_memory`, `pd_disaggregation`, `distributed_kv_transfer`
+- `structured output and reasoning`: `strict_tool_parser`, `reasoning_tags`, `parallel_tool_calls`, `streaming_tool_calls`, `responses_api_events`
+- `speculation`: `mtp_speculation`, `eagle_speculation`, `dflash_speculation`, `ngram_draft_speculation`, `reasoning_budget_speculation`
+- `dependency baselines`: `transformers_v5_ready`, `cuda13_ready`, `pytorch211_ready`, `cxx20_ready`
+- `multimodal, document, and semantic`: `multimodal_omni`, `document_ocr_transformer`, `long_context_embedding`
+- `agent interoperability`: `local_agent_sandbox`
+
+Later milestones should attach per-term states through `runtime_support_strategy`, `performance_core_evidence`, `measured_capabilities`, target-platform verification data, install-profile guidance, and bridge probes without inventing new term names.
+
+The release prove-out now lifts the same matrix into `release-manifest.json.standards_refresh_acceptance` so `validate_release_candidate.py` can verify Milestones 121-132 from one artifact bundle without flattening unsupported or unverified states into success claims.
 
 ## Capability names
 
@@ -116,6 +149,8 @@ For portable performance-core reporting, runtime snapshots now tag the major tex
 | `vllm_mlx` | vLLM-style compatible local server | useful bridge hint when the loopback server preserves paged-KV and prefix-cache behavior |
 | `vllm_local` | vLLM-style local server | cross-platform bridge hint for local servers that preserve semantic and scheduler behavior |
 | `sglang_local` | SGLang-style local server | cross-platform bridge hint for local servers that preserve compatible loopback semantic routes |
+| `ollama_local` | Ollama-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows Ollama-style local deployment patterns |
+| `llamacpp_server` | llama.cpp-server-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows llama.cpp-server local deployment patterns |
 
 ## Routing considerations
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lewlm"
-version = "0.4.0a0"
+version = "0.4.1a0"
 description = "Local-first middleware backend for multimodal local AI runtimes, serving, and document workflows."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -38,6 +38,8 @@ mlx = [
 ]
 llamacpp = [
   "llama-cpp-python>=0.3.0,<1.0.0",
+  "cmake>=3.30.0,<4.0.0; platform_system == 'Windows'",
+  "ninja>=1.11.1,<2.0.0; platform_system == 'Windows'",
 ]
 documents = [
   "openpyxl>=3.1.0,<4.0.0",

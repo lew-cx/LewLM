@@ -5,6 +5,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
     CapabilityName,
@@ -23,9 +25,58 @@ from lewlm.core.contracts import (
     ValidationState,
     utc_now,
 )
+from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.serving_profiles import resolve_serving_profile_application
 from lewlm.storage.metadata import MetadataStore
 from lewlm.runtime.llamacpp.runtime import LlamaCppRuntime, _InstrumentedLlamaRamCache
+
+
+def test_llamacpp_runtime_reports_actionable_windows_install_reason_when_backend_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(ImportError(name)),
+    )
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.shutil.which",
+        lambda command: None,
+    )
+
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+
+    reason = runtime.availability_reason()
+
+    assert reason is not None
+    assert "Install the `llamacpp` extra" in reason
+    assert "Microsoft C++ Build Tools" in reason
+    assert "Missing required build tool(s) on PATH: cmake." in reason
+    assert "Optional tool for faster builds: ninja." in reason
+
+
+def test_llamacpp_runtime_wraps_backend_model_load_failure(monkeypatch, tmp_path: Path) -> None:
+    class FakeLlama:
+        def __init__(self, **kwargs) -> None:
+            raise OSError("[WinError -1073741795] Windows Error 0xc000001d")
+
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(Llama=FakeLlama)
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", fake_import)
+
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+
+    with pytest.raises(RuntimeUnavailableError) as exc_info:
+        asyncio.run(runtime.load_model(_manifest()))
+
+    assert "CPU instructions" in str(exc_info.value)
+    assert exc_info.value.details["runtime"] == "llamacpp"
+    assert exc_info.value.details["model_id"] == "gguf-model"
+    assert exc_info.value.details["cause_type"] == "OSError"
 
 
 class FakePromptLookupDecoding:

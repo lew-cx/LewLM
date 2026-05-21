@@ -22,9 +22,12 @@ python scripts/generate_release_manifest.py > out/release-manifest.json
 
 The release manifest now includes:
 
+- `install_profiles` for current-host packaged-versus-bridge guidance
+- `dependency_audit.compatibility_gates` for the 2026 dependency baseline states
 - `frontier_acceptance` for frontier-family proof coverage
 - `optimization_defaults` for benchmark-backed default adoption state
 - `performance_core_acceptance` for Milestone 81-style serving-core proof coverage across batching, prefix reuse, tiered KV, speculation, constrained decoding, and measured default adoption
+- `standards_refresh_acceptance` for the completed Milestones 121-132 matrix plus the operator summary of current, bridge-backed, optional, experimental, unsupported, and unverified states
 
 ## Bundle capture
 
@@ -92,6 +95,8 @@ python scripts/validate_release_candidate.py out \
   --require-performance-core-pillar measured_registry_defaults \
   > out/release-candidate-validation.json
 ```
+
+Release candidate validation now also checks `standards_refresh_milestones_completed`, which requires each enforced target to carry the completed 2026 standards-refresh summary from the release manifest. Missing standards proof remains explicit even when the host, dependency, frontier, or performance-core checks pass.
 
 ## What these scripts are for
 

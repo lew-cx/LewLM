@@ -16,11 +16,13 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.install_profiles import summarize_install_profiles
 from lewlm.core.bootstrap import bootstrap_services
 from frontier_acceptance import build_frontier_acceptance_summary
 from performance_core_acceptance import build_performance_core_acceptance_summary
-from generate_dependency_audit import build_dependency_audit
+from generate_dependency_audit import _dependency_compatibility_gates, _dependency_spec, build_dependency_audit
 from generate_sbom import build_sbom
+from standards_refresh_acceptance import build_standards_refresh_acceptance_summary
 
 
 def build_release_manifest() -> dict[str, object]:
@@ -36,6 +38,13 @@ def build_release_manifest() -> dict[str, object]:
     benchmark_artifacts = services.metadata_store.list_benchmark_artifacts(limit=50)
     serving_profiles = services.metadata_store.list_serving_profiles(limit=50)
     runtime_preferences = services.metadata_store.list_runtime_preferences(limit=50)
+    install_profiles = summarize_install_profiles(settings).model_dump(mode="json")
+    dependency_audit = build_dependency_audit(resolved_packages=pip_freeze)
+    if "compatibility_gates" not in dependency_audit:
+        dependency_audit = {
+            **dependency_audit,
+            "compatibility_gates": _dependency_compatibility_gates(_dependency_spec()),
+        }
     return {
         "format": "lewlm-release-manifest-v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -48,8 +57,9 @@ def build_release_manifest() -> dict[str, object]:
         },
         "git_commit": _git_commit(),
         "pip_freeze": pip_freeze,
-        "dependency_audit": build_dependency_audit(resolved_packages=pip_freeze),
+        "dependency_audit": dependency_audit,
         "configuration": settings.redacted_snapshot(),
+        "install_profiles": install_profiles,
         "registered_model_count": inventory.count,
         "registered_models": capability_reports,
         "benchmark_artifacts": benchmark_artifacts,
@@ -74,6 +84,11 @@ def build_release_manifest() -> dict[str, object]:
                 else None
             ),
             capability_reports=capability_reports,
+        ),
+        "standards_refresh_acceptance": build_standards_refresh_acceptance_summary(
+            host_platform=runtime_stats.platform.model_dump(mode="json"),
+            install_profiles=install_profiles,
+            dependency_audit=dependency_audit,
         ),
         "runtime_stats": runtime_stats.model_dump(mode="json"),
         "sbom": build_sbom(),

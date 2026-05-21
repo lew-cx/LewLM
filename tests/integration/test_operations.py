@@ -331,6 +331,10 @@ def test_runtime_stats_mark_nonapple_behavior_defaults_per_family(
     assert recommendation.runtime == "fake_llamacpp"
     assert runtime_response.status_code == 200
     runtime_payload = runtime_response.json()
+    standards_contract = runtime_payload["standards_acceptance_contract"]
+    assert standards_contract["format"] == "lewlm-standards-acceptance-contract-v1"
+    assert any(item["name"] == "cuda13_ready" for item in standards_contract["vocabulary"])
+    assert any(item["name"] == "document_ocr_transformer" for item in standards_contract["vocabulary"])
     optimization_defaults = runtime_payload["optimization_defaults"]["models"]
     model_defaults = next(item for item in optimization_defaults if item["model_id"] == gguf_model_id)
     assert model_defaults["decisions"]["prefix_reuse"]["status"] == "adopted"

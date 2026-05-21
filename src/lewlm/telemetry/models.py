@@ -15,6 +15,8 @@ from lewlm.core.contracts import (
     MeasuredCapabilitySummary,
     PerformanceCoreEvidenceRecord,
     ServiceReadinessSummary,
+    StandardsAcceptanceContract,
+    build_standards_acceptance_contract,
 )
 from lewlm.core.serving_core import ServingCoreSnapshot
 from lewlm.pack_registry import PackReport
@@ -448,6 +450,9 @@ class RuntimeStats(BaseModel):
     performance_core_evidence: list[PerformanceCoreEvidenceRecord] = Field(default_factory=list)
     optimization_defaults: OptimizationDefaultsSummary | None = None
     runtime_support_strategy: RuntimeSupportStrategy | None = None
+    standards_acceptance_contract: StandardsAcceptanceContract = Field(
+        default_factory=build_standards_acceptance_contract,
+    )
 
 
 RuntimeStats.model_rebuild()

@@ -27,6 +27,7 @@ def build_dependency_audit(*, resolved_packages: list[str] | None = None) -> dic
             "sha256": _file_sha256(PYPROJECT_PATH),
         },
         "dependency_spec": dependency_spec,
+        "compatibility_gates": _dependency_compatibility_gates(dependency_spec),
         "resolved_environment": {
             "package_count": len(normalized_packages),
             "package_digest": _sha256_lines(normalized_packages),
@@ -51,6 +52,73 @@ def _dependency_spec() -> dict[str, object]:
         **canonical_payload,
         "digest": _sha256_json(canonical_payload),
     }
+
+
+def _dependency_compatibility_gates(dependency_spec: dict[str, object]) -> dict[str, object]:
+    optional_groups = dependency_spec.get("optional_groups", {})
+    if not isinstance(optional_groups, dict):
+        optional_groups = {}
+    mlx_requirements = _optional_group_requirements(optional_groups, "mlx")
+    llamacpp_requirements = _optional_group_requirements(optional_groups, "llamacpp")
+    documents_requirements = _optional_group_requirements(optional_groups, "documents")
+
+    return {
+        "format": "lewlm-dependency-compatibility-gates-v1",
+        "classifications": ["required", "optional", "bridge_owned", "unsupported", "watchlisted"],
+        "gates": {
+            "transformers_v5_ready": {
+                "classification": "watchlisted",
+                "summary": "Transformers v5 is not a core LewLM dependency; compatibility stays watchlisted until a packaged or explicitly validated path depends on it.",
+                "requirements": [],
+            },
+            "cuda13_ready": {
+                "classification": "watchlisted",
+                "summary": "CUDA 13 readiness depends on optional packaged or bridge-owned runtimes and remains watchlisted instead of implied by the core install.",
+                "requirements": [],
+            },
+            "pytorch211_ready": {
+                "classification": "watchlisted",
+                "summary": "PyTorch 2.11 is not a base-package requirement and remains a watchlisted compatibility gate.",
+                "requirements": [],
+            },
+            "cxx20_ready": {
+                "classification": "watchlisted",
+                "summary": "C++20-sensitive runtime expectations remain watchlisted because LewLM does not bundle platform toolchains or binaries directly.",
+                "requirements": llamacpp_requirements,
+            },
+            "mlx_031_plus": {
+                "classification": "watchlisted",
+                "summary": "The MLX packaged path is Apple-first, but the current Python extra still declares older minimums than the 0.31+ watch target, so the gate stays explicit and watchlisted.",
+                "requirements": mlx_requirements,
+            },
+            "llama_cpp_python_bindings": {
+                "classification": "optional",
+                "summary": "llama.cpp Python bindings remain an optional packaged runtime dependency rather than a core install requirement.",
+                "requirements": llamacpp_requirements,
+            },
+            "document_tooling": {
+                "classification": "optional",
+                "summary": "Document parsing and OCR-side Python packages stay isolated in the optional documents extra.",
+                "requirements": documents_requirements,
+            },
+            "optional_bridge_clients": {
+                "classification": "bridge_owned",
+                "summary": "Loopback bridge compatibility depends on the external local server contract rather than a mandatory LewLM runtime dependency set.",
+                "requirements": [],
+            },
+        },
+        "notes": [
+            "Compatibility gates classify 2026 dependency expectations without forcing heavyweight runtime packages into the core install.",
+            "Watchlisted gates remain visible until host proof, package-baseline updates, or stronger packaged evidence exists.",
+        ],
+    }
+
+
+def _optional_group_requirements(optional_groups: dict[str, object], group_name: str) -> list[str]:
+    requirements = optional_groups.get(group_name, [])
+    if not isinstance(requirements, list):
+        return []
+    return [str(requirement) for requirement in requirements if requirement]
 
 
 def _pip_check() -> dict[str, object]:
