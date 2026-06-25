@@ -138,21 +138,42 @@ def _clone_runtime_overrides(
     runtime_overrides: Mapping[RuntimeAffinity, RuntimeContract] | None,
     *,
     settings: LewLMSettings,
+    reinstantiate: bool = False,
 ) -> Mapping[RuntimeAffinity, RuntimeContract] | None:
+    """Resolve runtime overrides for a service container.
+
+    The primary container binds the caller's exact runtime instances so the
+    public ``LewLM(runtime_overrides=...)`` facade and the test suite can
+    observe the runtime they injected. Settings-aware runtimes are re-built so
+    they pick up the resolved settings. When ``reinstantiate`` is True (the
+    on-demand ``service_factory`` path that spins up independent containers with
+    alternate settings, e.g. autotune/benchmark candidates), stateless runtimes
+    are also rebuilt so each container gets an isolated instance.
+    """
+
     if runtime_overrides is None:
         return None
     cloned: dict[RuntimeAffinity, RuntimeContract] = {}
     for affinity, runtime in runtime_overrides.items():
         runtime_type = type(runtime)
         try:
-            signature = inspect.signature(runtime_type)
-            if "settings" in signature.parameters:
-                cloned[affinity] = runtime_type(settings=settings)
-            else:
-                cloned[affinity] = runtime_type()
-            continue
+            accepts_settings = "settings" in inspect.signature(runtime_type).parameters
         except (TypeError, ValueError):
-            pass
+            accepts_settings = False
+        if accepts_settings:
+            try:
+                cloned[affinity] = runtime_type(settings=settings)
+                continue
+            except (TypeError, ValueError):
+                pass
+        if reinstantiate:
+            try:
+                cloned[affinity] = runtime_type()
+                continue
+            except (TypeError, ValueError):
+                pass
+        # Otherwise use the runtime exactly as provided so callers observe the
+        # instance they injected.
         cloned[affinity] = runtime
     return cloned
 
@@ -379,6 +400,7 @@ def bootstrap_services(
         runtime_overrides=_clone_runtime_overrides(
             scoped_runtime_overrides,
             settings=candidate_settings,
+            reinstantiate=True,
         ),
         conversion_backend=conversion_backend,
     )
