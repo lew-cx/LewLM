@@ -32,6 +32,7 @@ class ModelModality(str, Enum):
 class ModelFormat(str, Enum):
     GGUF = "gguf"
     MLX = "mlx"
+    ONNX_GENAI = "onnx_genai"
     HUGGINGFACE = "huggingface"
     AUDIO_FOLDER = "audio_folder"
     ADAPTER_BUNDLE = "adapter_bundle"
@@ -43,6 +44,7 @@ class RuntimeAffinity(str, Enum):
     MLX_VISION = "mlx_vision"
     MLX_AUDIO = "mlx_audio"
     LLAMACPP = "llamacpp"
+    ONNX_GENAI = "onnx_genai"
     EXTERNAL_ACCELERATOR = "external_accelerator"
     CONVERSION = "conversion"
     EXPERIMENTAL = "experimental"
@@ -315,6 +317,7 @@ class RuntimeCandidateReport(BaseModel):
     supported_machines: list[str] = Field(default_factory=list)
     support_path: "RuntimeSupportPath" = "packaged"
     supports_manifest: bool
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RequestModality(str, Enum):
@@ -333,6 +336,123 @@ class RoutingModalityPath(str, Enum):
 class RuntimeSupportPath(str, Enum):
     PACKAGED = "packaged"
     BRIDGE = "bridge"
+
+
+class CapabilityEvidenceState(str, Enum):
+    """Evidence-backed state for a claimed LewLM capability."""
+
+    DISCOVERED = "discovered"
+    REQUIRES_INSTALL = "requires_install"
+    REQUIRES_CONVERSION = "requires_conversion"
+    LOAD_PASSED = "load_passed"
+    GENERATE_PASSED = "generate_passed"
+    BENCHMARK_PASSED = "benchmark_passed"
+    PROBE_FAILED = "probe_failed"
+    UNSUPPORTED = "unsupported"
+
+
+class CapabilityOwnership(str, Enum):
+    """Truthful ownership label for a runtime or middleware capability."""
+
+    LEWLM_OWNED = "lewlm_owned"
+    BACKEND_NATIVE = "backend_native"
+    BRIDGE_VERIFIED = "bridge_verified"
+    FALLBACK = "fallback"
+    UNSUPPORTED = "unsupported"
+    UNVERIFIED = "unverified"
+
+
+class RuntimeProvider(str, Enum):
+    """Known execution providers LewLM can own, package, or bridge."""
+
+    MLX = "mlx"
+    LLAMACPP = "llamacpp"
+    LLAMACPP_SERVER = "llamacpp_server"
+    ONNX_GENAI = "onnx_genai"
+    OPENVINO = "openvino"
+    VLLM = "vllm"
+    SGLANG = "sglang"
+    TENSORRT_LLM = "tensorrt_llm"
+    OLLAMA = "ollama"
+    LM_STUDIO = "lm_studio"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    UNKNOWN = "unknown"
+
+
+class ConversionTarget(BaseModel):
+    """Operator-facing conversion target contract."""
+
+    target_id: str
+    target_format: str
+    runtime_provider: RuntimeProvider = RuntimeProvider.UNKNOWN
+    runtime_affinity: RuntimeAffinity | None = None
+    backend_name: str | None = None
+    state: str = "unverified"
+    can_convert: bool = False
+    already_runnable: bool = False
+    reason: str | None = None
+    support_path: RuntimeSupportPath = RuntimeSupportPath.PACKAGED
+    optimization_profiles: list[str] = Field(default_factory=list)
+    artifact_plans: list[dict[str, Any]] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class OptimizationProfile(BaseModel):
+    """Named optimization profile surfaced by middleware planning APIs."""
+
+    profile_id: str
+    label: str
+    runtime_provider: RuntimeProvider = RuntimeProvider.UNKNOWN
+    quantization_profile: QuantizationProfile | None = None
+    requires_calibration: bool = False
+    requires_external_tooling: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class BridgeProfile(BaseModel):
+    """Local bridge profile for an upstream inference server."""
+
+    profile_id: str
+    provider: RuntimeProvider = RuntimeProvider.OPENAI_COMPATIBLE
+    runtime_affinity: RuntimeAffinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
+    ownership: CapabilityOwnership = CapabilityOwnership.UNVERIFIED
+    base_url: str | None = None
+    supported_capabilities: list[CapabilityName] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class CapabilityEvidence(BaseModel):
+    """A single support claim normalized into LewLM's evidence vocabulary."""
+
+    capability: CapabilityName | str
+    state: CapabilityEvidenceState
+    ownership: CapabilityOwnership = CapabilityOwnership.UNVERIFIED
+    reason: str
+    runtime_name: str | None = None
+    runtime_affinity: RuntimeAffinity | None = None
+    provider: RuntimeProvider = RuntimeProvider.UNKNOWN
+    model_id: str | None = None
+    source: str = "runtime_probe"
+    probe_key: str | None = None
+    benchmark_id: str | None = None
+    artifact_id: str | None = None
+    recorded_at: datetime = Field(default_factory=utc_now)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeProviderReport(BaseModel):
+    """Installed or configured provider summary for middleware clients."""
+
+    provider: RuntimeProvider
+    runtime_name: str
+    runtime_affinity: RuntimeAffinity
+    ownership: CapabilityOwnership
+    support_path: RuntimeSupportPath
+    available: bool
+    reason: str | None = None
+    supported_capabilities: list[CapabilityName] = Field(default_factory=list)
+    evidence_state: CapabilityEvidenceState = CapabilityEvidenceState.DISCOVERED
+    notes: list[str] = Field(default_factory=list)
 
 
 class RoutingDecision(BaseModel):
@@ -1211,6 +1331,38 @@ class ServiceReadinessSummary(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class LewLMMiddlewareCapabilitiesReport(BaseModel):
+    """LewLM-wide middleware capability report for host apps and CLIs."""
+
+    service: str = "LewLM"
+    generated_at: datetime = Field(default_factory=utc_now)
+    host_platform: HostPlatformSnapshot
+    discovered_model_count: int = 0
+    runnable_model_count: int = 0
+    conversion_required_model_count: int = 0
+    capability_evidence: list[CapabilityEvidence] = Field(default_factory=list)
+    runtime_providers: list[RuntimeProviderReport] = Field(default_factory=list)
+    readiness: ServiceReadinessSummary
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelArtifactLineageReport(BaseModel):
+    """Artifact, conversion, probe, and benchmark context for one model."""
+
+    model_id: str
+    display_name: str
+    source_path: str
+    format_type: ModelFormat
+    artifact_role: ModelArtifactRole
+    artifact_family_id: str | None = None
+    artifact_lineage: list[ModelArtifactLayer] = Field(default_factory=list)
+    conversion_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_probe_records: list[CapabilityEvidence] = Field(default_factory=list)
+    latest_benchmark: dict[str, Any] | None = None
+    capability_evidence: list[CapabilityEvidence] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class ModelTargetPlatformReport(BaseModel):
     """Per-model readiness summary for a specific target platform."""
 
@@ -1245,6 +1397,7 @@ class ModelCapabilityReport(BaseModel):
     runtime_candidates: list[RuntimeCandidateReport] = Field(default_factory=list)
     target_platforms: list[ModelTargetPlatformReport] = Field(default_factory=list)
     capabilities: list[ModelCapabilityStatus] = Field(default_factory=list)
+    capability_evidence: list[CapabilityEvidence] = Field(default_factory=list)
     measured_capabilities: list[MeasuredCapabilitySummary] = Field(default_factory=list)
     standards_acceptance_contract: StandardsAcceptanceContract = Field(
         default_factory=build_standards_acceptance_contract,

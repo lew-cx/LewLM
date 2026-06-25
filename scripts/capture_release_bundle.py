@@ -34,6 +34,7 @@ def capture_release_bundle(
 ) -> dict[str, object]:
     output_path = Path(output_dir).expanduser().resolve(strict=False)
     output_path.mkdir(parents=True, exist_ok=True)
+    expanded_validation_paths = _expanded_input_paths(validation_manifest_paths)
 
     sbom = build_sbom()
     dependency_audit = build_dependency_audit()
@@ -45,7 +46,7 @@ def capture_release_bundle(
         _write_json_artifact(output_path / "release-manifest.json", release_manifest),
     ]
 
-    bundled_validation_inputs = _bundle_validation_inputs(output_path, validation_manifest_paths)
+    bundled_validation_inputs = _bundle_validation_inputs(output_path, expanded_validation_paths)
     validation_payload = build_release_candidate_validation(
         [output_path, *(output_path / str(item["bundled_path"]) for item in bundled_validation_inputs)],
         required_systems=required_systems,

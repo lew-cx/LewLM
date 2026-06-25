@@ -21,10 +21,10 @@ LewLM now keeps an explicit scope matrix in the codebase so the project can dist
 | Registry and routing | `core` | `registry/`, `routing/`, `runtime/catalog.py`, `core/contracts.py`, chat/multimodal orchestrators | base install | Discovery, manifests, runtime contracts, and routing decisions. |
 | Session and local state | `core` | `storage/`, `history/` | base install | Local persistence and session/export state. |
 | Conversion pipeline | `core` | `conversion/` | base install | Compatibility checks, jobs, and conversion metadata. |
-| Telemetry and capability reporting | `core` | `telemetry/`, `utils/validation_manifests.py` | base install | Runtime stats, readiness, and measured capability truth. |
+| Telemetry and capability reporting | `core` | `telemetry/`, `core/middleware.py`, `utils/validation_manifests.py` | base install | Runtime stats, readiness, middleware evidence states, and measured capability truth. |
 | Serving-control layers | `performance_core` | `core/serving_core.py`, `core/speculation.py`, scheduler/cache modules, `serving_profiles.py` | base install | The selectively owned optimization layer LewLM is prepared to stand behind. |
 | Benchmark and acceptance artifacts | `performance_core` | `benchmarking/` | base install | Evidence for defaults, claims, and prove-out work. |
-| Concrete runtime packs | `optional_module` | `runtime/mlx_*`, `runtime/llamacpp`, `runtime/adapters`, `runtime/metal` | base install + config, `mlx`, `llamacpp` | Runtime contracts are core; concrete backend packs stay install-selectable, including the loopback external-accelerator bridge. |
+| Concrete runtime packs | `optional_module` | `runtime/mlx_*`, `runtime/llamacpp`, `runtime/onnx_genai`, `runtime/adapters`, `runtime/metal` | base install + config, `mlx`, `llamacpp`, `onnx_genai` | Runtime contracts are core; concrete backend packs stay install-selectable, including the loopback external-accelerator bridge and ONNX Runtime GenAI prepared-bundle path. |
 | Documents and local tooling | `optional_module` | `documents/`, `tools/` | `documents` | Deterministic ingest/render/skills and document-oriented local tools. |
 | Frontier architecture diagnostics | `experimental` | `runtime/experimental/architectures.py`, `runtime/experimental/frontier.py` | none | Planning and diagnostics only. |
 | Distributed cluster workflows | `experimental` | `runtime/experimental/distributed.py`, `api/routes/cluster.py` | none | Pipeline-parallel proof surface, not a production tensor-parallel engine. |

@@ -514,6 +514,32 @@ def test_cli_doctor_prints_optimization_default_summary(
     assert "workloads:" in output
 
 
+def test_cli_config_prints_default_path_context(temp_settings, capsys) -> None:
+    exit_code = main(["config"], settings=temp_settings)
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert f"home dir: {Path.home().resolve(strict=False)}" in output
+    assert f"default data dir: {Path.home().resolve(strict=False) / '.lewlm'}" in output
+    assert f"default model root: {Path.home().resolve(strict=False) / '.lewlm' / 'models'}" in output
+    assert f"data dir: {temp_settings.data_dir}" in output
+
+
+def test_cli_doctor_prints_default_path_context(
+    temp_settings,
+    services_with_fake_runtime,
+    capsys,
+) -> None:
+    exit_code = main(["doctor"], settings=temp_settings, services=services_with_fake_runtime)
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert f"home dir: {Path.home().resolve(strict=False)}" in output
+    assert f"default data dir: {Path.home().resolve(strict=False) / '.lewlm'}" in output
+    assert f"default model root: {Path.home().resolve(strict=False) / '.lewlm' / 'models'}" in output
+    assert f"data dir: {temp_settings.data_dir}" in output
+
+
 def test_cli_doctor_reports_host_memory_diagnostics(
     temp_settings,
     services_with_fake_attachment_runtime,

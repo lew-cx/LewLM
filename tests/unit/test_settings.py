@@ -20,6 +20,9 @@ def test_settings_prepare_default_directories(tmp_path: Path) -> None:
 def test_redacted_snapshot_omits_api_key_values(temp_settings: LewLMSettings) -> None:
     snapshot = temp_settings.redacted_snapshot()
 
+    assert snapshot["home_dir"] == str(Path.home().resolve(strict=False))
+    assert snapshot["default_data_dir"] == str(Path.home().resolve(strict=False) / ".lewlm")
+    assert snapshot["default_models_dir"] == str(Path.home().resolve(strict=False) / ".lewlm" / "models")
     assert snapshot["api_key_count"] == 1
     assert snapshot["api_key_required"] is False
     assert snapshot["runtime_policy"] == "balanced"
@@ -41,6 +44,8 @@ def test_redacted_snapshot_omits_api_key_values(temp_settings: LewLMSettings) ->
     assert snapshot["conversion_sandbox_timeout_seconds"] == 1800
     assert snapshot["conversion_sandbox_clear_environment"] is True
     assert snapshot["conversion_sandbox_dir"].endswith("conversion-sandbox")
+    assert snapshot["llamacpp_convert_hf_to_gguf_path"] is None
+    assert snapshot["llamacpp_quantize_path"] is None
     assert snapshot["kv_cache_page_size"] == 256
     assert snapshot["kv_cache_max_pages"] == 64
     assert snapshot["kv_cache_quantization_bits"] == 8

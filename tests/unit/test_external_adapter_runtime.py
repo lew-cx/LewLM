@@ -285,6 +285,35 @@ def test_external_adapter_runtime_supports_generic_bridge_alias_profiles(
     assert snapshot["constrained_decoding"]["metrics"]["adapter_profile"] == profile
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_batching", "expected_paged_kv"),
+    [
+        ("tensorrt_llm_server", "backend_native", "backend_native"),
+        ("openvino_model_server", "partial", "unsupported"),
+    ],
+)
+def test_external_adapter_runtime_supports_modern_bridge_profiles(
+    tmp_path: Path,
+    profile: str,
+    expected_batching: str,
+    expected_paged_kv: str,
+) -> None:
+    settings = LewLMSettings(
+        data_dir=tmp_path / "state",
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+        external_accelerator_profile=profile,
+    )
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=settings)
+
+    snapshot = runtime.performance_feature_snapshot()
+
+    assert snapshot["continuous_batching"]["ownership"] == expected_batching
+    assert snapshot["paged_kv_cache"]["ownership"] == expected_paged_kv
+    assert snapshot["constrained_decoding"]["ownership"] == "partial"
+    assert snapshot["constrained_decoding"]["metrics"]["adapter_profile"] == profile
+
+
 def test_external_adapter_runtime_records_prompt_guided_structured_output_metadata(
     tmp_path: Path,
     monkeypatch,

@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lewlm.core.contracts import (
+    ConversionTarget,
     ModelFormat,
     ModelArtifactRole,
     ModelModality,
@@ -77,9 +78,21 @@ class ConversionCompatibilityReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ConversionTargetPlanningReport(BaseModel):
+    """Read-only conversion target options for one model."""
+
+    model_id: str
+    source_format: ModelFormat
+    conversion_status: str
+    default_target_id: str | None = None
+    targets: list[ConversionTarget] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class ConversionJobRequest(BaseModel):
     model_id: str
     policy: ConversionPolicy = ConversionPolicy.BALANCED
+    target_id: str | None = None
     custom_bits: int | None = None
     quantization_profile: QuantizationProfile | None = None
     force: bool = False

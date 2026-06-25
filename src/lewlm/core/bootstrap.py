@@ -341,6 +341,7 @@ def bootstrap_services(
     resolved_settings.prepare_directories()
     configure_logging(resolved_settings)
     pack_registry = PackRegistry.from_settings(resolved_settings)
+    scoped_runtime_overrides = _clone_runtime_overrides(runtime_overrides, settings=resolved_settings)
 
     core_foundation = _build_core_foundation_services(resolved_settings)
     performance_core = _build_performance_core_services(
@@ -359,7 +360,7 @@ def bootstrap_services(
         multimodal_encoder_cache=performance_core.multimodal_encoder_cache,
         cluster_service=experimental_services.cluster_service,
         pack_registry=pack_registry,
-        runtime_overrides=runtime_overrides,
+        runtime_overrides=scoped_runtime_overrides,
     )
     optional_modules = _build_optional_module_services(
         resolved_settings,
@@ -376,7 +377,7 @@ def bootstrap_services(
     service_factory = lambda candidate_settings: bootstrap_services(  # noqa: E731 - local factory keeps cloned settings wiring close to use sites
         candidate_settings,
         runtime_overrides=_clone_runtime_overrides(
-            runtime_overrides,
+            scoped_runtime_overrides,
             settings=candidate_settings,
         ),
         conversion_backend=conversion_backend,

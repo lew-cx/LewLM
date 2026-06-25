@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from lewlm.config.settings import LewLMSettings
-from lewlm.conversion.backend import MLXConversionBackend
+from lewlm.conversion.backend import AutoConversionBackend, LlamaCppConversionBackend, MLXConversionBackend
 from lewlm.conversion.service import ConversionService
 from lewlm.conversion.models import ConversionCompatibilityReport, ConversionPolicy
 from lewlm.core.errors import ConversionError
@@ -24,6 +24,7 @@ from lewlm.core.contracts import (
     RuntimeAffinity,
     ValidationState,
 )
+from lewlm.registry.discovery import discover_models
 
 
 def _manifest(
@@ -33,6 +34,22 @@ def _manifest(
     format_type: ModelFormat,
     modality: tuple[ModelModality, ...] = (ModelModality.TEXT,),
 ) -> ModelManifest:
+    if format_type == ModelFormat.GGUF:
+        runtime_affinity = (RuntimeAffinity.LLAMACPP,)
+        conversion_status = ConversionStatus.RUNNABLE
+    elif format_type == ModelFormat.ONNX_GENAI:
+        runtime_affinity = (RuntimeAffinity.ONNX_GENAI,)
+        conversion_status = ConversionStatus.RUNNABLE
+    elif format_type == ModelFormat.MLX:
+        runtime_affinity = (RuntimeAffinity.MLX_VISION,) if ModelModality.VISION in modality else (RuntimeAffinity.MLX_TEXT,)
+        conversion_status = ConversionStatus.RUNNABLE
+    else:
+        runtime_affinity = (
+            (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_VISION)
+            if ModelModality.VISION in modality
+            else (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_TEXT)
+        )
+        conversion_status = ConversionStatus.REQUIRES_CONVERSION
     return ModelManifest(
         model_id=model_id,
         display_name=model_id,
@@ -40,18 +57,8 @@ def _manifest(
         modality=modality,
         source_path=str(path),
         format_type=format_type,
-        runtime_affinity=(
-            ((RuntimeAffinity.MLX_VISION,) if ModelModality.VISION in modality else (RuntimeAffinity.MLX_TEXT,))
-            if format_type == ModelFormat.MLX
-            else (
-                (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_VISION)
-                if ModelModality.VISION in modality
-                else (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_TEXT)
-            )
-        ),
-        conversion_status=(
-            ConversionStatus.RUNNABLE if format_type == ModelFormat.MLX else ConversionStatus.REQUIRES_CONVERSION
-        ),
+        runtime_affinity=runtime_affinity,
+        conversion_status=conversion_status,
         fingerprint=f"{model_id}-fingerprint",
         last_validation_result=ModelValidationResult(status=ValidationState.VALID, message="ok"),
     )
@@ -82,10 +89,16 @@ def _compatibility(manifest: ModelManifest, output_path: Path) -> ConversionComp
     )
 
 
-def test_mlx_conversion_backend_reports_already_runnable_mlx_models(temp_settings: LewLMSettings, tmp_path: Path) -> None:
+def test_mlx_conversion_backend_reports_already_runnable_mlx_models(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     source_dir = tmp_path / "gemma-mlx"
     source_dir.mkdir()
     backend = MLXConversionBackend()
+    monkeypatch.setattr("lewlm.conversion.backend.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("lewlm.conversion.backend.platform.machine", lambda: "arm64")
 
     report = backend.compatibility_report(
         _manifest(source_dir, model_id="gemma-mlx", format_type=ModelFormat.MLX),
@@ -101,6 +114,192 @@ def test_mlx_conversion_backend_reports_already_runnable_mlx_models(temp_setting
     assert report.already_runnable is True
     assert report.reason == "Model is already in MLX format and does not need conversion."
     assert report.output_path == str(source_dir)
+
+
+def test_mlx_conversion_backend_reports_mlx_host_unsupported_on_windows(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma-mlx"
+    source_dir.mkdir()
+    backend = MLXConversionBackend()
+    monkeypatch.setattr("lewlm.conversion.backend.platform.system", lambda: "Windows")
+    monkeypatch.setattr("lewlm.conversion.backend.platform.machine", lambda: "AMD64")
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-mlx", format_type=ModelFormat.MLX),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is False
+    assert report.already_runnable is False
+    assert "Apple Silicon macOS" in report.reason
+
+
+def test_llamacpp_conversion_backend_reports_hf_to_gguf_plan(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("quantizer", encoding="utf-8")
+    settings = temp_settings.with_updates(
+        llamacpp_convert_hf_to_gguf_path=converter,
+        llamacpp_quantize_path=quantizer,
+    )
+    backend = LlamaCppConversionBackend()
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is True
+    assert report.target_format == "gguf"
+    assert report.backend_name == "llamacpp_gguf"
+    assert report.quantization_mode == "q4_k_m"
+    assert report.artifact_plans[0].format_type == ModelFormat.GGUF
+    assert report.artifact_plans[0].runtime_affinity == (RuntimeAffinity.LLAMACPP,)
+    assert report.artifact_plans[0].relative_path.endswith("-q4_k_m.gguf")
+
+
+def test_llamacpp_conversion_backend_reports_missing_quantizer_for_quantized_exports(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    converter.write_text("# converter", encoding="utf-8")
+    backend = LlamaCppConversionBackend()
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings.with_updates(llamacpp_convert_hf_to_gguf_path=converter),
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is False
+    assert "llama.cpp `llama-quantize`" in report.reason
+
+
+def test_llamacpp_conversion_backend_rejects_unmapped_custom_bits(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    backend = LlamaCppConversionBackend()
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings,
+        policy=ConversionPolicy.CUSTOM_BITS,
+        custom_bits=7,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is False
+    assert "7-bit weights" in report.reason
+
+
+def test_llamacpp_conversion_backend_runs_export_and_quantize_commands(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    output_dir = tmp_path / "converted"
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("quantizer", encoding="utf-8")
+    settings = temp_settings.with_updates(
+        llamacpp_convert_hf_to_gguf_path=converter,
+        llamacpp_quantize_path=quantizer,
+    )
+    backend = LlamaCppConversionBackend()
+    recorded: list[list[str]] = []
+
+    def fake_run(command, *, capture_output, text, cwd, check):
+        recorded.append(command)
+        if "--outfile" in command:
+            Path(command[command.index("--outfile") + 1]).write_bytes(b"f16-gguf")
+        else:
+            Path(command[2]).write_bytes(b"q4-gguf")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("lewlm.conversion.backend.subprocess.run", fake_run)
+
+    result = backend.convert(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        output_path=output_dir,
+        work_dir=tmp_path,
+    )
+
+    assert result.output_path == output_dir
+    assert result.artifacts[0].format_type == ModelFormat.GGUF
+    assert result.artifacts[0].runtime_affinity == (RuntimeAffinity.LLAMACPP,)
+    assert result.artifacts[0].output_path == output_dir / "gemma-hf-q4_k_m.gguf"
+    assert recorded[0][:2] == [sys.executable, str(converter)]
+    assert recorded[1] == [str(quantizer), str(tmp_path / "gemma-hf-q4_k_m-f16.gguf"), str(output_dir / "gemma-hf-q4_k_m.gguf"), "Q4_K_M"]
+
+
+def test_auto_conversion_backend_prefers_llamacpp_gguf_on_windows(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("quantizer", encoding="utf-8")
+    monkeypatch.setattr("lewlm.conversion.backend.platform.system", lambda: "Windows")
+    monkeypatch.setattr("lewlm.conversion.backend.platform.machine", lambda: "AMD64")
+
+    report = AutoConversionBackend().compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=converter,
+            llamacpp_quantize_path=quantizer,
+        ),
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is True
+    assert report.backend_name == "llamacpp_gguf"
+    assert report.target_format == "gguf"
 
 
 def test_mlx_conversion_backend_reports_quantization_and_warning_for_supported_text_bundles(
@@ -129,6 +328,31 @@ def test_mlx_conversion_backend_reports_quantization_and_warning_for_supported_t
     assert report.quantization_mode == "4bit"
     assert report.custom_bits == 4
     assert report.warnings == ["Custom bits were provided without selecting the `custom_bits` policy."]
+
+
+def test_mlx_conversion_backend_reports_host_unsupported_for_non_macos_conversion(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    backend = MLXConversionBackend()
+    monkeypatch.setattr("lewlm.conversion.backend.platform.system", lambda: "Windows")
+    monkeypatch.setattr("lewlm.conversion.backend.platform.machine", lambda: "AMD64")
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is False
+    assert report.reason == "MLX conversion is only supported on Apple Silicon macOS hosts."
 
 
 def test_mlx_conversion_backend_rejects_non_four_bit_custom_quantization(
@@ -259,6 +483,57 @@ def test_mlx_conversion_backend_uses_current_cli_flags(
     ]
 
 
+def test_mlx_conversion_backend_preserves_dual_artifact_plan_for_discovered_sharded_gemma4_bundle(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma4-vl"
+    source_dir.mkdir()
+    (source_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4",
+                "quantization": {"bits": 4, "group_size": 64},
+                "text_config": {"hidden_size": 2048},
+                "vision_config": {"image_size": 448},
+            },
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+    (source_dir / "model-00001-of-00002.safetensors").write_bytes(b"weights-1")
+    (source_dir / "model-00002-of-00002.safetensors").write_bytes(b"weights-2")
+    (source_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (source_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest.format_type == ModelFormat.HUGGINGFACE
+
+    backend = MLXConversionBackend()
+    monkeypatch.setattr(backend, "availability_reason", lambda: None)
+    monkeypatch.setattr(backend, "_conversion_backend_available", lambda _backend: True)
+
+    report = backend.compatibility_report(
+        manifest,
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is True
+    assert report.layered_output is True
+    assert [artifact.role for artifact in report.artifact_plans] == [
+        ModelArtifactRole.MULTIMODAL_RUNNABLE,
+        ModelArtifactRole.TEXT_RUNNABLE,
+    ]
+
+
 def test_mlx_conversion_backend_routes_vision_bundles_to_mlx_vlm(
     temp_settings: LewLMSettings,
     tmp_path: Path,
@@ -276,6 +551,7 @@ def test_mlx_conversion_backend_routes_vision_bundles_to_mlx_vlm(
         return SimpleNamespace(returncode=0, stdout="converted\n", stderr="")
 
     monkeypatch.setattr("lewlm.conversion.backend.subprocess.run", fake_run)
+    monkeypatch.setattr(backend, "availability_reason", lambda: None)
     monkeypatch.setattr(backend, "_conversion_backend_available", lambda _backend: True)
 
     manifest = _manifest(
@@ -438,6 +714,110 @@ def test_conversion_service_cache_key_includes_quantization_profile(temp_setting
     )
 
     assert baseline != mixed_precision
+
+
+def test_conversion_service_plans_executable_gguf_and_planned_onnx_targets(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("# quantizer", encoding="utf-8")
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    manifest = _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE)
+    service, _ = _conversion_service(
+        temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=converter,
+            llamacpp_quantize_path=quantizer,
+        ),
+    )
+    service.model_registry = SimpleNamespace(get_manifest=lambda model_id: manifest)
+
+    report = service.plan_targets(manifest.model_id)
+    targets = {target.target_id: target for target in report.targets}
+
+    assert report.default_target_id == "gguf_llamacpp"
+    assert targets["gguf_llamacpp"].can_convert is True
+    assert targets["gguf_llamacpp"].state == "available"
+    assert targets["gguf_llamacpp"].runtime_provider.value == "llamacpp"
+    assert targets["onnx_genai"].can_convert is False
+    assert targets["onnx_genai"].state == "planned"
+    assert "Windows-native" in str(targets["onnx_genai"].reason)
+
+
+def test_conversion_service_plans_existing_onnx_bundle_as_probe_gated_runnable(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path / "phi-onnx", model_id="phi-onnx", format_type=ModelFormat.ONNX_GENAI)
+    service, _ = _conversion_service(temp_settings)
+    service.model_registry = SimpleNamespace(get_manifest=lambda model_id: manifest)
+
+    report = service.plan_targets(manifest.model_id)
+    targets = {target.target_id: target for target in report.targets}
+
+    assert report.default_target_id == "onnx_genai"
+    assert targets["onnx_genai"].already_runnable is True
+    assert targets["onnx_genai"].state == "already_runnable"
+    assert "probe-gated" in str(targets["onnx_genai"].reason)
+
+
+def test_conversion_service_selects_explicit_gguf_target_backend(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("# quantizer", encoding="utf-8")
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    manifest = _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE)
+    service, _ = _conversion_service(
+        temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=converter,
+            llamacpp_quantize_path=quantizer,
+        ),
+    )
+
+    compatibility, backend = service._compatibility_for_request(
+        manifest,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+        target_id="gguf_llamacpp",
+    )
+
+    assert backend.name == "llamacpp_gguf"
+    assert compatibility.backend_name == "llamacpp_gguf"
+    assert compatibility.can_convert is True
+
+
+def test_conversion_service_rejects_planned_onnx_target_for_hf_sources(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path / "gemma-hf", model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE)
+    service, _ = _conversion_service(temp_settings)
+
+    compatibility, _ = service._compatibility_for_request(
+        manifest,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+        target_id="onnx_genai",
+    )
+
+    assert compatibility.backend_name == "onnx_genai_planned"
+    assert compatibility.target_format == "onnx_genai"
+    assert compatibility.can_convert is False
+    assert "not include an executable ONNX conversion adapter" in compatibility.reason
 
 
 def test_conversion_service_clear_cache_removes_artifacts_and_idempotency_records(temp_settings: LewLMSettings) -> None:

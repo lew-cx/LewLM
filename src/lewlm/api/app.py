@@ -21,6 +21,7 @@ from .routes.documents import router as documents_router
 from .routes.events import router as events_router
 from .routes.health import router as health_router
 from .routes.history import router as history_router
+from .routes.lewlm import router as lewlm_router
 from .routes.models import router as models_router
 from .routes.multimodal import router as multimodal_router
 from .routes.operations import router as operations_router
@@ -71,6 +72,7 @@ def create_app(
     app.include_router(events_router)
     app.include_router(health_router)
     app.include_router(history_router)
+    app.include_router(lewlm_router)
     app.include_router(models_router)
     app.include_router(multimodal_router)
     app.include_router(operations_router)

@@ -41,6 +41,7 @@ from lewlm.runtime.experimental import extract_architecture_metadata, infer_arch
 
 TOKENIZER_FILENAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json")
 PROCESSOR_FILENAMES = ("processor.json", "processor_config.json", "preprocessor_config.json")
+ONNX_GENAI_CONFIG_FILENAMES = ("genai_config.json",)
 QUANTIZATION_PROFILE_FILENAMES = (QUANTIZATION_PROFILE_METADATA_FILENAME, "quantization_profile.json")
 DISTRIBUTED_PIPELINE_FILENAMES = ("distributed_pipeline.json",)
 AUDIO_KEYWORDS = {"asr", "audio", "bark", "kokoro", "parler", "speech", "stt", "transcribe", "tts", "wav2vec", "whisper", "xtts"}
@@ -95,7 +96,7 @@ def _discover_root(root: Path) -> list[ModelManifest]:
         conversion_output = _load_conversion_output_metadata(path, file_names)
         config_data = _load_json(path / "config.json") if "config.json" in file_names else {}
 
-        bundle_format = _detect_bundle_format(file_names, config_data=config_data)
+        bundle_format = _detect_bundle_format(file_names)
         if bundle_format is not None:
             manifests.append(
                 _build_directory_manifest(
@@ -115,18 +116,20 @@ def _discover_root(root: Path) -> list[ModelManifest]:
     return manifests
 
 
-def _detect_bundle_format(file_names: set[str], *, config_data: dict[str, Any] | None = None) -> ModelFormat | None:
-    config_data = config_data or {}
+def _detect_bundle_format(file_names: set[str]) -> ModelFormat | None:
+    normalized_names = {name.casefold() for name in file_names}
     if {"adapter_config.json"} <= file_names and any(name.startswith("adapter_model") for name in file_names):
         return ModelFormat.ADAPTER_BUNDLE
-    if "config.json" in file_names and (
-        any(name in {"weights.safetensors", "weights.npz"} for name in file_names)
-        or (
-            "model.safetensors.index.json" in file_names
-            and any(name.startswith("model-") and name.endswith(".safetensors") for name in file_names)
-            and _looks_like_quantized_mlx_bundle(config_data)
+    if any(name in normalized_names for name in ONNX_GENAI_CONFIG_FILENAMES) or (
+        any(name.endswith(".onnx") for name in normalized_names)
+        and (
+            "config.json" in normalized_names
+            or any(name in normalized_names for name in TOKENIZER_FILENAMES)
+            or any(name in normalized_names for name in PROCESSOR_FILENAMES)
         )
     ):
+        return ModelFormat.ONNX_GENAI
+    if "config.json" in file_names and any(name in {"weights.safetensors", "weights.npz"} for name in file_names):
         return ModelFormat.MLX
     if "config.json" in file_names and (
         any(name.endswith(".safetensors") for name in file_names)
@@ -421,6 +424,8 @@ def _infer_runtime_affinity(
 ) -> tuple[RuntimeAffinity, ...]:
     if format_type == ModelFormat.GGUF:
         return (RuntimeAffinity.LLAMACPP,)
+    if format_type == ModelFormat.ONNX_GENAI:
+        return (RuntimeAffinity.ONNX_GENAI,)
     if format_type == ModelFormat.MLX:
         if ModelModality.VISION in modalities:
             return (RuntimeAffinity.MLX_VISION,)
@@ -493,7 +498,7 @@ def _layered_lineage(*, path: Path, layered_manifest: LayeredConversionManifest)
 
 
 def _infer_conversion_status(format_type: ModelFormat) -> ConversionStatus:
-    if format_type in {ModelFormat.GGUF, ModelFormat.MLX, ModelFormat.AUDIO_FOLDER}:
+    if format_type in {ModelFormat.GGUF, ModelFormat.MLX, ModelFormat.ONNX_GENAI, ModelFormat.AUDIO_FOLDER}:
         return ConversionStatus.RUNNABLE
     if format_type in {ModelFormat.HUGGINGFACE, ModelFormat.ADAPTER_BUNDLE}:
         return ConversionStatus.REQUIRES_CONVERSION
@@ -528,15 +533,6 @@ def _extract_context_length(config_data: dict[str, Any]) -> int | None:
     if not values:
         return None
     return max(values)
-
-
-def _looks_like_quantized_mlx_bundle(config_data: dict[str, Any]) -> bool:
-    quantization = config_data.get("quantization")
-    if not isinstance(quantization, dict):
-        return False
-    if isinstance(quantization.get("bits"), int):
-        return True
-    return any(isinstance(value, dict) and isinstance(value.get("bits"), int) for value in quantization.values())
 
 
 def _infer_quantization(name: str, config_data: dict[str, Any] | None = None) -> str | None:

@@ -82,7 +82,7 @@ def test_modality_and_runtime_inference_cover_vision_and_audio_paths(tmp_path: P
     )
 
 
-def test_discovery_treats_quantized_sharded_outputs_as_mlx_bundles(tmp_path: Path) -> None:
+def test_discovery_treats_quantized_sharded_outputs_as_huggingface_conversion_sources(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "converted-gemma4"
     bundle_dir.mkdir()
     (bundle_dir / "config.json").write_text(
@@ -102,12 +102,32 @@ def test_discovery_treats_quantized_sharded_outputs_as_mlx_bundles(tmp_path: Pat
 
     assert len(manifests) == 1
     manifest = manifests[0]
-    assert manifest.format_type == ModelFormat.MLX
+    assert manifest.format_type == ModelFormat.HUGGINGFACE
+    assert manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION
+    assert manifest.runtime_affinity == (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_VISION)
+    assert manifest.text_only_runtime_affinity == ()
+    assert manifest.text_only_runtime_source is None
+    assert manifest.text_only_runtime_reason is None
+
+
+def test_discovery_detects_onnx_genai_bundles_as_windows_native_candidates(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "phi-3-mini-onnx"
+    bundle_dir.mkdir()
+    (bundle_dir / "genai_config.json").write_text(
+        json.dumps({"model": {"type": "phi3"}, "search": {"max_length": 4096}}),
+        encoding="utf-8",
+    )
+    (bundle_dir / "model.onnx").write_bytes(b"onnx")
+    (bundle_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest.format_type == ModelFormat.ONNX_GENAI
     assert manifest.conversion_status == ConversionStatus.RUNNABLE
-    assert manifest.runtime_affinity == (RuntimeAffinity.MLX_VISION,)
-    assert manifest.text_only_runtime_affinity == (RuntimeAffinity.MLX_TEXT,)
-    assert manifest.text_only_runtime_source == "same_bundle"
-    assert "text-only prompts" in str(manifest.text_only_runtime_reason)
+    assert manifest.runtime_affinity == (RuntimeAffinity.ONNX_GENAI,)
+    assert manifest.modality == (ModelModality.TEXT,)
 
 
 def test_discovery_expands_layered_conversion_bundle_into_text_and_multimodal_artifacts(tmp_path: Path) -> None:

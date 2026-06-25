@@ -17,7 +17,7 @@ from lewlm.history.models import SessionRecord, SessionTurnRecord
 from lewlm.security.persistence import PersistenceEncryptor, is_encrypted_value
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS app_kv (
@@ -184,6 +184,25 @@ CREATE INDEX IF NOT EXISTS idx_capability_probe_records_host_category
 
 CREATE INDEX IF NOT EXISTS idx_capability_probe_records_model
     ON capability_probe_records (model_id, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_probe_records (
+    probe_key TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    runtime_name TEXT,
+    runtime_affinity TEXT,
+    host_signature TEXT NOT NULL,
+    state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    probe_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_probe_records_model
+    ON runtime_probe_records (model_id, capability, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_probe_records_host
+    ON runtime_probe_records (host_signature, recorded_at DESC);
 """
 
 
@@ -569,6 +588,136 @@ class MetadataStore:
         model_id: str | None = None,
     ) -> int:
         query = "SELECT COUNT(*) AS count FROM capability_probe_records WHERE 1 = 1"
+        parameters: list[Any] = []
+        if host_platform is not None:
+            query += " AND host_signature = ?"
+            parameters.append(self._host_signature(host_platform))
+        if model_id is not None:
+            query += " AND model_id = ?"
+            parameters.append(model_id)
+        with self.connection() as connection:
+            row = connection.execute(query, tuple(parameters)).fetchone()
+        return int(row["count"])
+
+    def upsert_runtime_probe_record(
+        self,
+        *,
+        model_id: str,
+        capability: str,
+        mode: str,
+        host_platform: dict[str, Any],
+        evidence: dict[str, Any],
+        recorded_at: str | None = None,
+    ) -> str:
+        runtime_name = evidence.get("runtime_name")
+        runtime_affinity = evidence.get("runtime_affinity")
+        state = str(evidence["state"])
+        recorded = recorded_at or str(evidence.get("recorded_at") or utc_now().isoformat())
+        probe_key = self._runtime_probe_key(
+            model_id=model_id,
+            capability=capability,
+            mode=mode,
+            host_platform=host_platform,
+            runtime_name=str(runtime_name) if runtime_name is not None else None,
+        )
+        evidence_payload = {
+            **evidence,
+            "probe_key": probe_key,
+            "recorded_at": recorded,
+        }
+        payload = {
+            "probe_key": probe_key,
+            "model_id": model_id,
+            "capability": capability,
+            "mode": mode,
+            "runtime_name": runtime_name,
+            "runtime_affinity": runtime_affinity,
+            "host_platform": host_platform,
+            "state": state,
+            "recorded_at": recorded,
+            "evidence": evidence_payload,
+        }
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO runtime_probe_records(
+                    probe_key,
+                    model_id,
+                    capability,
+                    mode,
+                    runtime_name,
+                    runtime_affinity,
+                    host_signature,
+                    state,
+                    recorded_at,
+                    probe_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(probe_key) DO UPDATE
+                SET model_id = excluded.model_id,
+                    capability = excluded.capability,
+                    mode = excluded.mode,
+                    runtime_name = excluded.runtime_name,
+                    runtime_affinity = excluded.runtime_affinity,
+                    host_signature = excluded.host_signature,
+                    state = excluded.state,
+                    recorded_at = excluded.recorded_at,
+                    probe_json = excluded.probe_json
+                """,
+                (
+                    probe_key,
+                    model_id,
+                    capability,
+                    mode,
+                    str(runtime_name) if runtime_name is not None else None,
+                    str(runtime_affinity) if runtime_affinity is not None else None,
+                    self._host_signature(host_platform),
+                    state,
+                    recorded,
+                    self._encode_json_value(payload),
+                ),
+            )
+        return probe_key
+
+    def list_runtime_probe_records(
+        self,
+        *,
+        limit: int = 100,
+        host_platform: dict[str, Any] | None = None,
+        model_id: str | None = None,
+        capability: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT probe_json
+            FROM runtime_probe_records
+            WHERE 1 = 1
+        """
+        parameters: list[Any] = []
+        if host_platform is not None:
+            query += " AND host_signature = ?"
+            parameters.append(self._host_signature(host_platform))
+        if model_id is not None:
+            query += " AND model_id = ?"
+            parameters.append(model_id)
+        if capability is not None:
+            query += " AND capability = ?"
+            parameters.append(capability)
+        query += " ORDER BY recorded_at DESC, probe_key DESC LIMIT ?"
+        parameters.append(limit)
+        with self.connection() as connection:
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [
+            self._decode_json_value(row["probe_json"], field_name="runtime_probe_records.probe_json")
+            for row in rows
+        ]
+
+    def runtime_probe_record_count(
+        self,
+        *,
+        host_platform: dict[str, Any] | None = None,
+        model_id: str | None = None,
+    ) -> int:
+        query = "SELECT COUNT(*) AS count FROM runtime_probe_records WHERE 1 = 1"
         parameters: list[Any] = []
         if host_platform is not None:
             query += " AND host_signature = ?"
@@ -1461,6 +1610,27 @@ class MetadataStore:
         )
         return f"capability_probe:{hashlib.sha256(discriminator.encode('utf-8')).hexdigest()}"
 
+    def _runtime_probe_key(
+        self,
+        *,
+        model_id: str,
+        capability: str,
+        mode: str,
+        host_platform: dict[str, Any],
+        runtime_name: str | None,
+    ) -> str:
+        discriminator = json.dumps(
+            {
+                "model_id": model_id,
+                "capability": capability,
+                "mode": mode,
+                "host_signature": self._host_signature(host_platform),
+                "runtime_name": runtime_name or "",
+            },
+            sort_keys=True,
+        )
+        return f"runtime_probe:{hashlib.sha256(discriminator.encode('utf-8')).hexdigest()}"
+
     @staticmethod
     def _host_signature(host_platform: dict[str, Any]) -> str:
         normalized_payload = {
@@ -1496,6 +1666,9 @@ class MetadataStore:
             capability_probe_count = connection.execute(
                 "SELECT COUNT(*) AS count FROM capability_probe_records",
             ).fetchone()["count"]
+            runtime_probe_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM runtime_probe_records",
+            ).fetchone()["count"]
             runtime_response_cache_count = connection.execute(
                 "SELECT COUNT(*) AS count FROM runtime_response_cache",
             ).fetchone()["count"]
@@ -1515,6 +1688,7 @@ class MetadataStore:
             "benchmark_record_count": int(benchmark_count),
             "benchmark_artifact_count": int(benchmark_artifact_count),
             "capability_probe_record_count": int(capability_probe_count),
+            "runtime_probe_record_count": int(runtime_probe_count),
         }
 
     def _migrate_encrypted_persistence(self, connection: sqlite3.Connection) -> None:

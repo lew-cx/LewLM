@@ -31,11 +31,30 @@ LewLM keeps two separate axes in the 2026 standards contract:
 | Benchmark-backed | LewLM has persisted host/model/runtime evidence for a default or performance behavior | `benchmark_backed = true` or `benchmark_backed_defaults = true` |
 | Host-probed | the current host was verified directly instead of inheriting a declared cross-platform contract | `verification_method = "host_probe"` |
 
+### Middleware capability evidence states
+
+LewLM now exposes a capability-evidence layer through `/v1/lewlm/capabilities`, `/v1/lewlm/probes`, `/v1/lewlm/models/{model_id}/artifacts`, and `/v1/models/{model_id}/capabilities.capability_evidence[]`. Runtime load and generation smoke probes are opt-in, persisted per host/model/runtime, and included in model artifact reports as `runtime_probe_records`.
+
+| State | Meaning |
+| --- | --- |
+| `discovered` | LewLM can route or classify the capability, but no load/generate/benchmark proof has upgraded it yet |
+| `requires_install` | the model or capability is structurally plausible, but a runtime/provider install or configuration is missing |
+| `requires_conversion` | the source artifact needs conversion before LewLM can claim runnable local inference |
+| `load_passed` | runtime load smoke probe succeeded for a specific model |
+| `generate_passed` | runtime generation smoke probe succeeded for a specific model |
+| `benchmark_passed` | a persisted benchmark record backs the model/host/runtime capability |
+| `probe_failed` | a probe ran and failed in a way LewLM can report |
+| `unsupported` | LewLM does not claim this capability on the current artifact or host |
+
+Evidence ownership uses `lewlm_owned`, `backend_native`, `bridge_verified`, `fallback`, `unsupported`, and `unverified`. Bridge-backed success is intentionally `bridge_verified`, not `lewlm_owned`.
+
+Conversion target planning is exposed through `lewlm convert --plan` and `POST /v1/lewlm/conversions/plan`. It lists executable targets separately from planned targets, so GGUF/llama.cpp can remain the default Windows conversion path while HF-to-ONNX Runtime GenAI preparation appears as a DirectML-native direction without becoming a fake conversion claim.
+
 ## Full parity acceptance matrix
 
 | Feature class | Public-surface contract | Apple packaged path | Non-Apple packaged path | Bridge path | Fallback / unsupported boundary | Evidence and readiness |
 | --- | --- | --- | --- | --- | --- | --- |
-| Chat | CLI, HTTP API, events, and Python keep one local chat contract | `mlx_text` on Apple Silicon | `llamacpp` is the first-class packaged non-Apple text path on Darwin, Linux, and Windows | `external_accelerator` when another loopback-only local server already owns execution | non-runnable or conversion-required bundles stay explicit through blocked or fallback-guided readiness instead of widening product scope | `support_path`, install-profile recommendations, and target-platform `verification_method` distinguish packaged from bridge and `host_probe` from `runtime_contract` |
+| Chat | CLI, HTTP API, events, and Python keep one local chat contract | `mlx_text` on Apple Silicon | `llamacpp` is the first-class packaged non-Apple text path on Darwin, Linux, and Windows; `onnx_genai` is a Windows-native probe-gated candidate path | `external_accelerator` when another loopback-only local server already owns execution | non-runnable or conversion-required bundles stay explicit through blocked or fallback-guided readiness instead of widening product scope | `support_path`, install-profile recommendations, and target-platform `verification_method` distinguish packaged from bridge and `host_probe` from `runtime_contract` |
 | Streaming | shared streaming contract across CLI, SSE/events, HTTP, and Python helpers | `mlx_text` streaming on Apple Silicon | `llamacpp` streaming on Darwin, Linux, and Windows | external bridge-backed streaming from a compatible loopback server | LewLM does not silently collapse streaming parity into non-streaming success on unsupported paths | same packaged-versus-bridge support-path reporting as chat |
 | Semantic text | embeddings and rerank stay one public contract | `mlx_text` on Apple Silicon | `llamacpp` on compatible semantic GGUF models, with packaged embedding-similarity fallback for rerank when the backend lacks a native rerank API | external bridge with compatible local `/v1/embeddings` and `/v1/rerank` endpoints | without compatible semantic GGUF models or adapter routes LewLM reports blocked or runtime-unavailable instead of claiming universal semantic parity | `feature_class = "semantic_text"` recommendations report `support_path = "packaged"` on non-Apple hosts while bridge alternatives stay visible separately |
 | Vision | image-conditioned chat stays shared across public surfaces | `mlx_vision` on Apple Silicon | unsupported as a first-class packaged non-Apple promise today | external bridge with OpenAI-style image content blocks on `/v1/chat/completions` | no packaged non-Apple vision parity claim; missing adapter compatibility stays explicit | current-host and target-platform readiness still separate `host_probe` from declared bridge guidance |
@@ -52,6 +71,7 @@ LewLM keeps two separate axes in the 2026 standards contract:
 | `mlx_vision` | `mlx` | Apple MLX local backend | `mlx` | vision, multimodal | chat, streaming, vision | Darwin arm64/aarch64 | First-class packaged path |
 | `mlx_audio` | `mlx` | Apple MLX local backend | `mlx`, `audio_folder` | audio | audio transcription, audio speech | Darwin arm64/aarch64 | First-class packaged path |
 | `llamacpp` | `llamacpp` | Cross-platform GGUF backend | `gguf` | text, embedding, rerank | chat, streaming, embeddings, rerank | Darwin, Linux, Windows | First-class non-Apple packaged runtime family. LewLM productizes install/readiness guidance, benchmark-backed defaults, runtime-local control mapping, packaged embeddings, and packaged structured-output enforcement here without claiming MLX-level ownership parity. When llama.cpp lacks a native rerank API, LewLM keeps rerank honest through packaged embedding-similarity fallback instead of pretending backend parity. Non-Apple audio parity is not packaged on this path today. |
+| `onnx_genai` | `onnx_genai` | ONNX Runtime GenAI backend | `onnx_genai` | text, multimodal metadata | chat, streaming | Darwin, Linux, Windows | Packaged adapter for compatible ONNX Runtime GenAI bundles. On Windows this is the DirectML/CUDA/CPU provider-planning path for already-prepared ONNX bundles; HF-to-ONNX preparation remains planned-only until the conversion backend is implemented. |
 | local OpenAI-compatible adapter | `external_accelerator` | Cross-platform external accelerator bridge | `mlx`, `gguf`, `audio_folder` | text, vision, audio, embedding, rerank, multimodal | chat, streaming, vision, audio transcription, audio speech, embeddings, rerank | Darwin, Linux, Windows | Bridge to a loopback-only OpenAI-compatible local server. Vision uses OpenAI-style image content blocks on `/v1/chat/completions`; audio uses `/v1/audio/transcriptions` and `/v1/audio/speech`, which LewLM probes separately; embeddings and rerank remain adapter-backed through compatible local semantic endpoints. This is LewLM's current bridge-only non-Apple public audio parity path. LewLM does not claim MLX-level multimodal optimization or telemetry parity on this path, and structured-output requests stay bridge-backed with explicit fallback metadata rather than packaged decode-time parity. Bridge wins do not replace the first-class non-Apple packaged default. |
 | frontier experimental | `experimental` | n/a | `gguf`, `mlx`, `huggingface` | text | planning/diagnostics only | diagnostic surface | Experimental only |
 | distributed experimental | `distributed_experimental` | n/a | multiple | text, multimodal | chat, streaming | experimental cluster mode | Experimental only |
@@ -92,7 +112,7 @@ Acceptance-matrix rows such as **semantic text**, **audio**, **structured output
 | --- | --- | --- | --- | --- | --- |
 | macOS | Apple MLX on Apple Silicon; GGUF on non-MLX Macs | Apple MLX on Apple Silicon; external bridge on non-MLX Macs | Apple MLX vision on Apple Silicon; external bridge on non-MLX Macs | Apple MLX audio on Apple Silicon; external bridge on non-MLX Macs | GGUF/llama.cpp for decode-time enforcement; MLX stays prompt-guided fallback |
 | Linux | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for compatible semantic GGUF models; bridge remains optional | external accelerator bridge | external accelerator bridge | GGUF/llama.cpp packaged default |
-| Windows | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for compatible semantic GGUF models; bridge remains optional | external accelerator bridge | external accelerator bridge | GGUF/llama.cpp packaged default |
+| Windows | GGUF/llama.cpp packaged default; ONNX GenAI/DirectML is available for compatible prepared ONNX bundles | GGUF/llama.cpp packaged default for compatible semantic GGUF models; bridge remains optional | external accelerator bridge | external accelerator bridge | GGUF/llama.cpp packaged default |
 
 `semantic text` covers embeddings and rerank, and `structured output` here means decode-time JSON-schema or grammar enforcement. On non-Apple hosts, compatible semantic GGUF models stay on the packaged path while `/v1/runtime/stats.runtime_support_strategy` and `install_profiles.recommended_feature_paths` keep the packaged-versus-bridge distinction explicit.
 
@@ -149,6 +169,8 @@ For portable performance-core reporting, runtime snapshots now tag the major tex
 | `vllm_mlx` | vLLM-style compatible local server | useful bridge hint when the loopback server preserves paged-KV and prefix-cache behavior |
 | `vllm_local` | vLLM-style local server | cross-platform bridge hint for local servers that preserve semantic and scheduler behavior |
 | `sglang_local` | SGLang-style local server | cross-platform bridge hint for local servers that preserve compatible loopback semantic routes |
+| `tensorrt_llm_server` | TensorRT-LLM-style local server | NVIDIA-oriented bridge hint for compatible local servers; LewLM reports backend-native and partial preservation without claiming kernel ownership |
+| `openvino_model_server` | OpenVINO Model Server-style local server | Intel CPU/GPU/NPU-oriented bridge hint for compatible local servers; LewLM reports scheduler and graph/runtime optimization as bridge-owned |
 | `ollama_local` | Ollama-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows Ollama-style local deployment patterns |
 | `llamacpp_server` | llama.cpp-server-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows llama.cpp-server local deployment patterns |
 

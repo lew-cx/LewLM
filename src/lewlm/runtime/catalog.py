@@ -33,6 +33,7 @@ from lewlm.runtime.adapters import LocalOpenAICompatibleAdapterRuntime
 from lewlm.runtime.mlx_audio.runtime import MLXAudioRuntime
 from lewlm.runtime.mlx_text.runtime import MLXTextRuntime
 from lewlm.runtime.mlx_vision.runtime import MLXVisionRuntime
+from lewlm.runtime.onnx_genai.runtime import ONNXGenAIRuntime
 from lewlm.storage.block_cache import MultimodalEncoderCache
 
 
@@ -779,6 +780,7 @@ def build_default_runtime_catalog(
             multimodal_encoder_cache=multimodal_encoder_cache,
         ),
         RuntimeAffinity.LLAMACPP: lambda: LlamaCppRuntime(),
+        RuntimeAffinity.ONNX_GENAI: lambda: ONNXGenAIRuntime(),
     }
     for affinity, builder in runtime_builders.items():
         if not resolved_pack_registry.runtime_affinity_load_enabled(affinity):

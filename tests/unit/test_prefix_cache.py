@@ -149,3 +149,34 @@ def test_in_memory_token_prefix_cache_tracks_resident_evictions(tmp_path) -> Non
     assert snapshot["persisted_page_count"] == 3
     assert snapshot["resident_page_evictions"] == 1
     assert snapshot["page_evictions"] == 1
+
+
+def test_persistent_prefix_cache_keeps_deep_autotune_paths_windows_safe(tmp_path) -> None:
+    deep_cache_root = (
+        tmp_path
+        / "state"
+        / "autotune-candidates"
+        / "8ba8496a2525"
+        / "benchmark-probes"
+        / ("d" * 32)
+        / "cache"
+    )
+    store = PersistentPrefixCacheStore(
+        cache_root=deep_cache_root,
+        namespace="fake_mlx_semantic",
+        page_size_tokens=2,
+    )
+    model_id = "qwen2.5-1.5b-instruct-mlx-ea3264c7089b-5320058eaf-with-extra-windows-path-pressure"
+
+    result = store.put(
+        model_id=model_id,
+        prefix_tokens=(1, 2, 3, 4),
+        payload={"state": "cached"},
+        estimated_size_bytes=24,
+    )
+
+    page_path = store._page_path(model_id=model_id, page_key=result.entry.page_keys[0])
+    assert len(page_path.parent.parent.name) <= 20
+    assert len(page_path.stem) <= 20
+    assert len(str(page_path)) < 260
+    assert page_path.is_file()

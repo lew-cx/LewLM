@@ -7,8 +7,9 @@ LewLM's CLI is grouped around serving, model management, documents, operations, 
 | Group | Commands |
 | --- | --- |
 | Server and config | `serve`, `doctor`, `config`, `cache` |
-| Model registry | `scan`, `list-models`, `capabilities`, `warm`, `unload` |
-| Conversion and tuning | `convert`, `benchmark`, `autotune` |
+| Model registry | `scan`, `list-models`, `models scan`, `models list`, `models import`, `models artifacts`, `capabilities`, `warm`, `unload` |
+| Runtime evidence | `runtime probe`, `bridges test` |
+| Conversion and tuning | `convert`, `benchmark`, `bench`, `autotune`, `optimize` |
 | Documents | `generate-doc`, `transform` |
 | Tools and skills | `list-skills`, `show-skill`, `list-tools`, `show-tool`, `run-tool` |
 | Sessions | `list-sessions`, `show-session`, `export-session`, `import-session`, `delete-session` |
@@ -61,9 +62,13 @@ Operator diagnostics for:
 
 Scans configured or explicit model roots and updates the local registry.
 
+`lewlm models scan` is the namespaced alias for the same operation.
+
 ### `list-models`
 
 Shows a grouped human-facing model view by default so converted variants stay under one source model. Use `--all` to inspect every registered artifact row, or `--json` for the raw machine-readable inventory.
+
+`lewlm models list` is the namespaced alias. `lewlm models import <path>` indexes an existing local file or directory without copying it, and `lewlm models artifacts <model>` shows lineage, conversion artifacts, latest benchmark evidence, and capability evidence for one model.
 
 ### `cache`
 
@@ -71,7 +76,17 @@ Shows managed cache stats by default. Use `lewlm cache clear-conversions` to rem
 
 ### `capabilities`
 
-Shows per-model capability reporting, measured routing preference, downgrade notes, fallback guidance, and per-host measured probe summaries for batching, cache reuse, constrained decoding, compile/kernels, speculation, and adapter preservation. Runtime and benchmark payloads now also surface portable performance-core ownership modes such as `lewlm_owned`, `backend_native`, and `partial`.
+Shows per-model capability reporting, measured routing preference, downgrade notes, fallback guidance, capability evidence, and per-host measured probe summaries for batching, cache reuse, constrained decoding, compile/kernels, speculation, and adapter preservation. Runtime and benchmark payloads now also surface portable performance-core ownership modes such as `lewlm_owned`, `backend_native`, and `partial`.
+
+### `runtime probe`
+
+Runs a capability probe and emits LewLM's evidence vocabulary: `discovered`, `requires_install`, `requires_conversion`, `load_passed`, `generate_passed`, `benchmark_passed`, `probe_failed`, or `unsupported`.
+
+By default, `lewlm runtime probe` uses `--mode routing`, which does not load a model or generate text. Use `--mode load --model <model-id>` to run an explicit runtime load smoke test for any routeable capability, or `--mode generate --model <model-id> --prompt "..."` to verify a chat-like generation path. These execution modes are opt-in so capability truth can be upgraded without surprising operators. Successful smoke probes persist runtime evidence and `lewlm models artifacts <model>` shows the stored `runtime_probe_records`. Non-chat generation requests are rejected as `probe_failed` rather than treated as proof.
+
+### `bridges test`
+
+Reports configured bridge runtime providers separately from packaged runtimes, including provider family, availability, ownership, and advertised capabilities.
 
 ### `convert`
 
@@ -82,13 +97,19 @@ Queues or resolves a conversion job with:
 - optional structured quantization profile
 - optional layer overrides
 
+Use `lewlm convert <model-id> --plan` to inspect target options without queueing a job. The plan reports executable targets such as GGUF/llama.cpp, Mac-oriented MLX targets when available, and planned targets such as ONNX Runtime GenAI for Windows-native DirectML/CUDA/CPU work without marking them executable before smoke-test evidence exists. Use `--target <target-id>` with the ids from that plan when you want to force a specific executable target; planned-only targets return a rejected compatibility report rather than queueing fake work.
+
 ### `benchmark`
 
 Runs benchmark flows and emits artifact-backed summaries, including when measured adapter comparisons are persisted but downgraded instead of adopted. Benchmark feature records preserve ownership-mode evidence so cross-platform paths can report truthful backend-native or partial preservation without claiming universal parity, and external-adapter wins now stay bridge-only when they would otherwise replace a first-class packaged runtime.
 
+`lewlm bench` is a shorter alias for the common managed benchmark path.
+
 ### `autotune`
 
 Benchmarks serving-profile candidates and persists the recommended profile.
+
+`lewlm optimize` is the operator-facing alias for the same benchmark-backed serving-profile recommendation flow.
 
 ### `chat`
 

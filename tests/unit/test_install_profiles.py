@@ -40,6 +40,8 @@ def test_install_profiles_prefer_mlx_on_apple_silicon(monkeypatch) -> None:
             return []
         if module_names == ("llama_cpp",):
             return ["llama_cpp"]
+        if module_names == ("onnxruntime_genai",):
+            return ["onnxruntime_genai"]
         return []
 
     monkeypatch.setattr("lewlm.install_profiles._missing_modules", fake_missing_modules)
@@ -78,6 +80,8 @@ def test_install_profiles_prefer_gguf_on_linux_hosts(monkeypatch) -> None:
             return []
         if module_names == ("llama_cpp",):
             return []
+        if module_names == ("onnxruntime_genai",):
+            return ["onnxruntime_genai"]
         return ["openpyxl"]
 
     monkeypatch.setattr("lewlm.install_profiles._missing_modules", fake_missing_modules)
@@ -261,6 +265,8 @@ def test_install_profiles_report_windows_llamacpp_build_prerequisites_when_backe
     def fake_missing_modules(module_names: tuple[str, ...]) -> list[str]:
         if module_names == ("llama_cpp",):
             return ["llama_cpp"]
+        if module_names == ("onnxruntime_genai",):
+            return ["onnxruntime_genai"]
         return []
 
     monkeypatch.setattr("lewlm.install_profiles._missing_modules", fake_missing_modules)
