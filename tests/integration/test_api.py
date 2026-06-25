@@ -456,7 +456,12 @@ def test_model_scan_and_list_endpoints(temp_settings, sample_models_root: Path) 
 def test_model_capabilities_endpoint_reports_runtime_candidates_and_validation_manifests(
     temp_settings,
     sample_models_root: Path,
+    monkeypatch,
 ) -> None:
+    # Pin a non-Linux host so the Linux/x86_64 target is genuinely foreign and
+    # exercises the external-validation ("verified_external") path regardless of
+    # which OS the test runs on (otherwise it is host-probed as "verified").
+    set_host_platform(monkeypatch, system="Darwin", machine="arm64")
     baseline_services = bootstrap_services(
         temp_settings,
         runtime_overrides={RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime()},

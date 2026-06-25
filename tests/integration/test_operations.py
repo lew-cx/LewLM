@@ -17,6 +17,7 @@ from conftest import (
     FakeMLXConversionBackend,
     FakeMLXSemanticRuntime,
     UnavailableMLXTextRuntime,
+    set_host_platform,
 )
 from lewlm.api.app import create_app
 from lewlm.conversion.models import ConversionJobRequest, JobStatus
@@ -806,7 +807,12 @@ def test_benchmark_regression_uses_prior_artifact_baseline(
 def test_external_validation_manifests_upgrade_target_readiness(
     temp_settings,
     sample_models_root: Path,
+    monkeypatch,
 ) -> None:
+    # Pin a non-Linux host so the Linux/x86_64 target is genuinely foreign and
+    # exercises the external-validation ("verified_external") path regardless of
+    # which OS the test runs on (otherwise it is host-probed as "verified").
+    set_host_platform(monkeypatch, system="Darwin", machine="arm64")
     seed_services = bootstrap_services(
         temp_settings,
         runtime_overrides={RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime()},
