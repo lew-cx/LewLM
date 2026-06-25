@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import platform
 import shutil
 import shlex
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.conversion.jang import is_jang_bundle, missing_jang_dependencies, normalize_jang_bundle
 from lewlm.conversion.models import (
     ConversionCompatibilityReport,
     ConversionPolicy,
@@ -59,6 +61,8 @@ class ConversionExecutionResult:
 class _ResolvedTool:
     command: tuple[str, ...]
     display_name: str
+    cwd: Path | None = None
+    env: dict[str, str] | None = None
 
 
 class ConversionBackend(Protocol):
@@ -135,6 +139,17 @@ class LlamaCppConversionBackend:
                 resolved_profile=resolved_profile,
             ),
         ]
+        source_path = Path(manifest.source_path)
+        jang_source = is_jang_bundle(source_path)
+        warnings: list[str] = []
+        if jang_source:
+            warnings.append(
+                "Source bundle uses JANG-packed safetensors; LewLM will normalize it to standard HF safetensors before GGUF export."
+            )
+        if ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality:
+            warnings.append(
+                "GGUF conversion is reported as a text-capable artifact first; multimodal/mmproj runtime support remains probe-gated."
+            )
         if manifest.format_type == ModelFormat.GGUF:
             return ConversionCompatibilityReport(
                 model_id=manifest.model_id,
@@ -167,7 +182,7 @@ class LlamaCppConversionBackend:
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
             )
-        if ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality:
+        if (ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality) and not jang_source:
             return ConversionCompatibilityReport(
                 model_id=manifest.model_id,
                 source_format=manifest.format_type,
@@ -206,6 +221,27 @@ class LlamaCppConversionBackend:
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
             )
+        if jang_source and (missing_packages := missing_jang_dependencies()):
+            return ConversionCompatibilityReport(
+                model_id=manifest.model_id,
+                source_format=manifest.format_type,
+                target_format=ModelFormat.GGUF.value,
+                backend_name=self.name,
+                can_convert=False,
+                reason=(
+                    "JANG-packed safetensors require optional conversion dependencies before LewLM can normalize "
+                    "the source for llama.cpp."
+                ),
+                cache_key=cache_key,
+                output_path=str(output_path),
+                quantization_mode=quantization_mode,
+                custom_bits=custom_bits,
+                requested_profile=requested_profile,
+                resolved_profile=resolved_profile,
+                profile_support=[profile_support],
+                artifact_plans=artifact_plans,
+                warnings=[*warnings, f"Missing packages: {', '.join(missing_packages)}."],
+            )
         if not profile_support.supported:
             return ConversionCompatibilityReport(
                 model_id=manifest.model_id,
@@ -222,7 +258,7 @@ class LlamaCppConversionBackend:
                 resolved_profile=resolved_profile,
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
-                warnings=profile_support.warnings,
+                warnings=[*warnings, *profile_support.warnings],
             )
         if not settings.allow_outbound_network and not Path(manifest.source_path).exists():
             return ConversionCompatibilityReport(
@@ -240,6 +276,7 @@ class LlamaCppConversionBackend:
                 resolved_profile=resolved_profile,
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
+                warnings=warnings,
             )
         if self._converter_tool(settings) is None:
             return ConversionCompatibilityReport(
@@ -257,6 +294,7 @@ class LlamaCppConversionBackend:
                 resolved_profile=resolved_profile,
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
+                warnings=warnings,
             )
         if (
             self._gguf_quantization_type(policy=policy, profile=resolved_profile) is not None
@@ -277,6 +315,7 @@ class LlamaCppConversionBackend:
                 resolved_profile=resolved_profile,
                 profile_support=[profile_support],
                 artifact_plans=artifact_plans,
+                warnings=warnings,
             )
         return ConversionCompatibilityReport(
             model_id=manifest.model_id,
@@ -284,7 +323,11 @@ class LlamaCppConversionBackend:
             target_format=ModelFormat.GGUF.value,
             backend_name=self.name,
             can_convert=True,
-            reason="Model can be exported to GGUF with the configured llama.cpp conversion tools.",
+            reason=(
+                "Model can be normalized from JANG-packed HF weights and exported to GGUF with the configured llama.cpp conversion tools."
+                if jang_source
+                else "Model can be exported to GGUF with the configured llama.cpp conversion tools."
+            ),
             cache_key=cache_key,
             output_path=str(output_path),
             quantization_mode=quantization_mode,
@@ -293,6 +336,7 @@ class LlamaCppConversionBackend:
             resolved_profile=resolved_profile,
             profile_support=[profile_support],
             artifact_plans=artifact_plans,
+            warnings=warnings,
         )
 
     def convert(
@@ -327,17 +371,34 @@ class LlamaCppConversionBackend:
         final_filename = self._output_filename(manifest=manifest, policy=policy, profile=resolved_profile)
         final_path = output_path / final_filename
         intermediate_path = final_path if quantization_type is None else work_dir / f"{final_path.stem}-{outtype}.gguf"
-        logs = self._run_command(
-            [
-                *converter.command,
-                str(manifest.source_path),
-                "--outfile",
-                str(intermediate_path),
-                "--outtype",
-                outtype,
-            ],
-            cwd=work_dir,
-            failure_message="llama.cpp HF-to-GGUF export failed.",
+        conversion_source_path = Path(manifest.source_path)
+        logs: list[str] = []
+        source_metadata: dict[str, Any] = {}
+        if is_jang_bundle(conversion_source_path):
+            normalized = normalize_jang_bundle(conversion_source_path, work_dir / "jang-normalized-hf")
+            conversion_source_path = normalized.source_path
+            logs.extend(normalized.logs)
+            source_metadata = {
+                "source_preprocessing": "jang_normalization",
+                **normalized.metadata,
+            }
+        converter_command = [
+            *converter.command,
+            str(conversion_source_path),
+            "--outfile",
+            str(intermediate_path),
+            "--outtype",
+            outtype,
+        ]
+        if source_metadata or (manifest.estimated_memory_mb is not None and manifest.estimated_memory_mb >= 8192):
+            converter_command.append("--use-temp-file")
+        logs.extend(
+            self._run_command(
+                converter_command,
+                cwd=converter.cwd or work_dir,
+                env=converter.env,
+                failure_message="llama.cpp HF-to-GGUF export failed.",
+            ),
         )
         if not intermediate_path.exists():
             raise ConversionError(
@@ -345,10 +406,12 @@ class LlamaCppConversionBackend:
                 details={"expected_output_path": str(intermediate_path)},
             )
         if quantization_type is not None:
+            assert quantizer is not None
             logs.extend(
                 self._run_command(
                     [*quantizer.command, str(intermediate_path), str(final_path), quantization_type],
-                    cwd=work_dir,
+                    cwd=quantizer.cwd or work_dir,
+                    env=quantizer.env,
                     failure_message="llama.cpp GGUF quantization failed.",
                 ),
             )
@@ -370,7 +433,7 @@ class LlamaCppConversionBackend:
                     format_type=ModelFormat.GGUF,
                     modality=artifact.modality,
                     runtime_affinity=artifact.runtime_affinity,
-                    metadata={"target_format": ModelFormat.GGUF.value},
+                    metadata={**artifact.metadata, **source_metadata},
                 ),
             ),
         )
@@ -384,6 +447,12 @@ class LlamaCppConversionBackend:
         resolved_profile: QuantizationProfile,
     ) -> LayeredConversionArtifact:
         label = cls._gguf_output_label(policy=policy, profile=resolved_profile) or "unsupported"
+        metadata: dict[str, Any] = {"target_format": ModelFormat.GGUF.value}
+        source_path = Path(manifest.source_path)
+        if is_jang_bundle(source_path):
+            metadata["source_preprocessing"] = "jang_normalization"
+        if ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality:
+            metadata["multimodal_support"] = "probe_gated"
         return LayeredConversionArtifact(
             artifact_key="gguf",
             role=ModelArtifactRole.STANDALONE,
@@ -394,7 +463,7 @@ class LlamaCppConversionBackend:
             runtime_affinity=(RuntimeAffinity.LLAMACPP,),
             quantization=label,
             quantization_profile=resolved_profile,
-            metadata={"target_format": ModelFormat.GGUF.value},
+            metadata=metadata,
         )
 
     @staticmethod
@@ -443,6 +512,7 @@ class LlamaCppConversionBackend:
         if (
             isinstance(custom_bits, int)
             and self._gguf_quantization_type(policy=ConversionPolicy.BALANCED, profile=profile) is None
+            and self._gguf_output_label(policy=ConversionPolicy.BALANCED, profile=profile) is None
         ):
             return ConversionProfileSupport(
                 requested_profile=profile,
@@ -480,13 +550,15 @@ class LlamaCppConversionBackend:
         quantization_type = cls._gguf_quantization_type(policy=policy, profile=profile)
         if quantization_type is not None:
             return quantization_type.casefold()
-        if isinstance(profile.metadata.get("custom_bits"), int):
-            return None
         outtype = cls._gguf_outtype(profile)
+        if isinstance(profile.metadata.get("custom_bits"), int):
+            return outtype if outtype in {"q8_0"} else None
         return outtype if outtype in {"f16", "bf16", "f32"} else None
 
     @staticmethod
     def _gguf_outtype(profile: QuantizationProfile) -> str:
+        if profile.metadata.get("custom_bits") == 8 or profile.weight_precision == QuantizationPrecision.INT8:
+            return "q8_0"
         if profile.weight_precision == QuantizationPrecision.BF16:
             return "bf16"
         if profile.weight_precision == QuantizationPrecision.FP32:
@@ -503,7 +575,6 @@ class LlamaCppConversionBackend:
                 4: "Q4_K_M",
                 5: "Q5_K_M",
                 6: "Q6_K",
-                8: "Q8_0",
             }.get(custom_bits)
         if profile.weight_precision in {None, QuantizationPrecision.FP16, QuantizationPrecision.BF16, QuantizationPrecision.FP32}:
             return None
@@ -516,7 +587,7 @@ class LlamaCppConversionBackend:
         if profile.weight_precision == QuantizationPrecision.INT6:
             return "Q6_K"
         if profile.weight_precision == QuantizationPrecision.INT8:
-            return "Q8_0"
+            return None
         return None
 
     @staticmethod
@@ -529,15 +600,22 @@ class LlamaCppConversionBackend:
     @classmethod
     def _converter_tool(cls, settings: LewLMSettings | None) -> "_ResolvedTool | None":
         configured = settings.llamacpp_convert_hf_to_gguf_path if settings is not None else None
-        return cls._resolve_tool(configured, cls._CONVERTER_CANDIDATES)
+        return cls._resolve_tool(configured, cls._CONVERTER_CANDIDATES, settings=settings, tool_kind="converter")
 
     @classmethod
     def _quantizer_tool(cls, settings: LewLMSettings | None) -> "_ResolvedTool | None":
         configured = settings.llamacpp_quantize_path if settings is not None else None
-        return cls._resolve_tool(configured, cls._QUANTIZER_CANDIDATES)
+        return cls._resolve_tool(configured, cls._QUANTIZER_CANDIDATES, settings=settings, tool_kind="quantizer")
 
     @classmethod
-    def _resolve_tool(cls, configured_path: Path | None, candidates: tuple[str, ...]) -> "_ResolvedTool | None":
+    def _resolve_tool(
+        cls,
+        configured_path: Path | None,
+        candidates: tuple[str, ...],
+        *,
+        settings: LewLMSettings | None,
+        tool_kind: str,
+    ) -> "_ResolvedTool | None":
         if configured_path is not None:
             if configured_path.exists():
                 return cls._tool_from_path(configured_path)
@@ -546,12 +624,48 @@ class LlamaCppConversionBackend:
             resolved = shutil.which(candidate)
             if resolved is not None:
                 return cls._tool_from_path(Path(resolved))
+        if settings is not None:
+            for candidate in cls._local_llamacpp_tool_candidates(settings=settings, tool_kind=tool_kind):
+                if candidate.exists():
+                    return cls._tool_from_path(candidate)
         return None
 
     @staticmethod
     def _tool_from_path(path: Path) -> "_ResolvedTool":
         command = (sys.executable, str(path)) if path.suffix.casefold() == ".py" else (str(path),)
-        return _ResolvedTool(command=command, display_name=str(path))
+        llama_cpp_root = _llamacpp_repo_root_for_tool(path)
+        env = None
+        cwd = None
+        if path.suffix.casefold() == ".py" and llama_cpp_root is not None:
+            cwd = llama_cpp_root
+            python_paths = [str(llama_cpp_root), str(llama_cpp_root / "gguf-py")]
+            existing_pythonpath = os.environ.get("PYTHONPATH")
+            if existing_pythonpath:
+                python_paths.append(existing_pythonpath)
+            env = {"PYTHONPATH": os.pathsep.join(python_paths)}
+        return _ResolvedTool(command=command, display_name=str(path), cwd=cwd, env=env)
+
+    @staticmethod
+    def _local_llamacpp_tool_candidates(*, settings: LewLMSettings, tool_kind: str) -> tuple[Path, ...]:
+        root = settings.data_dir / "tools" / "llama.cpp"
+        if tool_kind == "converter":
+            return (
+                root / "convert_hf_to_gguf.py",
+                root / "convert.py",
+            )
+        executable_names = (
+            "llama-quantize.exe",
+            "quantize.exe",
+            "llama-quantize",
+            "quantize",
+        )
+        search_dirs = (
+            root,
+            root / "build" / "bin" / "Release",
+            root / "build" / "bin",
+            root / "build" / "Release",
+        )
+        return tuple(directory / executable for directory in search_dirs for executable in executable_names)
 
     @staticmethod
     def _converter_missing_reason(settings: LewLMSettings | None) -> str:
@@ -574,14 +688,18 @@ class LlamaCppConversionBackend:
         )
 
     @staticmethod
-    def _run_command(command: list[str], *, cwd: Path, failure_message: str) -> list[str]:
+    def _run_command(command: list[str], *, cwd: Path, failure_message: str, env: dict[str, str] | None = None) -> list[str]:
         logs = [f"Running llama.cpp conversion command: {' '.join(shlex.quote(part) for part in command)}"]
+        subprocess_env = None
+        if env is not None:
+            subprocess_env = {**os.environ, **env}
         completed = subprocess.run(
             command,
             capture_output=True,
             text=True,
             cwd=cwd,
             check=False,
+            **({"env": subprocess_env} if subprocess_env is not None else {}),
         )
         if completed.stdout:
             logs.extend(line for line in completed.stdout.splitlines() if line)
@@ -593,6 +711,15 @@ class LlamaCppConversionBackend:
                 details={"returncode": completed.returncode, "logs": logs[-10:]},
             )
         return logs
+
+
+def _llamacpp_repo_root_for_tool(path: Path) -> Path | None:
+    """Return the llama.cpp checkout root for tools inside a local clone."""
+
+    for candidate in (path.parent, *path.parents):
+        if (candidate / "gguf-py").exists() and (candidate / "conversion").exists():
+            return candidate
+    return None
 
 
 class MLXConversionBackend:

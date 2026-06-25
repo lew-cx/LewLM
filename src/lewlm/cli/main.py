@@ -1165,13 +1165,15 @@ def handle_list_models(
 ) -> ExitCode:
     resolved_services = services or bootstrap_services(settings)
     inventory = resolved_services.model_registry.inventory()
-    if args.json or args.all:
+    if args.all:
         raw_manifests = resolved_services.model_registry.list_manifests()
         raw_inventory = ModelInventory(count=len(raw_manifests), items=raw_manifests)
         if args.json:
             print(raw_inventory.model_dump_json(indent=2))
         else:
             _print_inventory_raw(raw_inventory)
+    elif args.json:
+        print(inventory.model_dump_json(indent=2))
     else:
         _print_inventory(inventory)
     return ExitCode.OK

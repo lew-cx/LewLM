@@ -110,9 +110,13 @@ def _discover_root(root: Path) -> list[ModelManifest]:
             dirnames[:] = []
             continue
 
-        for filename in filenames:
-            if filename.lower().endswith(".gguf"):
-                manifests.append(_build_gguf_manifest(path / filename))
+        gguf_files = sorted(filename for filename in filenames if filename.lower().endswith(".gguf"))
+        if conversion_output is not None and len(gguf_files) == 1:
+            manifests.append(_build_converted_gguf_manifest(path / gguf_files[0], conversion_output=conversion_output))
+            dirnames[:] = []
+            continue
+        for filename in gguf_files:
+            manifests.append(_build_gguf_manifest(path / filename))
     return manifests
 
 
@@ -183,6 +187,28 @@ def _build_gguf_manifest(path: Path) -> ModelManifest:
                 config_data={},
                 architecture_subtype=architecture_subtype,
             ),
+        },
+    )
+
+
+def _build_converted_gguf_manifest(path: Path, *, conversion_output: ConversionOutputMetadata) -> ModelManifest:
+    base_manifest = _build_gguf_manifest(path)
+    return base_manifest.model_copy(
+        update={
+            "model_id": _build_converted_model_id(
+                conversion_output.source_display_name,
+                artifact_role=conversion_output.artifact_role,
+            ),
+            "display_name": conversion_output.display_name,
+            "artifact_role": conversion_output.artifact_role,
+            "artifact_family_id": conversion_output.artifact_family_id,
+            "metadata": {
+                **base_manifest.metadata,
+                "converted_output": True,
+                "source_display_name": conversion_output.source_display_name,
+                "source_model_id": conversion_output.source_model_id,
+                **conversion_output.metadata,
+            },
         },
     )
 
@@ -515,7 +541,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 

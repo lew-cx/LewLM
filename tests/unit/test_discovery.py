@@ -39,6 +39,33 @@ def test_converted_model_id_builder_uses_readable_suffixes() -> None:
     )
 
 
+def test_discovery_reads_bom_prefixed_conversion_output_metadata_for_gguf(tmp_path: Path) -> None:
+    output_dir = tmp_path / "converted"
+    output_dir.mkdir()
+    (output_dir / "gemma-q8_0.gguf").write_bytes(b"gguf")
+    (output_dir / CONVERSION_OUTPUT_METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "source_display_name": "Gemma Source",
+                "source_model_id": "gemma-source",
+                "display_name": "Gemma Source (converted)",
+                "artifact_role": "standalone",
+                "artifact_family_id": "cache-key",
+                "metadata": {"source_preprocessing": "jang_normalization"},
+            },
+        ),
+        encoding="utf-8-sig",
+    )
+
+    manifests = discover_models([output_dir])
+
+    assert len(manifests) == 1
+    assert manifests[0].model_id == "gemma-source_converted"
+    assert manifests[0].display_name == "Gemma Source (converted)"
+    assert manifests[0].metadata["converted_output"] is True
+    assert manifests[0].metadata["source_preprocessing"] == "jang_normalization"
+
+
 def test_fingerprint_path_is_stable_until_bundle_contents_change(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "model"
     bundle_dir.mkdir()

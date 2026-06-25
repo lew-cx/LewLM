@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from pathlib import Path
 import sys
 
+import pytest
+
 from lewlm.config.settings import LewLMSettings
 from lewlm.conversion.backend import AutoConversionBackend, LlamaCppConversionBackend, MLXConversionBackend
+from lewlm.conversion.jang import JangNormalizationResult, normalize_jang_bundle
 from lewlm.conversion.service import ConversionService
 from lewlm.conversion.models import ConversionCompatibilityReport, ConversionPolicy
 from lewlm.core.errors import ConversionError
@@ -201,6 +204,131 @@ def test_llamacpp_conversion_backend_reports_missing_quantizer_for_quantized_exp
     assert "llama.cpp `llama-quantize`" in report.reason
 
 
+def test_llamacpp_conversion_backend_allows_direct_q8_export_without_quantizer(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma-hf"
+    source_dir.mkdir()
+    output_dir = tmp_path / "converted"
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    converter.write_text("# converter", encoding="utf-8")
+    settings = temp_settings.with_updates(llamacpp_convert_hf_to_gguf_path=converter)
+    backend = LlamaCppConversionBackend()
+    recorded: list[list[str]] = []
+
+    report = backend.compatibility_report(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=settings,
+        policy=ConversionPolicy.CUSTOM_BITS,
+        custom_bits=8,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=output_dir,
+    )
+
+    def fake_run(command, *, capture_output, text, cwd, check):
+        recorded.append(command)
+        Path(command[command.index("--outfile") + 1]).write_bytes(b"q8-gguf")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("lewlm.conversion.backend.subprocess.run", fake_run)
+    result = backend.convert(
+        _manifest(source_dir, model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=settings,
+        policy=ConversionPolicy.CUSTOM_BITS,
+        custom_bits=8,
+        quantization_profile=None,
+        output_path=output_dir,
+        work_dir=tmp_path,
+    )
+
+    assert report.can_convert is True
+    assert report.quantization_mode == "q8_0"
+    assert result.artifacts[0].output_path == output_dir / "gemma-hf-q8_0.gguf"
+    assert recorded == [
+        [
+            sys.executable,
+            str(converter),
+            str(source_dir),
+            "--outfile",
+            str(output_dir / "gemma-hf-q8_0.gguf"),
+            "--outtype",
+            "q8_0",
+        ],
+    ]
+
+
+def test_llamacpp_conversion_backend_detects_local_llamacpp_checkout(
+    temp_settings: LewLMSettings,
+) -> None:
+    llama_root = temp_settings.data_dir / "tools" / "llama.cpp"
+    (llama_root / "gguf-py").mkdir(parents=True)
+    (llama_root / "conversion").mkdir()
+    converter = llama_root / "convert_hf_to_gguf.py"
+    converter.write_text("# converter", encoding="utf-8")
+
+    tool = LlamaCppConversionBackend._converter_tool(temp_settings)
+
+    assert tool is not None
+    assert tool.command == (sys.executable, str(converter))
+    assert tool.cwd == llama_root
+    assert tool.env is not None
+    assert str(llama_root) in tool.env["PYTHONPATH"]
+
+
+def test_llamacpp_conversion_backend_reports_jang_multimodal_bundle_convertible(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma4-jang"
+    source_dir.mkdir()
+    (source_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma4ForConditionalGeneration"],
+                "model_type": "gemma4",
+                "quantization": {"bits": 4, "group_size": 64},
+                "vision_config": {"image_size": 896},
+            },
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "jang_config.json").write_text(json.dumps({"format": "jang"}), encoding="utf-8")
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    quantizer = tmp_path / "llama-quantize.exe"
+    converter.write_text("# converter", encoding="utf-8")
+    quantizer.write_text("# quantizer", encoding="utf-8")
+    monkeypatch.setattr("lewlm.conversion.backend.missing_jang_dependencies", lambda: [])
+
+    report = LlamaCppConversionBackend().compatibility_report(
+        _manifest(
+            source_dir,
+            model_id="gemma4-jang",
+            format_type=ModelFormat.HUGGINGFACE,
+            modality=(ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+        ),
+        settings=temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=converter,
+            llamacpp_quantize_path=quantizer,
+        ),
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache-key",
+        output_path=tmp_path / "converted",
+    )
+
+    assert report.can_convert is True
+    assert "normalized from JANG" in report.reason
+    assert report.artifact_plans[0].modality == (ModelModality.TEXT,)
+    assert report.artifact_plans[0].metadata["source_preprocessing"] == "jang_normalization"
+    assert report.artifact_plans[0].metadata["multimodal_support"] == "probe_gated"
+    assert any("JANG-packed" in warning for warning in report.warnings)
+
+
 def test_llamacpp_conversion_backend_rejects_unmapped_custom_bits(
     temp_settings: LewLMSettings,
     tmp_path: Path,
@@ -221,6 +349,60 @@ def test_llamacpp_conversion_backend_rejects_unmapped_custom_bits(
 
     assert report.can_convert is False
     assert "7-bit weights" in report.reason
+
+
+def test_llamacpp_conversion_backend_normalizes_jang_before_export(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "gemma4-jang"
+    source_dir.mkdir()
+    (source_dir / "jang_config.json").write_text(json.dumps({"format": "jang"}), encoding="utf-8")
+    output_dir = tmp_path / "converted"
+    converter = tmp_path / "convert_hf_to_gguf.py"
+    converter.write_text("# converter", encoding="utf-8")
+    settings = temp_settings.with_updates(llamacpp_convert_hf_to_gguf_path=converter)
+    backend = LlamaCppConversionBackend()
+    recorded: dict[str, object] = {}
+
+    def fake_normalize(source_path: Path, output_path: Path) -> JangNormalizationResult:
+        output_path.mkdir(parents=True)
+        return JangNormalizationResult(
+            source_path=output_path,
+            logs=["normalized jang"],
+            metadata={"converted_tensors": 1},
+        )
+
+    def fake_run(command, *, capture_output, text, cwd, check):
+        recorded["command"] = command
+        recorded["cwd"] = cwd
+        Path(command[command.index("--outfile") + 1]).write_bytes(b"f16-gguf")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("lewlm.conversion.backend.normalize_jang_bundle", fake_normalize)
+    monkeypatch.setattr("lewlm.conversion.backend.subprocess.run", fake_run)
+
+    result = backend.convert(
+        _manifest(
+            source_dir,
+            model_id="gemma4-jang",
+            format_type=ModelFormat.HUGGINGFACE,
+            modality=(ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+        ),
+        settings=settings,
+        policy=ConversionPolicy.MAX_QUALITY,
+        custom_bits=None,
+        quantization_profile=None,
+        output_path=output_dir,
+        work_dir=tmp_path,
+    )
+
+    assert recorded["command"][2] == str(tmp_path / "jang-normalized-hf")
+    assert recorded["cwd"] == tmp_path
+    assert result.logs[0] == "normalized jang"
+    assert result.artifacts[0].metadata["source_preprocessing"] == "jang_normalization"
+    assert result.artifacts[0].metadata["converted_tensors"] == 1
 
 
 def test_llamacpp_conversion_backend_runs_export_and_quantize_commands(
@@ -268,6 +450,59 @@ def test_llamacpp_conversion_backend_runs_export_and_quantize_commands(
     assert result.artifacts[0].output_path == output_dir / "gemma-hf-q4_k_m.gguf"
     assert recorded[0][:2] == [sys.executable, str(converter)]
     assert recorded[1] == [str(quantizer), str(tmp_path / "gemma-hf-q4_k_m-f16.gguf"), str(output_dir / "gemma-hf-q4_k_m.gguf"), "Q4_K_M"]
+
+
+def test_normalize_jang_bundle_dequantizes_tiny_fixture(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("safetensors")
+    from safetensors import safe_open
+    from safetensors.numpy import save_file
+
+    source_dir = tmp_path / "jang-source"
+    output_dir = tmp_path / "normalized"
+    source_dir.mkdir()
+    packed_values = sum(int(value) << (4 * index) for index, value in enumerate(range(8)))
+    save_file(
+        {
+            "model.layers.0.weight": np.array([[packed_values]], dtype=np.uint32),
+            "model.layers.0.scales": np.array([[1.0, 1.0]], dtype=np.float16),
+            "model.layers.0.biases": np.array([[0.0, 0.0]], dtype=np.float16),
+            "model.norm.weight": np.array([1.0, 2.0], dtype=np.float16),
+        },
+        str(source_dir / "model-00001-of-00001.safetensors"),
+        metadata={"format": "jang"},
+    )
+    (source_dir / "config.json").write_text(
+        json.dumps({"model_type": "gemma4", "quantization": {"bits": 4, "group_size": 4}}),
+        encoding="utf-8",
+    )
+    (source_dir / "jang_config.json").write_text(json.dumps({"format": "jang"}), encoding="utf-8")
+    (source_dir / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {"format": "jang"},
+                "weight_map": {
+                    "model.layers.0.weight": "model-00001-of-00001.safetensors",
+                    "model.layers.0.scales": "model-00001-of-00001.safetensors",
+                    "model.layers.0.biases": "model-00001-of-00001.safetensors",
+                    "model.norm.weight": "model-00001-of-00001.safetensors",
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    result = normalize_jang_bundle(source_dir, output_dir)
+    output_index = json.loads((output_dir / "model.safetensors.index.json").read_text(encoding="utf-8"))
+    weight_file = output_dir / output_index["weight_map"]["model.layers.0.weight"]
+
+    assert result.metadata["converted_tensors"] == 1
+    assert result.metadata["skipped_sidecar_tensors"] == 2
+    assert "quantization" not in json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+    assert "model.layers.0.scales" not in output_index["weight_map"]
+    assert "model.layers.0.biases" not in output_index["weight_map"]
+    with safe_open(str(weight_file), framework="numpy") as output:
+        assert output.get_tensor("model.layers.0.weight").tolist() == [[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]]
 
 
 def test_auto_conversion_backend_prefers_llamacpp_gguf_on_windows(

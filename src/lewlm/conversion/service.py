@@ -931,6 +931,11 @@ class ConversionService:
     ) -> None:
         if not output_path.is_dir():
             return
+        artifact_metadata = (
+            dict(compatibility.artifact_plans[0].metadata)
+            if len(compatibility.artifact_plans) == 1
+            else {}
+        )
         metadata = ConversionOutputMetadata(
             source_display_name=source_manifest.display_name,
             source_model_id=source_manifest.model_id,
@@ -938,8 +943,11 @@ class ConversionService:
             artifact_role=ModelArtifactRole.STANDALONE,
             artifact_family_id=compatibility.cache_key,
             metadata={
+                **artifact_metadata,
                 "backend_name": compatibility.backend_name,
                 "layered_output": compatibility.layered_output,
+                "quantization_mode": compatibility.quantization_mode,
+                "target_format": compatibility.target_format,
             },
         )
         (output_path / CONVERSION_OUTPUT_METADATA_FILENAME).write_text(
