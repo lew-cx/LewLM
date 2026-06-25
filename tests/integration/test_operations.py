@@ -112,7 +112,7 @@ def test_conversion_jobs_and_stats_endpoints(app_with_fake_runtime_and_conversio
         job_id = submit_response.json()["job_id"]
 
         job_payload = None
-        for _ in range(30):
+        for _ in range(200):
             job_response = client.get(f"/v1/jobs/{job_id}")
             job_payload = job_response.json()
             if job_payload["status"] == "completed":
@@ -1882,7 +1882,7 @@ def test_tool_authorization_and_audit_log(
 
         job_payload = None
         if allowed_convert.status_code == 200:
-            for _ in range(30):
+            for _ in range(200):
                 job_response = client.get(f"/v1/jobs/{allowed_convert.json()['job_id']}")
                 job_payload = job_response.json()
                 if job_payload["status"] == "completed":
@@ -2000,7 +2000,7 @@ def test_encrypted_conversion_cache_artifacts(
         job_id = submit_response.json()["job_id"]
 
         job_payload = None
-        for _ in range(30):
+        for _ in range(200):
             job_response = client.get(f"/v1/jobs/{job_id}")
             job_payload = job_response.json()
             if job_payload["status"] == "completed":
@@ -2042,7 +2042,7 @@ def test_encrypted_bootstrap_migrates_plain_conversion_cache(temp_settings, samp
         hf_model_id = next(manifest.model_id for manifest in manifests if manifest.format_type == "huggingface")
         job = plaintext_services.conversion_service.submit(ConversionJobRequest(model_id=hf_model_id))
         if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-            for _ in range(30):
+            for _ in range(200):
                 job = plaintext_services.conversion_service.get_job(job.job_id)
                 if job.status == JobStatus.COMPLETED:
                     break

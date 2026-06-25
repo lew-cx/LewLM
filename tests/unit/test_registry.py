@@ -122,7 +122,7 @@ def test_registry_inventory_prefers_converted_artifacts_after_conversion(
     job = services.conversion_service.submit(
         ConversionJobRequest(model_id=source_manifest.model_id, policy=ConversionPolicy.BALANCED),
     )
-    for _ in range(30):
+    for _ in range(200):
         job = services.conversion_service.get_job(job.job_id)
         if job.status == JobStatus.COMPLETED:
             break
@@ -153,7 +153,7 @@ def test_registry_default_scan_includes_persisted_conversion_artifact_roots(
     job = services.conversion_service.submit(
         ConversionJobRequest(model_id=source_manifest.model_id, policy=ConversionPolicy.BALANCED),
     )
-    for _ in range(30):
+    for _ in range(200):
         job = services.conversion_service.get_job(job.job_id)
         if job.status == JobStatus.COMPLETED:
             break

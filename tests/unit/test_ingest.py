@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("PIL")
+pytest.importorskip("reportlab")
+
 from PIL import Image, ImageDraw
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas

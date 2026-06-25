@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
+
+pytest.importorskip("openpyxl")
+
 from openpyxl import load_workbook
 
 from lewlm.cli.main import main

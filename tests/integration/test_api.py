@@ -6,8 +6,11 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
 import pytest
+
+pytest.importorskip("openpyxl")
+
+from openpyxl import load_workbook
 
 from lewlm.api.app import create_app
 from lewlm.core.bootstrap import bootstrap_services
