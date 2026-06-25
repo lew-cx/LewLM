@@ -100,6 +100,18 @@ The new `.[onnx_genai]` profile is LewLM's Windows-native ONNX/DirectML candidat
 
 `lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host, plus `recommended_feature_paths` for the current host's default operator routes. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
 
+### Docker (recommended for portable, cross-platform runs)
+
+Docker is the most consistent way to run LewLM across operating systems, and the cleanest fix if your host cannot load a prebuilt `llama-cpp-python` wheel — including the Windows `0xc000001d` (`STATUS_ILLEGAL_INSTRUCTION`) crash on `llama.dll`. The image compiles llama.cpp with `GGML_NATIVE=OFF`, so the backend does not require CPU instructions your host might lack.
+
+```bash
+docker build -t lewlm:cpu .                                   # portable CPU image
+docker run -d -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cpu  # reuse host models in ~/.lewlm
+curl -s http://127.0.0.1:8080/v1/health                       # confirm readiness
+```
+
+NVIDIA GPUs use `Dockerfile.cuda` (`docker compose --profile gpu up --build lewlm-cuda`). Apple MLX is **not** containerizable — run MLX natively on macOS. See [docs/operations/docker.md](docs/operations/docker.md) for GPU builds, bind mounts, build args, and the full container support matrix.
+
 ## Recommended feature paths by platform
 
 | Platform | Chat | Semantic text | Vision | Audio | Structured output |

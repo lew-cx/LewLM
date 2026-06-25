@@ -47,4 +47,5 @@ nav:
       - Storage and state: architecture/storage-and-state.md
   - Operations:
       - Security: security.md
+      - Docker: operations/docker.md
       - Troubleshooting: operations/troubleshooting.md

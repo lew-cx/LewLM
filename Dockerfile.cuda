@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1
+#
+# LewLM CUDA runtime image (NVIDIA GPU acceleration).
+#
+# Builds llama.cpp with the CUDA backend and pulls a CUDA build of torch. Run
+# with the NVIDIA Container Toolkit:
+#
+#   docker build -f Dockerfile.cuda -t lewlm:cuda .
+#   docker run --gpus all -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cuda
+#
+# Notes:
+#  - CUDA_ARCHITECTURES must match your GPU. Defaults to a broad set; for very
+#    new GPUs (e.g. Blackwell / RTX 50-series, compute capability 12.0) build
+#    with a recent CUDA base image and --build-arg CUDA_ARCHITECTURES=120.
+#  - The CUDA toolkit/devel image is large; the resulting image is multi-GB.
+
+ARG CUDA_DEVEL_IMAGE=12.6.2-devel-ubuntu22.04
+ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu22.04
+FROM nvidia/cuda:${CUDA_DEVEL_IMAGE} AS builder
+
+ARG EXTRAS="llamacpp,documents"
+# Target GPU compute capabilities. Override for your hardware, e.g. 89 (Ada),
+# 90 (Hopper), 120 (Blackwell / RTX 50-series).
+ARG CUDA_ARCHITECTURES="75;80;86;89"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    FORCE_CMAKE=1 \
+    CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-dev python3-pip \
+        build-essential cmake ninja-build git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+WORKDIR /src
+COPY . .
+
+# torch resolves to its default (CUDA) build here, matching the GPU runtime.
+RUN pip install --upgrade pip \
+    && pip install ".[${EXTRAS}]"
+
+###############################################################################
+ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu22.04
+FROM nvidia/cuda:${CUDA_RUNTIME_IMAGE} AS runtime
+# Keep CUDA_RUNTIME_IMAGE's CUDA version aligned with CUDA_DEVEL_IMAGE above.
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        libgomp1 \
+        libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+        tesseract-ocr \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+RUN useradd --create-home --uid 10001 lewlm \
+    && mkdir -p /data/models \
+    && chown -R lewlm:lewlm /data
+USER lewlm
+
+ENV LEWLM_HOST=0.0.0.0 \
+    LEWLM_PORT=8080 \
+    LEWLM_DATA_DIR=/data \
+    HOME=/home/lewlm \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+EXPOSE 8080
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+    CMD curl -fsS http://127.0.0.1:8080/v1/health || exit 1
+
+ENTRYPOINT ["lewlm"]
+CMD ["serve"]

@@ -16,6 +16,8 @@ Development_Progress.md
 4_18_review.md
 src/lewlm/models/
 .venv311/*
-.github/
+# Ignore local-only .github contents, but keep tracked CI workflows trackable.
+.github/*
+!.github/workflows/
 agent_prompts.md
 milestone_prompts.md

@@ -806,12 +806,29 @@ def _ensure_unique_model_ids(manifests: list[ModelManifest]) -> list[ModelManife
     by_model_id: dict[str, list[ModelManifest]] = {}
     for manifest in manifests:
         by_model_id.setdefault(manifest.model_id, []).append(manifest)
-    return [
-        manifest
-        if len(by_model_id[manifest.model_id]) == 1
-        else manifest.model_copy(update={"model_id": f"{manifest.model_id}_{manifest.fingerprint[:6]}"})
-        for manifest in manifests
-    ]
+    assigned: set[str] = set()
+    result: list[ModelManifest] = []
+    for manifest in manifests:
+        if len(by_model_id[manifest.model_id]) == 1:
+            assigned.add(manifest.model_id)
+            result.append(manifest)
+            continue
+        # Disambiguate duplicate base ids with the path fingerprint, then fall
+        # back to a positional suffix when fingerprints also collide. The
+        # fingerprint is content-blind (name + size + mtime), so sibling bundles
+        # with identical names and sizes can share a fingerprint on filesystems
+        # with coarse mtime resolution -- without this fallback they would
+        # collapse to the same model id, which differs by host filesystem.
+        candidate = f"{manifest.model_id}_{manifest.fingerprint[:6]}"
+        if candidate in assigned:
+            base_candidate = candidate
+            ordinal = 2
+            while candidate in assigned:
+                candidate = f"{base_candidate}_{ordinal}"
+                ordinal += 1
+        assigned.add(candidate)
+        result.append(manifest.model_copy(update={"model_id": candidate}))
+    return result
 
 
 def _slugify(value: str) -> str:
