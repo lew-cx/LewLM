@@ -155,25 +155,24 @@ def _clone_runtime_overrides(
         return None
     cloned: dict[RuntimeAffinity, RuntimeContract] = {}
     for affinity, runtime in runtime_overrides.items():
+        if not reinstantiate:
+            # Primary container: use the caller's exact instance so the public
+            # LewLM(runtime_overrides=...) facade and the test suite observe the
+            # runtime they injected.
+            cloned[affinity] = runtime
+            continue
+        # service_factory path: rebuild an isolated instance per container,
+        # injecting the candidate settings when the runtime accepts them.
         runtime_type = type(runtime)
         try:
             accepts_settings = "settings" in inspect.signature(runtime_type).parameters
         except (TypeError, ValueError):
             accepts_settings = False
-        if accepts_settings:
-            try:
-                cloned[affinity] = runtime_type(settings=settings)
-                continue
-            except (TypeError, ValueError):
-                pass
-        if reinstantiate:
-            try:
-                cloned[affinity] = runtime_type()
-                continue
-            except (TypeError, ValueError):
-                pass
-        # Otherwise use the runtime exactly as provided so callers observe the
-        # instance they injected.
+        try:
+            cloned[affinity] = runtime_type(settings=settings) if accepts_settings else runtime_type()
+            continue
+        except (TypeError, ValueError):
+            pass
         cloned[affinity] = runtime
     return cloned
 
