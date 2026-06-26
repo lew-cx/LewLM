@@ -9,7 +9,12 @@ import sys
 import pytest
 
 from lewlm.config.settings import LewLMSettings
-from lewlm.conversion.backend import AutoConversionBackend, LlamaCppConversionBackend, MLXConversionBackend
+from lewlm.conversion.backend import (
+    AutoConversionBackend,
+    LlamaCppConversionBackend,
+    MLXConversionBackend,
+    OnnxGenAIConversionBackend,
+)
 from lewlm.conversion.jang import JangNormalizationResult, normalize_jang_bundle
 from lewlm.conversion.service import ConversionService
 from lewlm.conversion.models import ConversionCompatibilityReport, ConversionPolicy
@@ -951,7 +956,7 @@ def test_conversion_service_cache_key_includes_quantization_profile(temp_setting
     assert baseline != mixed_precision
 
 
-def test_conversion_service_plans_executable_gguf_and_planned_onnx_targets(
+def test_conversion_service_plans_executable_gguf_and_install_gated_onnx_targets(
     temp_settings: LewLMSettings,
     tmp_path: Path,
 ) -> None:
@@ -977,9 +982,12 @@ def test_conversion_service_plans_executable_gguf_and_planned_onnx_targets(
     assert targets["gguf_llamacpp"].can_convert is True
     assert targets["gguf_llamacpp"].state == "available"
     assert targets["gguf_llamacpp"].runtime_provider.value == "llamacpp"
+    # onnxruntime-genai is not installed in the test environment, so the ONNX
+    # target is install-gated rather than executable here.
     assert targets["onnx_genai"].can_convert is False
-    assert targets["onnx_genai"].state == "planned"
-    assert "Windows-native" in str(targets["onnx_genai"].reason)
+    assert targets["onnx_genai"].state == "requires_install"
+    assert "onnxruntime-genai" in str(targets["onnx_genai"].reason)
+    assert targets["onnx_genai"].backend_name == "onnx_genai_builder"
 
 
 def test_conversion_service_plans_existing_onnx_bundle_as_probe_gated_runnable(
@@ -996,7 +1004,144 @@ def test_conversion_service_plans_existing_onnx_bundle_as_probe_gated_runnable(
     assert report.default_target_id == "onnx_genai"
     assert targets["onnx_genai"].already_runnable is True
     assert targets["onnx_genai"].state == "already_runnable"
-    assert "probe-gated" in str(targets["onnx_genai"].reason)
+
+
+def _force_onnx_builder_available(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lewlm.conversion.backend.importlib.util.find_spec",
+        lambda name, *args, **kwargs: object(),
+    )
+
+
+def test_onnx_genai_conversion_backend_requires_install_when_missing(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("lewlm.conversion.backend.importlib.util.find_spec", lambda name, *a, **k: None)
+    backend = OnnxGenAIConversionBackend()
+    assert backend.is_available() is False
+    report = backend.compatibility_report(
+        _manifest(tmp_path / "phi-hf", model_id="phi-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache",
+        output_path=tmp_path / "out",
+    )
+    assert report.can_convert is False
+    assert "onnxruntime-genai" in report.reason
+
+
+def test_onnx_genai_conversion_backend_reports_hf_to_onnx_plan(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _force_onnx_builder_available(monkeypatch)
+    backend = OnnxGenAIConversionBackend()
+    assert backend.is_available() is True
+    report = backend.compatibility_report(
+        _manifest(tmp_path / "phi-hf", model_id="phi-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache",
+        output_path=tmp_path / "out",
+    )
+    assert report.can_convert is True
+    assert report.backend_name == "onnx_genai_builder"
+    assert report.target_format == ModelFormat.ONNX_GENAI.value
+    assert report.quantization_mode == "int4"
+    assert report.artifact_plans[0].format_type == ModelFormat.ONNX_GENAI
+
+
+def test_onnx_genai_conversion_backend_reports_already_runnable_onnx_bundle(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _force_onnx_builder_available(monkeypatch)
+    report = OnnxGenAIConversionBackend().compatibility_report(
+        _manifest(tmp_path / "phi-onnx", model_id="phi-onnx", format_type=ModelFormat.ONNX_GENAI),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache",
+        output_path=tmp_path / "out",
+    )
+    assert report.already_runnable is True
+    assert report.can_convert is False
+
+
+def test_onnx_genai_conversion_backend_runs_builder_command(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _force_onnx_builder_available(monkeypatch)
+    source_dir = tmp_path / "phi-hf"
+    source_dir.mkdir()
+    output_dir = tmp_path / "converted-onnx"
+    recorded: list[list[str]] = []
+
+    def fake_run(command, *, capture_output, text, cwd, check):
+        recorded.append(command)
+        Path(command[command.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
+        (Path(command[command.index("-o") + 1]) / "model.onnx").write_bytes(b"onnx")
+        return SimpleNamespace(returncode=0, stdout="built\n", stderr="")
+
+    monkeypatch.setattr("lewlm.conversion.backend.subprocess.run", fake_run)
+
+    settings = temp_settings.with_updates(onnx_genai_conversion_execution_provider="dml")
+    result = OnnxGenAIConversionBackend().convert(
+        _manifest(source_dir, model_id="phi-hf", format_type=ModelFormat.HUGGINGFACE),
+        settings=settings,
+        policy=ConversionPolicy.MAX_QUALITY,
+        custom_bits=None,
+        quantization_profile=None,
+        output_path=output_dir,
+        work_dir=tmp_path,
+    )
+
+    assert result.output_path == output_dir
+    assert result.artifacts[0].format_type == ModelFormat.ONNX_GENAI
+    assert result.artifacts[0].runtime_affinity == (RuntimeAffinity.ONNX_GENAI,)
+    assert result.artifacts[0].metadata["precision"] == "fp16"
+    assert result.artifacts[0].metadata["execution_provider"] == "dml"
+    command = recorded[0]
+    assert command[:3] == [sys.executable, "-m", "onnxruntime_genai.models.builder"]
+    assert command[command.index("-i") + 1] == str(source_dir)
+    assert command[command.index("-o") + 1] == str(output_dir)
+    assert command[command.index("-p") + 1] == "fp16"
+    assert command[command.index("-e") + 1] == "dml"
+
+
+def test_onnx_genai_conversion_backend_rejects_non_text_source(
+    temp_settings: LewLMSettings,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _force_onnx_builder_available(monkeypatch)
+    report = OnnxGenAIConversionBackend().compatibility_report(
+        _manifest(
+            tmp_path / "vision-hf",
+            model_id="vision-hf",
+            format_type=ModelFormat.HUGGINGFACE,
+            modality=(ModelModality.VISION,),
+        ),
+        settings=temp_settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="cache",
+        output_path=tmp_path / "out",
+    )
+    assert report.can_convert is False
+    assert "text generation models" in report.reason
 
 
 def test_conversion_service_selects_explicit_gguf_target_backend(
@@ -1032,14 +1177,17 @@ def test_conversion_service_selects_explicit_gguf_target_backend(
     assert compatibility.can_convert is True
 
 
-def test_conversion_service_rejects_planned_onnx_target_for_hf_sources(
+def test_conversion_service_reports_install_gated_onnx_target_for_hf_sources(
     temp_settings: LewLMSettings,
     tmp_path: Path,
 ) -> None:
+    # onnxruntime-genai is not installed in the test environment, so an ONNX
+    # target request routes to the real builder backend and reports the install
+    # requirement rather than a hard "planned-only" rejection.
     manifest = _manifest(tmp_path / "gemma-hf", model_id="gemma-hf", format_type=ModelFormat.HUGGINGFACE)
     service, _ = _conversion_service(temp_settings)
 
-    compatibility, _ = service._compatibility_for_request(
+    compatibility, backend = service._compatibility_for_request(
         manifest,
         policy=ConversionPolicy.BALANCED,
         custom_bits=None,
@@ -1049,10 +1197,11 @@ def test_conversion_service_rejects_planned_onnx_target_for_hf_sources(
         target_id="onnx_genai",
     )
 
-    assert compatibility.backend_name == "onnx_genai_planned"
+    assert backend.name == "onnx_genai_builder"
+    assert compatibility.backend_name == "onnx_genai_builder"
     assert compatibility.target_format == "onnx_genai"
     assert compatibility.can_convert is False
-    assert "not include an executable ONNX conversion adapter" in compatibility.reason
+    assert "onnxruntime-genai" in compatibility.reason
 
 
 def test_conversion_service_clear_cache_removes_artifacts_and_idempotency_records(temp_settings: LewLMSettings) -> None:

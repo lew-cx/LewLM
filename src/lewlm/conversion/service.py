@@ -20,6 +20,7 @@ from lewlm.conversion.backend import (
     ConversionBackend,
     LlamaCppConversionBackend,
     MLXConversionBackend,
+    OnnxGenAIConversionBackend,
     backend_descriptor,
     run_isolated_conversion,
 )
@@ -178,15 +179,15 @@ class ConversionService:
             )
             for backend in _planning_backend_order(manifest)
         ]
-        targets.append(_onnx_genai_planning_target(manifest))
+        targets.append(_onnx_genai_planning_target(manifest, settings=self.settings))
         default_target_id = _default_conversion_target_id(manifest, targets)
         notes = [
             "This is a read-only target plan. It does not queue conversion work or materialize artifacts.",
             "Use `lewlm convert` without `--plan` or POST `/v1/lewlm/conversions` to queue an executable conversion.",
         ]
-        if any(target.target_id == "onnx_genai" and target.state == "planned" for target in targets):
+        if any(target.target_id == "onnx_genai" and target.state == "requires_install" for target in targets):
             notes.append(
-                "ONNX Runtime GenAI is included as a planned Windows-native target, but HF-to-ONNX preparation is not executable yet.",
+                "ONNX Runtime GenAI HF-to-ONNX conversion is executable once the `onnx_genai` extra is installed on this host.",
             )
         return ConversionTargetPlanningReport(
             model_id=manifest.model_id,
@@ -428,15 +429,6 @@ class ConversionService:
         target_id: str | None,
     ) -> tuple[ConversionCompatibilityReport, ConversionBackend]:
         backend = _backend_for_target_id(target_id) or self.backend
-        if _normalize_target_id(target_id) == "onnx_genai":
-            return (
-                _planned_onnx_conversion_report(
-                    manifest=manifest,
-                    cache_key=cache_key,
-                    output_path=output_path,
-                ),
-                backend,
-            )
         if target_id is not None and _backend_for_target_id(target_id) is None:
             return (
                 ConversionCompatibilityReport(
@@ -1186,6 +1178,8 @@ def _backend_for_target_id(target_id: str | None) -> ConversionBackend | None:
         return LlamaCppConversionBackend()
     if normalized in {"mlx", "mlx_lm", "mlx_vlm"}:
         return MLXConversionBackend()
+    if normalized in {"onnx", "onnx_genai", "onnx_genai_builder", "onnxruntime_genai"}:
+        return OnnxGenAIConversionBackend()
     return None
 
 
@@ -1194,30 +1188,6 @@ def _normalize_target_id(target_id: str | None) -> str | None:
         return None
     normalized = target_id.strip().casefold().replace("-", "_")
     return normalized or None
-
-
-def _planned_onnx_conversion_report(
-    *,
-    manifest: ModelManifest,
-    cache_key: str,
-    output_path: Path,
-) -> ConversionCompatibilityReport:
-    target = _onnx_genai_planning_target(manifest)
-    return ConversionCompatibilityReport(
-        model_id=manifest.model_id,
-        source_format=manifest.format_type,
-        target_format=ModelFormat.ONNX_GENAI.value,
-        backend_name="onnx_genai_planned",
-        can_convert=False,
-        already_runnable=target.already_runnable,
-        reason=target.reason or "ONNX Runtime GenAI conversion is not executable in this build.",
-        cache_key=cache_key,
-        output_path=str(output_path if not target.already_runnable else manifest.source_path),
-        artifact_plans=[],
-        warnings=[
-            "ONNX Runtime GenAI is currently a planned target. Run `lewlm convert --plan` to inspect target status.",
-        ],
-    )
 
 
 def _target_from_compatibility_report(
@@ -1244,54 +1214,51 @@ def _target_from_compatibility_report(
     )
 
 
-def _onnx_genai_planning_target(manifest: ModelManifest) -> ConversionTarget:
-    text_like = any(
-        modality in manifest.modality
-        for modality in (ModelModality.TEXT, ModelModality.EMBEDDING, ModelModality.RERANK, ModelModality.MULTIMODAL)
+def _onnx_genai_planning_target(
+    manifest: ModelManifest,
+    *,
+    settings: LewLMSettings,
+) -> ConversionTarget:
+    backend = OnnxGenAIConversionBackend()
+    report = backend.compatibility_report(
+        manifest,
+        settings=settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="conversion-plan",
+        output_path=Path(manifest.source_path).parent / "onnx-genai",
     )
-    if manifest.format_type == ModelFormat.ONNX_GENAI:
+    available = backend.is_available()
+    if report.already_runnable:
         state = "already_runnable"
-        reason = "Model is already an ONNX Runtime GenAI bundle; runtime load/generate evidence is still probe-gated."
-        already_runnable = True
-    elif manifest.format_type == ModelFormat.HUGGINGFACE and text_like:
-        state = "planned"
-        reason = (
-            "HF-to-ONNX Runtime GenAI preparation is planned for Windows-native CPU, DirectML, and CUDA paths, "
-            "but this build does not include an executable ONNX conversion adapter yet."
-        )
-        already_runnable = False
+    elif report.can_convert:
+        state = "available"
+    elif not available and report.source_format == ModelFormat.HUGGINGFACE and ModelModality.TEXT in manifest.modality:
+        # Structurally convertible, but the onnxruntime-genai builder is not installed.
+        state = "requires_install"
     else:
         state = "unsupported"
-        reason = "ONNX Runtime GenAI planning currently targets ONNX bundles or text-like Hugging Face sources."
-        already_runnable = False
+    notes = [
+        "Executable on this host once `onnxruntime-genai` is installed; precision follows the conversion policy "
+        "and the execution provider follows LEWLM_ONNX_GENAI_CONVERSION_EXECUTION_PROVIDER (cpu/cuda/dml).",
+    ]
+    if not available:
+        notes.append("Install the `onnx_genai` extra to enable executable HF-to-ONNX conversion on this host.")
     return ConversionTarget(
         target_id="onnx_genai",
         target_format=ModelFormat.ONNX_GENAI.value,
         runtime_provider=RuntimeProvider.ONNX_GENAI,
         runtime_affinity=RuntimeAffinity.ONNX_GENAI,
-        backend_name="onnx_genai_planned",
+        backend_name=backend.name,
         state=state,
-        can_convert=False,
-        already_runnable=already_runnable,
-        reason=reason,
+        can_convert=report.can_convert,
+        already_runnable=report.already_runnable,
+        reason=report.reason,
         support_path=RuntimeSupportPath.PACKAGED,
-        optimization_profiles=["fp16", "int8", "int4", "directml_auto"],
-        artifact_plans=[
-            {
-                "artifact_key": "onnx_genai",
-                "role": ModelArtifactRole.STANDALONE.value,
-                "display_name": f"{manifest.display_name} (ONNX GenAI)",
-                "relative_path": ".",
-                "format_type": ModelFormat.ONNX_GENAI.value,
-                "modality": [modality.value for modality in manifest.modality],
-                "runtime_affinity": [RuntimeAffinity.ONNX_GENAI.value],
-                "metadata": {"target_family": "onnxruntime_genai"},
-            },
-        ],
-        notes=[
-            "Listed so operators can see the Windows-native target direction without treating it as executable conversion support.",
-            "Execution requires future load/generate smoke evidence from the ONNX Runtime GenAI adapter.",
-        ],
+        optimization_profiles=["fp16", "int4", "fp32", "directml_auto"],
+        artifact_plans=[artifact.model_dump(mode="json") for artifact in report.artifact_plans],
+        notes=notes,
     )
 
 
@@ -1316,6 +1283,8 @@ def _target_id_for_backend(backend_name: str) -> str:
         return "gguf_llamacpp"
     if backend_name in {"mlx_lm", "mlx_vlm"}:
         return "mlx"
+    if backend_name in {"onnx_genai_builder", "onnx_genai_planned"}:
+        return "onnx_genai"
     return backend_name
 
 

@@ -97,7 +97,7 @@ Queues or resolves a conversion job with:
 - optional structured quantization profile
 - optional layer overrides
 
-Use `lewlm convert <model-id> --plan` to inspect target options without queueing a job. The plan reports executable targets such as GGUF/llama.cpp, Mac-oriented MLX targets when available, and planned targets such as ONNX Runtime GenAI for Windows-native DirectML/CUDA/CPU work without marking them executable before smoke-test evidence exists. Use `--target <target-id>` with the ids from that plan when you want to force a specific executable target; planned-only targets return a rejected compatibility report rather than queueing fake work.
+Use `lewlm convert <model-id> --plan` to inspect target options without queueing a job. The plan reports executable targets such as GGUF/llama.cpp, Mac-oriented MLX targets when available, and ONNX Runtime GenAI for Windows-native DirectML/CUDA/CPU work. The ONNX target is executable when the `onnx_genai` extra is installed; otherwise it is reported with state `requires_install` rather than as a fake conversion claim. Use `--target <target-id>` with the ids from that plan when you want to force a specific executable target; install-gated or unsupported targets return an explicit compatibility report rather than queueing fake work.
 
 ### `benchmark`
 

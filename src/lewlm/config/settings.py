@@ -83,6 +83,7 @@ class LewLMSettings(BaseSettings):
     conversion_worker_count: int = 1
     llamacpp_convert_hf_to_gguf_path: Path | None = None
     llamacpp_quantize_path: Path | None = None
+    onnx_genai_conversion_execution_provider: Literal["cpu", "cuda", "dml"] = "cpu"
     runtime_policy: Literal["keep_warm", "balanced", "aggressive_unload"] = "balanced"
     kv_cache_page_size: int = 256
     kv_cache_max_pages: int | None = 64
@@ -370,6 +371,7 @@ class LewLMSettings(BaseSettings):
                 if self.llamacpp_quantize_path is not None
                 else None
             ),
+            "onnx_genai_conversion_execution_provider": self.onnx_genai_conversion_execution_provider,
             "runtime_policy": self.runtime_policy,
             "kv_cache_page_size": self.kv_cache_page_size,
             "kv_cache_max_pages": self.kv_cache_max_pages,

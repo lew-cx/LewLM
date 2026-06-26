@@ -1240,6 +1240,246 @@ class MLXConversionBackend:
         return platform.system() == "Darwin" and platform.machine().casefold() == "arm64"
 
 
+class OnnxGenAIConversionBackend:
+    """Export compatible Hugging Face bundles to ONNX Runtime GenAI bundles.
+
+    Shells out to the official `onnxruntime_genai.models.builder` so an
+    already-prepared ONNX GenAI bundle can be loaded by the packaged
+    `onnx_genai` runtime. This is the executable side of LewLM's Windows-native
+    DirectML/CUDA/CPU ONNX direction; the precision follows the conversion
+    policy and the execution provider follows
+    `LEWLM_ONNX_GENAI_CONVERSION_EXECUTION_PROVIDER` (default `cpu`).
+    """
+
+    name = "onnx_genai_builder"
+    _BUILDER_MODULE = "onnxruntime_genai.models.builder"
+
+    def is_available(self) -> bool:
+        return self._missing_reason() is None
+
+    def availability_reason(self) -> str | None:
+        return self._missing_reason()
+
+    @classmethod
+    def _missing_reason(cls) -> str | None:
+        if importlib.util.find_spec("onnxruntime_genai") is None:
+            return (
+                "onnxruntime-genai is not installed. Install the `onnx_genai` extra to enable "
+                "HF-to-ONNX Runtime GenAI conversion."
+            )
+        if importlib.util.find_spec(cls._BUILDER_MODULE) is None:
+            return (
+                "The installed onnxruntime-genai package does not expose the GenAI model builder "
+                f"module `{cls._BUILDER_MODULE}`. Install a build that ships the model builder."
+            )
+        return None
+
+    def compatibility_report(
+        self,
+        manifest: ModelManifest,
+        *,
+        settings: LewLMSettings,
+        policy: ConversionPolicy,
+        custom_bits: int | None,
+        quantization_profile: QuantizationProfile | None,
+        cache_key: str,
+        output_path: Path,
+    ) -> ConversionCompatibilityReport:
+        common = {
+            "model_id": manifest.model_id,
+            "source_format": manifest.format_type,
+            "target_format": ModelFormat.ONNX_GENAI.value,
+            "backend_name": self.name,
+            "cache_key": cache_key,
+        }
+        if manifest.format_type == ModelFormat.ONNX_GENAI:
+            return ConversionCompatibilityReport(
+                **common,
+                can_convert=False,
+                already_runnable=True,
+                reason="Model is already an ONNX Runtime GenAI bundle and can stay on the onnx_genai runtime path.",
+                output_path=manifest.source_path,
+            )
+        if manifest.format_type != ModelFormat.HUGGINGFACE:
+            return ConversionCompatibilityReport(
+                **common,
+                can_convert=False,
+                reason="The ONNX Runtime GenAI model builder supports Hugging Face-style source bundles.",
+                output_path=str(output_path),
+            )
+        if ModelModality.TEXT not in manifest.modality:
+            return ConversionCompatibilityReport(
+                **common,
+                can_convert=False,
+                reason=(
+                    "The ONNX Runtime GenAI model builder targets text generation models; this source does not "
+                    "expose a text modality."
+                ),
+                output_path=str(output_path),
+            )
+        precision, precision_reason = self._precision_for(policy=policy, custom_bits=custom_bits)
+        artifact_plans = [self._artifact_plan(manifest)]
+        missing = self._missing_reason()
+        if missing is not None:
+            return ConversionCompatibilityReport(
+                **common,
+                can_convert=False,
+                reason=missing,
+                output_path=str(output_path),
+                artifact_plans=artifact_plans,
+                warnings=["Install the `onnx_genai` extra to make this an executable conversion target."],
+            )
+        if precision is None:
+            return ConversionCompatibilityReport(
+                **common,
+                can_convert=False,
+                reason=precision_reason,
+                output_path=str(output_path),
+                artifact_plans=artifact_plans,
+            )
+        execution_provider = self._execution_provider(settings)
+        return ConversionCompatibilityReport(
+            **common,
+            can_convert=True,
+            reason=(
+                f"Convertible to an ONNX Runtime GenAI bundle ({precision}, {execution_provider} execution provider) "
+                "with the onnxruntime-genai model builder."
+            ),
+            output_path=str(output_path),
+            quantization_mode=precision,
+            custom_bits=custom_bits,
+            artifact_plans=artifact_plans,
+        )
+
+    def convert(
+        self,
+        manifest: ModelManifest,
+        *,
+        settings: LewLMSettings,
+        policy: ConversionPolicy,
+        custom_bits: int | None,
+        quantization_profile: QuantizationProfile | None,
+        output_path: Path,
+        work_dir: Path,
+    ) -> ConversionExecutionResult:
+        missing = self._missing_reason()
+        if missing is not None:
+            raise ConversionError(missing)
+        if manifest.format_type != ModelFormat.HUGGINGFACE:
+            raise ConversionError(
+                "ONNX Runtime GenAI conversion requires a Hugging Face source bundle.",
+                details={"source_format": manifest.format_type.value},
+            )
+        precision, precision_reason = self._precision_for(policy=policy, custom_bits=custom_bits)
+        if precision is None:
+            raise ConversionError(precision_reason)
+        execution_provider = self._execution_provider(settings)
+        output_path.mkdir(parents=True, exist_ok=True)
+        cache_dir = work_dir / "onnx-builder-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        source_path = Path(manifest.source_path).expanduser()
+        command = [
+            sys.executable,
+            "-m",
+            self._BUILDER_MODULE,
+            "-i",
+            str(source_path),
+            "-o",
+            str(output_path),
+            "-p",
+            precision,
+            "-e",
+            execution_provider,
+            "-c",
+            str(cache_dir),
+        ]
+        logs = self._run_command(
+            command,
+            cwd=work_dir,
+            failure_message="onnxruntime-genai HF-to-ONNX build failed.",
+        )
+        if not any(output_path.glob("*.onnx")):
+            raise ConversionError(
+                "ONNX Runtime GenAI build completed without producing an .onnx model.",
+                details={"expected_output_path": str(output_path)},
+            )
+        artifact = self._artifact_plan(manifest)
+        return ConversionExecutionResult(
+            output_path=output_path,
+            logs=logs,
+            artifacts=(
+                ConversionExecutionArtifact(
+                    artifact_key=artifact.artifact_key,
+                    role=artifact.role,
+                    display_name=artifact.display_name,
+                    output_path=output_path,
+                    format_type=ModelFormat.ONNX_GENAI,
+                    modality=artifact.modality,
+                    runtime_affinity=artifact.runtime_affinity,
+                    metadata={
+                        **artifact.metadata,
+                        "precision": precision,
+                        "execution_provider": execution_provider,
+                    },
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _execution_provider(settings: LewLMSettings | None) -> str:
+        provider = getattr(settings, "onnx_genai_conversion_execution_provider", None)
+        return str(provider) if provider else "cpu"
+
+    @staticmethod
+    def _precision_for(*, policy: ConversionPolicy, custom_bits: int | None) -> tuple[str | None, str]:
+        if policy == ConversionPolicy.CUSTOM_BITS:
+            mapping = {4: "int4", 16: "fp16", 32: "fp32"}
+            precision = mapping.get(custom_bits if custom_bits is not None else 0)
+            if precision is None:
+                return (
+                    None,
+                    "ONNX Runtime GenAI conversion supports custom bit-widths of 4 (int4), 16 (fp16), or 32 (fp32).",
+                )
+            return precision, ""
+        if policy == ConversionPolicy.MAX_QUALITY:
+            return "fp16", ""
+        return "int4", ""
+
+    @staticmethod
+    def _artifact_plan(manifest: ModelManifest) -> LayeredConversionArtifact:
+        return LayeredConversionArtifact(
+            artifact_key="onnx_genai",
+            role=ModelArtifactRole.STANDALONE,
+            display_name=f"{manifest.display_name} (ONNX GenAI)",
+            relative_path=".",
+            format_type=ModelFormat.ONNX_GENAI,
+            modality=manifest.modality,
+            runtime_affinity=(RuntimeAffinity.ONNX_GENAI,),
+            metadata={"target_family": "onnxruntime_genai"},
+        )
+
+    @staticmethod
+    def _run_command(command: list[str], *, cwd: Path, failure_message: str) -> list[str]:
+        logs = [f"Running ONNX GenAI conversion command: {' '.join(shlex.quote(part) for part in command)}"]
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            check=False,
+        )
+        if completed.stdout:
+            logs.extend(line for line in completed.stdout.splitlines() if line)
+        if completed.stderr:
+            logs.extend(line for line in completed.stderr.splitlines() if line)
+        if completed.returncode != 0:
+            raise ConversionError(
+                failure_message,
+                details={"returncode": completed.returncode, "logs": logs[-10:]},
+            )
+        return logs
+
+
 class AutoConversionBackend:
     """Select the best packaged conversion backend for the current host and model."""
 
