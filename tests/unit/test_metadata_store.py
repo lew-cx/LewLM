@@ -416,7 +416,12 @@ def test_block_disk_cache_keeps_deep_autotune_paths_windows_safe(tmp_path: Path)
     assert record is not None
     block_path = cache.cache_root / str(record["storage_path"])
     assert len(block_path.stem) <= 20
-    assert len(str(block_path)) < 260
+    # Budget LewLM's path contribution against a realistic Windows data-dir root
+    # rather than pytest's deep temp prefix, so the MAX_PATH check is independent
+    # of the CI runner's temp directory depth.
+    realistic_windows_root_len = len(r"C:\Users\operator\.lewlm")
+    contributed_len = len(str(block_path)) - len(str(tmp_path))
+    assert realistic_windows_root_len + contributed_len < 260
     assert cache.get_json_block(cache_key=cache_key, block_kind="multimodal_encoder") == {"feature": "cached"}
 
 

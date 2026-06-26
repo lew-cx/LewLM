@@ -5718,3 +5718,7 @@ def _wait_for_job(services: LewLMServices, job_id: str) -> JobRecord:
         if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
             return job
         time.sleep(0.05)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

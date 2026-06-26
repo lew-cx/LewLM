@@ -178,5 +178,10 @@ def test_persistent_prefix_cache_keeps_deep_autotune_paths_windows_safe(tmp_path
     page_path = store._page_path(model_id=model_id, page_key=result.entry.page_keys[0])
     assert len(page_path.parent.parent.name) <= 20
     assert len(page_path.stem) <= 20
-    assert len(str(page_path)) < 260
+    # Budget LewLM's path contribution (the deep autotune layout + cache page
+    # path) against a realistic Windows data-dir root rather than pytest's deep
+    # temp prefix, so the Windows MAX_PATH check is independent of the runner.
+    realistic_windows_root_len = len(r"C:\Users\operator\.lewlm")
+    contributed_len = len(str(page_path)) - len(str(tmp_path))
+    assert realistic_windows_root_len + contributed_len < 260
     assert page_path.is_file()
