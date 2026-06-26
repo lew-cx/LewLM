@@ -103,12 +103,14 @@ jobs:
   # ---------------------------------------------------------------------------
   # Full suite (BLOCKING) on Linux with every runtime + document dependency
   # installed (Apple MLX excepted — it is not installable off Apple Silicon).
-  # Verified green end to end (495 passed / 0 failed).
   #
-  # Only one test is deselected: test_integration_bundle's schema snapshot,
-  # which compares the committed integration bundle to live pydantic
-  # JSON-schema output and drifts across pydantic patch versions. That artifact
-  # check belongs in pinned release validation, not the cross-version CI matrix.
+  # Excluded from this gate:
+  #  - `long_running` tests: opt-in real-model benchmark coverage (per the
+  #    pyproject marker) that is timing-sensitive on shared CI runners; run them
+  #    explicitly with `pytest -m long_running` against real models.
+  #  - test_integration_bundle's schema snapshot: compares the committed bundle
+  #    to live pydantic JSON-schema output and drifts across pydantic patch
+  #    versions, so it belongs in pinned release validation, not this matrix.
   # ---------------------------------------------------------------------------
   full-suite:
     name: full-suite (linux)
@@ -139,7 +141,9 @@ jobs:
             -e ".[dev,documents,llamacpp]" numpy safetensors
 
       - name: Run the full test suite
-        # See the job comment for why the schema-snapshot test is deselected.
+        # See the job comment for why long_running tests and the schema-snapshot
+        # test are excluded from this gate.
         run: >
           python -m pytest -q -p no:cacheprovider
+          -m "not long_running"
           --deselect tests/integration/test_integration_bundle.py::test_integration_bundle_schemas_match_current_models
