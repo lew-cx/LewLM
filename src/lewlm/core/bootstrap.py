@@ -138,18 +138,38 @@ def _clone_runtime_overrides(
     runtime_overrides: Mapping[RuntimeAffinity, RuntimeContract] | None,
     *,
     settings: LewLMSettings,
+    reinstantiate: bool = False,
 ) -> Mapping[RuntimeAffinity, RuntimeContract] | None:
+    """Resolve runtime overrides for a service container.
+
+    The primary container binds the caller's exact runtime instances so the
+    public ``LewLM(runtime_overrides=...)`` facade and the test suite can
+    observe the runtime they injected. Settings-aware runtimes are re-built so
+    they pick up the resolved settings. When ``reinstantiate`` is True (the
+    on-demand ``service_factory`` path that spins up independent containers with
+    alternate settings, e.g. autotune/benchmark candidates), stateless runtimes
+    are also rebuilt so each container gets an isolated instance.
+    """
+
     if runtime_overrides is None:
         return None
     cloned: dict[RuntimeAffinity, RuntimeContract] = {}
     for affinity, runtime in runtime_overrides.items():
+        if not reinstantiate:
+            # Primary container: use the caller's exact instance so the public
+            # LewLM(runtime_overrides=...) facade and the test suite observe the
+            # runtime they injected.
+            cloned[affinity] = runtime
+            continue
+        # service_factory path: rebuild an isolated instance per container,
+        # injecting the candidate settings when the runtime accepts them.
         runtime_type = type(runtime)
         try:
-            signature = inspect.signature(runtime_type)
-            if "settings" in signature.parameters:
-                cloned[affinity] = runtime_type(settings=settings)
-            else:
-                cloned[affinity] = runtime_type()
+            accepts_settings = "settings" in inspect.signature(runtime_type).parameters
+        except (TypeError, ValueError):
+            accepts_settings = False
+        try:
+            cloned[affinity] = runtime_type(settings=settings) if accepts_settings else runtime_type()
             continue
         except (TypeError, ValueError):
             pass
@@ -341,6 +361,7 @@ def bootstrap_services(
     resolved_settings.prepare_directories()
     configure_logging(resolved_settings)
     pack_registry = PackRegistry.from_settings(resolved_settings)
+    scoped_runtime_overrides = _clone_runtime_overrides(runtime_overrides, settings=resolved_settings)
 
     core_foundation = _build_core_foundation_services(resolved_settings)
     performance_core = _build_performance_core_services(
@@ -359,7 +380,7 @@ def bootstrap_services(
         multimodal_encoder_cache=performance_core.multimodal_encoder_cache,
         cluster_service=experimental_services.cluster_service,
         pack_registry=pack_registry,
-        runtime_overrides=runtime_overrides,
+        runtime_overrides=scoped_runtime_overrides,
     )
     optional_modules = _build_optional_module_services(
         resolved_settings,
@@ -376,8 +397,9 @@ def bootstrap_services(
     service_factory = lambda candidate_settings: bootstrap_services(  # noqa: E731 - local factory keeps cloned settings wiring close to use sites
         candidate_settings,
         runtime_overrides=_clone_runtime_overrides(
-            runtime_overrides,
+            scoped_runtime_overrides,
             settings=candidate_settings,
+            reinstantiate=True,
         ),
         conversion_backend=conversion_backend,
     )

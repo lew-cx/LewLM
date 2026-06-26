@@ -36,6 +36,7 @@ from lewlm.core.contracts import (
     runtime_support_path_for_affinity,
 )
 from lewlm.core.errors import RoutingError
+from lewlm.core.middleware import build_model_capability_evidence
 from lewlm.registry.service import ModelRegistry
 from lewlm.telemetry.constrained_decoding import (
     CONSTRAINED_DECODING_CODE_PROBE_NAME,
@@ -384,7 +385,7 @@ class ModelRouter:
                     ),
                 )
         measured_capabilities = self._measured_capabilities_for_model(manifest.model_id)
-        return ModelCapabilityReport(
+        report = ModelCapabilityReport(
             model_id=manifest.model_id,
             display_name=manifest.display_name,
             architecture_family=manifest.architecture_family,
@@ -407,6 +408,33 @@ class ModelRouter:
                 manifest=manifest,
                 measured_capabilities=measured_capabilities,
             ),
+        )
+        return report.model_copy(
+            update={
+                "capability_evidence": build_model_capability_evidence(
+                    report,
+                    benchmark_records=self._benchmark_records_for_evidence(),
+                    runtime_probe_records=self._runtime_probe_records_for_evidence(report.model_id),
+                ),
+            },
+        )
+
+    def _benchmark_records_for_evidence(self) -> list[dict[str, object]]:
+        metadata_store = getattr(self.model_registry, "metadata_store", None)
+        list_benchmark_records = getattr(metadata_store, "list_benchmark_records", None)
+        if not callable(list_benchmark_records):
+            return []
+        return list_benchmark_records(limit=500)
+
+    def _runtime_probe_records_for_evidence(self, model_id: str) -> list[dict[str, object]]:
+        metadata_store = getattr(self.model_registry, "metadata_store", None)
+        list_runtime_probe_records = getattr(metadata_store, "list_runtime_probe_records", None)
+        if not callable(list_runtime_probe_records):
+            return []
+        return list_runtime_probe_records(
+            model_id=model_id,
+            host_platform=self.runtime_catalog.host_platform_snapshot().model_dump(mode="json"),
+            limit=50,
         )
 
     def _performance_core_evidence_for_model(

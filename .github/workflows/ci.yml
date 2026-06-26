@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Cross-OS parity gate (BLOCKING).
+  #
+  # Proves LewLM installs and that its parity-critical, platform-neutral logic
+  # behaves identically on Linux, Windows, and macOS: model discovery,
+  # conversion planning, install-profile + runtime-capability reporting,
+  # middleware evidence, routing/registry contracts, and the ONNX-GenAI adapter.
+  #
+  # Scope note: this is the fast, dependency-light cross-OS gate (no torch /
+  # llama.cpp / documents build on three OSes). The complete suite, with every
+  # runtime + document dependency installed, runs in the blocking `full-suite`
+  # job on Linux below.
+  # ---------------------------------------------------------------------------
+  core-tests:
+    name: core-tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install LewLM (dev + lightweight conversion deps)
+        # numpy + safetensors are cheap and unlock the JANG-normalization and
+        # conversion-planning tests without pulling torch/llama into the gate.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" numpy safetensors
+
+      - name: Run parity-critical unit tests
+        run: >
+          python -m pytest -q -p no:cacheprovider
+          tests/unit/test_discovery.py
+          tests/unit/test_conversion.py
+          tests/unit/test_onnx_genai_runtime.py
+          tests/unit/test_install_profiles.py
+          tests/unit/test_settings.py
+          tests/unit/test_prefix_cache.py
+          tests/unit/test_metadata_store.py
+          tests/unit/test_middleware_evidence.py
+          tests/unit/test_pack_registry.py
+          tests/unit/test_external_adapter_runtime.py
+
+      - name: Smoke-check the readiness surface
+        # `doctor` exercises install-profile + runtime-capability reporting end
+        # to end on each OS without needing any model weights or heavy runtimes.
+        run: |
+          python -m lewlm.cli.main doctor --json > doctor.json
+          python -c "import json; d=json.load(open('doctor.json')); assert d['service']; print('doctor OK on', d['runtime_stats']['platform'])"
+
+  # ---------------------------------------------------------------------------
+  # Container path (BLOCKING).
+  #
+  # Proves the portable, llama.dll-free runtime image builds, boots, and serves
+  # its readiness surface. Built with the lightweight `dev` extra so CI does not
+  # compile torch + llama.cpp on every run; the CPU-baseline GGUF runtime itself
+  # is exercised locally / in release validation.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker build + boot smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the runtime image (dev extra)
+        run: docker build -t lewlm:ci --build-arg EXTRAS=dev .
+
+      - name: Prove the packaged app reports readiness
+        run: docker run --rm lewlm:ci doctor --json
+
+      - name: Boot the server and hit /v1/health
+        run: |
+          cid=$(docker run -d -p 8080:8080 lewlm:ci)
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/v1/health > health.json; then break; fi
+            sleep 2
+          done
+          cat health.json
+          python -c "import json; d=json.load(open('health.json')); assert d['status']=='ok'; print('container health OK')"
+          docker rm -f "$cid"
+
+  # ---------------------------------------------------------------------------
+  # Full suite (BLOCKING) on Linux with every runtime + document dependency
+  # installed (Apple MLX excepted — it is not installable off Apple Silicon).
+  #
+  # Excluded from this gate:
+  #  - `long_running` tests: opt-in real-model benchmark coverage (per the
+  #    pyproject marker) that is timing-sensitive on shared CI runners; run them
+  #    explicitly with `pytest -m long_running` against real models.
+  #  - test_integration_bundle's schema snapshot: compares the committed bundle
+  #    to live pydantic JSON-schema output and drifts across pydantic patch
+  #    versions, so it belongs in pinned release validation, not this matrix.
+  # ---------------------------------------------------------------------------
+  full-suite:
+    name: full-suite (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # build_release_manifest shells out to `git`; full history not required,
+        # but git must be present (it is, on GitHub runners).
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build + WeasyPrint/OCR native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+            libffi-dev tesseract-ocr
+
+      - name: Install LewLM (dev + documents + GGUF runtime + conversion deps)
+        # Resolve torch to the CPU build so CI does not pull multi-GB CUDA wheels.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -e ".[dev,documents,llamacpp]" numpy safetensors
+
+      - name: Run the full test suite
+        # See the job comment for why long_running tests and the schema-snapshot
+        # test are excluded from this gate.
+        run: >
+          python -m pytest -q -p no:cacheprovider
+          -m "not long_running"
+          --deselect tests/integration/test_integration_bundle.py::test_integration_bundle_schemas_match_current_models

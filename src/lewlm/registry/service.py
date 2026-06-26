@@ -125,12 +125,23 @@ class ModelRegistry:
 
     def _resolve_roots(self, roots: list[Path] | tuple[Path, ...] | None) -> tuple[Path, ...]:
         requested_roots = tuple(Path(root).expanduser().resolve(strict=False) for root in (roots or self.settings.models_dir))
+        if roots is None:
+            requested_roots = (*requested_roots, *self._conversion_artifact_scan_roots())
+        requested_roots = tuple(dict.fromkeys(requested_roots))
         for root in requested_roots:
             if not root.exists():
                 raise ModelScanError("Model root does not exist.", details={"path": str(root)})
             if not root.is_dir():
                 raise ModelScanError("Model root is not a directory.", details={"path": str(root)})
         return requested_roots
+
+    def _conversion_artifact_scan_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        for artifact in self.metadata_store.list_conversion_artifacts():
+            output_path = Path(artifact.output_path).expanduser().resolve(strict=False)
+            if output_path.exists() and output_path.is_dir():
+                roots.append(output_path)
+        return tuple(roots)
 
     def _resolve_manifest_selector(self, selector: str) -> ModelManifest | None:
         normalized_selector = selector.strip()

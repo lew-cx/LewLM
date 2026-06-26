@@ -1,0 +1,29 @@
+# Keep the build context small and reproducible.
+.git
+.github
+.venv
+.venv311
+build
+dist
+*.egg-info
+htmlcov
+.coverage
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tmp
+**/__pycache__
+**/*.py[cod]
+.DS_Store
+
+# Never copy local model weights / state into the image.
+**/*.gguf
+**/*.safetensors
+**/*.onnx
+models/
+
+# Docker + docs artifacts not needed at build time.
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+site/

@@ -35,9 +35,10 @@ from lewlm.cli.display import (
     style as _style,
 )
 from lewlm.config.settings import LewLMSettings, get_settings
-from lewlm.conversion.models import ConversionJobRequest, ConversionPolicy, JobRecord, JobStatus
+from lewlm.conversion.models import ConversionJobRequest, ConversionPolicy, ConversionTargetPlanningReport, JobRecord, JobStatus
 from lewlm.core.bootstrap import LewLMServices, bootstrap_services
 from lewlm.core.contracts import (
+    CapabilityEvidenceState,
     CapabilityName,
     ConversionStatus,
     ExternalQuantizerReference,
@@ -58,9 +59,16 @@ from lewlm.core.contracts import (
     ReasoningOutput,
     ReasoningVisibility,
     RuntimeAffinity,
+    RuntimeSupportPath,
     quantization_profile_label,
 )
 from lewlm.core.errors import ConfigurationError, LewLMError, NotImplementedLewLMError
+from lewlm.core.middleware import (
+    build_middleware_capabilities_report,
+    build_model_artifact_lineage_report,
+    build_runtime_provider_reports,
+)
+from lewlm.core.probes import run_model_smoke_probe
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
 from lewlm.documents.skills.models import BuiltInSkillDescriptor, parse_document_transform_request
 from lewlm.history.models import SESSION_CONTEXT_POLICIES, SessionDetail, SessionExportBundle, SessionRecord
@@ -126,6 +134,29 @@ def build_parser() -> argparse.ArgumentParser:
     list_models_parser.add_argument("--all", action="store_true", help="Show every registered artifact instead of the grouped default view.")
     list_models_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     list_models_parser.set_defaults(handler=handle_list_models)
+
+    models_parser = subparsers.add_parser("models", help="Manage local model inventory and evidence.")
+    models_subparsers = models_parser.add_subparsers(dest="models_command", required=True)
+
+    models_scan_parser = models_subparsers.add_parser("scan", help="Scan model directories and update the registry.")
+    models_scan_parser.add_argument("paths", nargs="*", help="Optional model roots to scan instead of configured roots.")
+    models_scan_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    models_scan_parser.set_defaults(handler=handle_scan)
+
+    models_list_parser = models_subparsers.add_parser("list", help="List models from the local registry.")
+    models_list_parser.add_argument("--all", action="store_true", help="Show every registered artifact instead of the grouped default view.")
+    models_list_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    models_list_parser.set_defaults(handler=handle_list_models)
+
+    models_import_parser = models_subparsers.add_parser("import", help="Index an existing local model path.")
+    models_import_parser.add_argument("path", help="Existing model directory or file to index.")
+    models_import_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    models_import_parser.set_defaults(handler=handle_models_import)
+
+    models_artifacts_parser = models_subparsers.add_parser("artifacts", help="Show artifact and evidence lineage for a model.")
+    models_artifacts_parser.add_argument("model", help="Registered model identifier to inspect.")
+    models_artifacts_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    models_artifacts_parser.set_defaults(handler=handle_model_artifacts)
 
     list_skills_parser = subparsers.add_parser("list-skills", help="List built-in LewLM skills.")
     list_skills_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
@@ -229,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--external-quantizer", default=None, help="Optional external adaptive quantizer name.")
     convert_parser.add_argument("--external-profile", default=None, help="Optional external quantizer profile name.")
     convert_parser.add_argument("--external-module", default=None, help="Optional Python module expected for the external quantizer.")
+    convert_parser.add_argument("--target", default=None, help="Optional conversion target id from `lewlm convert --plan`.")
+    convert_parser.add_argument("--plan", action="store_true", help="Show conversion target options without queueing a job.")
     convert_parser.add_argument("--force", action="store_true", help="Ignore existing cached artifacts and reconvert.")
     convert_parser.add_argument("--no-wait", action="store_true", help="Return immediately after the job is queued.")
     _add_authorize_argument(convert_parser)
@@ -327,6 +360,28 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     benchmark_parser.set_defaults(handler=handle_benchmark)
 
+    bench_parser = subparsers.add_parser("bench", help="Alias for `benchmark` with the common benchmark options.")
+    bench_parser.add_argument("--model", default=None, help="Optional explicit model id.")
+    bench_parser.add_argument("--all", action="store_true", help="Benchmark all runnable models for the selected capability.")
+    bench_parser.add_argument(
+        "--capability",
+        default=CapabilityName.CHAT.value,
+        choices=[
+            CapabilityName.CHAT.value,
+            CapabilityName.EMBEDDINGS.value,
+            CapabilityName.RERANK.value,
+            CapabilityName.AUDIO_TRANSCRIPTION.value,
+        ],
+        help="Capability workload to benchmark.",
+    )
+    bench_parser.add_argument("--repeat", type=int, default=1, help="Repeat a benchmark suite this many times; only valid with --all.")
+    bench_parser.add_argument("--prompt", default="Benchmark ping", help="Primary input text to use during benchmarking.")
+    bench_parser.add_argument("--warmup-runs", type=int, default=1, help="Warmup requests before recording warm-path metrics.")
+    bench_parser.add_argument("--workload-class", choices=list(SERVING_PROFILE_WORKLOAD_CLASS_CHOICES), default=None)
+    bench_parser.add_argument("--disable-serving-profile", action="store_true", help="Ignore persisted autotuned serving profiles.")
+    bench_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    bench_parser.set_defaults(handler=handle_benchmark)
+
     autotune_parser = subparsers.add_parser(
         "autotune",
         help="Benchmark serving-profile candidates and persist a recommended configuration for a chat model.",
@@ -347,6 +402,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     autotune_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     autotune_parser.set_defaults(handler=handle_autotune)
+
+    optimize_parser = subparsers.add_parser("optimize", help="Alias for `autotune` and persist a benchmark-backed serving profile.")
+    optimize_parser.add_argument("--model", default=None, help="Optional explicit model id.")
+    optimize_parser.add_argument("--prompt", default="Benchmark ping", help="Primary input text to use during optimization.")
+    optimize_parser.add_argument(
+        "--capability",
+        default=CapabilityName.CHAT.value,
+        choices=[CapabilityName.CHAT.value],
+        help="Optimization currently supports chat workloads only.",
+    )
+    optimize_parser.add_argument(
+        "--workload-class",
+        choices=list(SERVING_PROFILE_WORKLOAD_CLASS_CHOICES),
+        default=None,
+        help="Optional chat workload class to optimize.",
+    )
+    optimize_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    optimize_parser.set_defaults(handler=handle_autotune)
+
+    runtime_parser = subparsers.add_parser("runtime", help="Inspect runtime providers and probes.")
+    runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command", required=True)
+    runtime_probe_parser = runtime_subparsers.add_parser("probe", help="Run middleware capability or runtime smoke probes.")
+    runtime_probe_parser.add_argument("--model", default=None, help="Optional registered model identifier to probe.")
+    runtime_probe_parser.add_argument(
+        "--capability",
+        choices=[capability.value for capability in CapabilityName if capability != CapabilityName.CONVERSION],
+        default=None,
+        help="Optional capability to filter.",
+    )
+    runtime_probe_parser.add_argument(
+        "--mode",
+        choices=["routing", "load", "generate"],
+        default="routing",
+        help="Probe mode. `routing` does not load a model; `load` and `generate` run opt-in runtime smoke probes.",
+    )
+    runtime_probe_parser.add_argument("--prompt", default="LewLM runtime probe", help="Prompt for `--mode generate`.")
+    runtime_probe_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=1,
+        help="Maximum generated tokens for `--mode generate`.",
+    )
+    runtime_probe_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    runtime_probe_parser.set_defaults(handler=handle_runtime_probe)
+
+    bridges_parser = subparsers.add_parser("bridges", help="Inspect configured external accelerator bridges.")
+    bridges_subparsers = bridges_parser.add_subparsers(dest="bridges_command", required=True)
+    bridges_test_parser = bridges_subparsers.add_parser("test", help="Report configured bridge provider readiness.")
+    bridges_test_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    bridges_test_parser.set_defaults(handler=handle_bridges_test)
 
     cluster_parser = subparsers.add_parser("cluster", help="Manage experimental multi-host cluster workflows.")
     cluster_subparsers = cluster_parser.add_subparsers(dest="cluster_command", required=True)
@@ -665,6 +770,11 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
             f"{platform_payload['system']} {platform_payload['machine']} "
             f"(release {platform_payload['release']}, Python {platform_payload['python_version']})",
         )
+        print(f"home dir: {settings.home_dir}")
+        print(f"default data dir: {settings.default_data_dir}")
+        print(f"data dir: {settings.data_dir}")
+        print(f"default model root: {settings.default_models_dir}")
+        print(f"model roots: {', '.join(str(root) for root in settings.models_dir)}")
         host_memory_mb = platform_payload.get("total_memory_mb")
         if isinstance(host_memory_mb, int):
             source = platform_payload.get("total_memory_source")
@@ -1055,15 +1165,165 @@ def handle_list_models(
 ) -> ExitCode:
     resolved_services = services or bootstrap_services(settings)
     inventory = resolved_services.model_registry.inventory()
-    if args.json or args.all:
+    if args.all:
         raw_manifests = resolved_services.model_registry.list_manifests()
         raw_inventory = ModelInventory(count=len(raw_manifests), items=raw_manifests)
         if args.json:
             print(raw_inventory.model_dump_json(indent=2))
         else:
             _print_inventory_raw(raw_inventory)
+    elif args.json:
+        print(inventory.model_dump_json(indent=2))
     else:
         _print_inventory(inventory)
+    return ExitCode.OK
+
+
+def handle_models_import(
+    args: argparse.Namespace,
+    settings: LewLMSettings,
+    services: LewLMServices | None = None,
+) -> ExitCode:
+    resolved_services = services or bootstrap_services(settings)
+    import_path = Path(args.path).expanduser().resolve(strict=False)
+    if not import_path.exists():
+        raise ConfigurationError("Model import path does not exist.", details={"path": str(import_path)})
+    scan_root = import_path if import_path.is_dir() else import_path.parent
+    summary = resolved_services.model_registry.scan(roots=[scan_root])
+    imported_manifests = [
+        manifest
+        for manifest in summary.manifests
+        if _manifest_source_matches_import_path(manifest, import_path)
+    ]
+    payload = {
+        "status": "indexed",
+        "path": str(import_path),
+        "scan_root": str(scan_root),
+        "imported_count": len(imported_manifests),
+        "imported_models": [manifest.model_dump(mode="json") for manifest in imported_manifests],
+        "scan": summary.model_dump(mode="json"),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"indexed {len(imported_manifests)} model artifact(s) from {import_path}")
+        for manifest in imported_manifests:
+            print(f"- {manifest.display_name}: {manifest.model_id} ({manifest.format_type.value}, {manifest.conversion_status.value})")
+        if not imported_manifests:
+            print("no model artifacts were discovered at that exact path; the parent/root scan still completed.")
+    return ExitCode.OK
+
+
+def handle_model_artifacts(
+    args: argparse.Namespace,
+    settings: LewLMSettings,
+    services: LewLMServices | None = None,
+) -> ExitCode:
+    resolved_services = services or bootstrap_services(settings)
+    report = build_model_artifact_lineage_report(resolved_services, args.model)
+    if args.json:
+        print(report.model_dump_json(indent=2))
+    else:
+        _print_model_artifact_report(report.model_dump(mode="json"))
+    return ExitCode.OK
+
+
+def handle_runtime_probe(
+    args: argparse.Namespace,
+    settings: LewLMSettings,
+    services: LewLMServices | None = None,
+) -> ExitCode:
+    resolved_services = services or bootstrap_services(settings)
+    capability = CapabilityName(args.capability) if args.capability else None
+    if args.mode != "routing":
+        if not args.model:
+            raise ConfigurationError("`runtime probe --mode load|generate` requires `--model`.")
+        outcome = asyncio.run(
+            run_model_smoke_probe(
+                resolved_services,
+                model_id=args.model,
+                capability=capability or CapabilityName.CHAT,
+                mode=args.mode,
+                prompt=args.prompt,
+                max_tokens=args.max_tokens,
+            ),
+        )
+        payload = {
+            "model_id": outcome.model_id,
+            "capability": outcome.capability.value,
+            "mode": outcome.mode,
+            "evidence": [item.model_dump(mode="json") for item in outcome.evidence],
+            "persisted": outcome.persisted,
+            "reason": outcome.reason,
+        }
+        if outcome.generated_text is not None:
+            payload["generated_text"] = outcome.generated_text
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            _print_runtime_probe(payload)
+        failed = any(item.state == CapabilityEvidenceState.PROBE_FAILED for item in outcome.evidence)
+        return ExitCode.ERROR if failed else ExitCode.OK
+    if args.model:
+        report = resolved_services.model_router.model_capability_report(args.model)
+        evidence = report.capability_evidence
+        if capability is not None:
+            evidence = [item for item in evidence if item.capability == capability]
+        payload = {
+            "model_id": report.model_id,
+            "display_name": report.display_name,
+            "capability": capability.value if capability is not None else None,
+            "mode": args.mode,
+            "evidence": [item.model_dump(mode="json") for item in evidence],
+        }
+    else:
+        report = build_middleware_capabilities_report(resolved_services)
+        if capability is not None:
+            report = report.model_copy(
+                update={
+                    "capability_evidence": [
+                        item for item in report.capability_evidence if item.capability == capability
+                    ],
+                },
+            )
+        payload = report.model_dump(mode="json")
+        payload["mode"] = args.mode
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        _print_runtime_probe(payload)
+    return ExitCode.OK
+
+
+def handle_bridges_test(
+    args: argparse.Namespace,
+    settings: LewLMSettings,
+    services: LewLMServices | None = None,
+) -> ExitCode:
+    resolved_services = services or bootstrap_services(settings)
+    bridge_reports = [
+        report
+        for report in build_runtime_provider_reports(resolved_services)
+        if report.support_path == RuntimeSupportPath.BRIDGE
+    ]
+    payload = {
+        "count": len(bridge_reports),
+        "bridges": [report.model_dump(mode="json") for report in bridge_reports],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        if not bridge_reports:
+            print("no bridge runtime providers are configured in the active runtime catalog")
+            return ExitCode.OK
+        print(f"bridge providers: {len(bridge_reports)}")
+        for report in bridge_reports:
+            state = "available" if report.available else "unavailable"
+            print(f"- {report.provider.value}: {report.runtime_name} ({state}, {report.ownership.value})")
+            if report.reason:
+                print(f"  reason: {report.reason}")
+            if report.supported_capabilities:
+                print("  capabilities: " + ", ".join(capability.value for capability in report.supported_capabilities))
     return ExitCode.OK
 
 
@@ -1264,6 +1524,19 @@ def handle_capabilities(
 
 def handle_convert(args: argparse.Namespace, settings: LewLMSettings, services: LewLMServices | None = None) -> ExitCode:
     resolved_services = services or bootstrap_services(settings)
+    quantization_profile = _conversion_quantization_profile_from_args(args)
+    if getattr(args, "plan", False):
+        report = resolved_services.conversion_service.plan_targets(
+            args.model,
+            policy=ConversionPolicy(args.policy),
+            custom_bits=args.custom_bits,
+            quantization_profile=quantization_profile,
+        )
+        if args.json:
+            print(json.dumps(report.model_dump(mode="json"), indent=2))
+        else:
+            _print_conversion_target_plan(report)
+        return ExitCode.OK
     resolved_services.tool_authorizer.require(
         ToolAction.MODEL_CONVERSION,
         authorizations=args.authorize,
@@ -1273,8 +1546,9 @@ def handle_convert(args: argparse.Namespace, settings: LewLMSettings, services: 
     request = ConversionJobRequest(
         model_id=args.model,
         policy=ConversionPolicy(args.policy),
+        target_id=args.target,
         custom_bits=args.custom_bits,
-        quantization_profile=_conversion_quantization_profile_from_args(args),
+        quantization_profile=quantization_profile,
         force=args.force,
         idempotency_key=args.idempotency_key,
         authorized_actions=list(args.authorize),
@@ -1291,6 +1565,28 @@ def handle_convert(args: argparse.Namespace, settings: LewLMSettings, services: 
         if payload["payload"].get("result_path"):
             print(f"result: {payload['payload']['result_path']}")
     return ExitCode.OK if job.status != JobStatus.FAILED else ExitCode.ERROR
+
+
+def _print_conversion_target_plan(report: ConversionTargetPlanningReport) -> None:
+    print(f"conversion targets for {report.model_id}")
+    print(f"source: {report.source_format.value} ({report.conversion_status})")
+    if report.default_target_id:
+        print(f"default target: {report.default_target_id}")
+    for target in report.targets:
+        marker = " *" if target.target_id == report.default_target_id else ""
+        print(f"- {target.target_id}{marker}: {target.target_format} [{target.state}]")
+        print(f"  provider: {target.runtime_provider.value}")
+        if target.backend_name:
+            print(f"  backend: {target.backend_name}")
+        if target.runtime_affinity is not None:
+            print(f"  runtime: {target.runtime_affinity.value}")
+        print(f"  can_convert: {str(target.can_convert).lower()}")
+        if target.reason:
+            print(f"  reason: {target.reason}")
+        if target.optimization_profiles:
+            print("  optimization profiles: " + ", ".join(target.optimization_profiles))
+    for note in report.notes:
+        print(f"note: {note}")
 
 
 def _conversion_quantization_profile_from_args(args: argparse.Namespace) -> QuantizationProfile | None:
@@ -1360,6 +1656,7 @@ def _parse_layer_override_spec(spec: str) -> LayerQuantizationOverride:
 
 
 def handle_benchmark(args: argparse.Namespace, settings: LewLMSettings, services: LewLMServices | None = None) -> ExitCode:
+    _normalize_benchmark_namespace(args)
     resolved_services = services or bootstrap_services(settings)
     if args.workload_class is not None and args.capability != CapabilityName.CHAT.value:
         raise ConfigurationError("`--workload-class` is only supported for chat benchmarks.")
@@ -1572,6 +1869,25 @@ def handle_autotune(args: argparse.Namespace, settings: LewLMSettings, services:
     if payload.get("artifact") is not None:
         print(f"artifact: {payload['artifact']['artifact_path']}")
     return ExitCode.OK
+
+
+def _normalize_benchmark_namespace(args: argparse.Namespace) -> None:
+    defaults = {
+        "all": False,
+        "compare_direct": False,
+        "compare_external_adapter": False,
+        "convert_missing": False,
+        "convert_policies": [],
+        "convert_profiles": [],
+        "compare_metric": "cold_total_seconds",
+        "disable_serving_profile": False,
+        "workload_class": None,
+        "repeat": 1,
+        "warmup_runs": 1,
+    }
+    for name, value in defaults.items():
+        if not hasattr(args, name):
+            setattr(args, name, list(value) if isinstance(value, list) else value)
 
 
 def _run_direct_benchmark_suite(
@@ -4674,6 +4990,20 @@ def _dedupe_scan_roots(roots: tuple[Path, ...]) -> list[Path]:
     return deduped
 
 
+def _manifest_source_matches_import_path(manifest: ModelManifest, import_path: Path) -> bool:
+    source_path = Path(manifest.source_path).expanduser().resolve(strict=False)
+    normalized_import_path = import_path.expanduser().resolve(strict=False)
+    if source_path == normalized_import_path:
+        return True
+    if normalized_import_path.is_dir():
+        try:
+            source_path.relative_to(normalized_import_path)
+            return True
+        except ValueError:
+            return False
+    return False
+
+
 def _print_scan_summary(summary: ModelScanSummary) -> None:
     print(
         "scanned "
@@ -4700,6 +5030,90 @@ def _print_inventory_raw(inventory: ModelInventory) -> None:
         affinities = ",".join(affinity.value for affinity in manifest.runtime_affinity)
         print(f"{manifest.model_id}: {manifest.format_type.value} [{modalities}] -> {affinities}")
         print(f"  path: {manifest.source_path}")
+
+
+def _print_model_artifact_report(payload: dict[str, Any]) -> None:
+    print(f"{payload['model_id']}: {payload['format_type']} ({payload['artifact_role']})")
+    print(f"path: {payload['source_path']}")
+    if payload.get("artifact_family_id"):
+        print(f"artifact family: {payload['artifact_family_id']}")
+    lineage = payload.get("artifact_lineage") or []
+    print(f"lineage layers: {len(lineage)}")
+    for layer in lineage[:8]:
+        if not isinstance(layer, dict):
+            continue
+        print(f"- {layer.get('role')}: {layer.get('display_name')} [{layer.get('format_type')}]")
+        if layer.get("source_path"):
+            print(f"  path: {layer.get('source_path')}")
+    conversions = payload.get("conversion_artifacts") or []
+    print(f"conversion artifacts: {len(conversions)}")
+    for artifact in conversions[:5]:
+        if isinstance(artifact, dict):
+            print(f"- {artifact.get('policy')}: {artifact.get('output_path')}")
+    runtime_probes = payload.get("runtime_probe_records") or []
+    print(f"runtime probes: {len(runtime_probes)}")
+    for probe in runtime_probes[:5]:
+        if isinstance(probe, dict):
+            print(f"- {probe.get('capability')}: {probe.get('state')} via {probe.get('runtime_name') or 'n/a'}")
+    latest_benchmark = payload.get("latest_benchmark")
+    if isinstance(latest_benchmark, dict):
+        print(f"latest benchmark: {latest_benchmark.get('benchmark_id')} ({latest_benchmark.get('capability')})")
+    else:
+        print("latest benchmark: none")
+    _print_evidence_payloads(payload.get("capability_evidence") or [])
+    for note in payload.get("notes") or []:
+        if isinstance(note, str):
+            print(f"note: {note}")
+
+
+def _print_runtime_probe(payload: dict[str, Any]) -> None:
+    if payload.get("model_id"):
+        print(f"model probe: {payload.get('model_id')}")
+        if payload.get("display_name"):
+            print(f"display: {payload.get('display_name')}")
+        if payload.get("mode"):
+            print(f"mode: {payload.get('mode')}")
+        if payload.get("generated_text"):
+            print(f"generated: {payload.get('generated_text')}")
+        _print_evidence_payloads(payload.get("evidence") or [])
+        return
+    host_platform = payload.get("host_platform") or {}
+    print(
+        "LewLM middleware probe: "
+        f"{host_platform.get('system', 'unknown')} {host_platform.get('machine', 'unknown')}",
+    )
+    if payload.get("mode"):
+        print(f"mode: {payload.get('mode')}")
+    print(f"models: {payload.get('discovered_model_count', 0)} discovered, {payload.get('runnable_model_count', 0)} runnable")
+    _print_evidence_payloads(payload.get("capability_evidence") or [])
+    providers = payload.get("runtime_providers") or []
+    if providers:
+        print("runtime providers:")
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            state = "available" if provider.get("available") else "unavailable"
+            print(
+                f"- {provider.get('provider')}: {provider.get('runtime_name')} "
+                f"({state}, {provider.get('ownership')})",
+            )
+
+
+def _print_evidence_payloads(evidence_items: list[Any]) -> None:
+    print("capability evidence:")
+    if not evidence_items:
+        print("- none")
+        return
+    for evidence in evidence_items:
+        payload = evidence.model_dump(mode="json") if hasattr(evidence, "model_dump") else evidence
+        if not isinstance(payload, dict):
+            continue
+        runtime = payload.get("runtime_name") or payload.get("provider") or "n/a"
+        print(f"- {payload.get('capability')}: {payload.get('state')} ({payload.get('ownership')}) via {runtime}")
+        if payload.get("reason"):
+            print(f"  reason: {payload.get('reason')}")
+        if payload.get("benchmark_id"):
+            print(f"  benchmark: {payload.get('benchmark_id')}")
 
 
 def _print_capability_report(report: ModelCapabilityReport) -> None:
@@ -4759,6 +5173,7 @@ def _print_capability_report(report: ModelCapabilityReport) -> None:
                 print(f"  alternative: {alternative}")
             for note in capability.notes:
                 print(f"  note: {note}")
+    _print_evidence_payloads(report.capability_evidence)
     print("measured capability registry:")
     if not report.measured_capabilities:
         print("- none")
@@ -5143,7 +5558,10 @@ def _print_tool_detail(tool: LocalToolDescriptor) -> None:
 
 def _print_config_summary(settings: LewLMSettings) -> None:
     print(f"{settings.app_name} {settings.version}")
+    print(f"home dir: {settings.home_dir}")
+    print(f"default data dir: {settings.default_data_dir}")
     print(f"data dir: {settings.data_dir}")
+    print(f"default model root: {settings.default_models_dir}")
     print(f"model roots: {', '.join(str(root) for root in settings.models_dir)}")
     print(f"runtime pack allowlist: {', '.join(settings.runtime_packs) or '(default)'}")
     print(f"runtime pack denylist: {', '.join(settings.disabled_runtime_packs) or '(none)'}")
@@ -5167,6 +5585,8 @@ def _print_config_summary(settings: LewLMSettings) -> None:
     print(f"tool authorization: {'required' if settings.tool_authorization_required else 'not required'}")
     print(f"parser sandbox: {'enabled' if settings.parser_sandbox_enabled else 'disabled'}")
     print(f"conversion sandbox: {'enabled' if settings.conversion_sandbox_enabled else 'disabled'}")
+    print(f"llama.cpp converter: {settings.llamacpp_convert_hf_to_gguf_path or '(auto-detect)'}")
+    print(f"llama.cpp quantizer: {settings.llamacpp_quantize_path or '(auto-detect)'}")
     print(
         "host validation command: python scripts/capture_host_validation.py --output-dir out\\host-validation "
         "--capture-all-capabilities --require-target Darwin:arm64 --require-target Linux:x86_64 "
@@ -5298,3 +5718,7 @@ def _wait_for_job(services: LewLMServices, job_id: str) -> JobRecord:
         if job.status in {JobStatus.COMPLETED, JobStatus.FAILED}:
             return job
         time.sleep(0.05)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

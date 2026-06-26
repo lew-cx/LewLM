@@ -41,6 +41,7 @@ from lewlm.runtime.experimental import extract_architecture_metadata, infer_arch
 
 TOKENIZER_FILENAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json")
 PROCESSOR_FILENAMES = ("processor.json", "processor_config.json", "preprocessor_config.json")
+ONNX_GENAI_CONFIG_FILENAMES = ("genai_config.json",)
 QUANTIZATION_PROFILE_FILENAMES = (QUANTIZATION_PROFILE_METADATA_FILENAME, "quantization_profile.json")
 DISTRIBUTED_PIPELINE_FILENAMES = ("distributed_pipeline.json",)
 AUDIO_KEYWORDS = {"asr", "audio", "bark", "kokoro", "parler", "speech", "stt", "transcribe", "tts", "wav2vec", "whisper", "xtts"}
@@ -95,7 +96,7 @@ def _discover_root(root: Path) -> list[ModelManifest]:
         conversion_output = _load_conversion_output_metadata(path, file_names)
         config_data = _load_json(path / "config.json") if "config.json" in file_names else {}
 
-        bundle_format = _detect_bundle_format(file_names, config_data=config_data)
+        bundle_format = _detect_bundle_format(file_names)
         if bundle_format is not None:
             manifests.append(
                 _build_directory_manifest(
@@ -109,24 +110,30 @@ def _discover_root(root: Path) -> list[ModelManifest]:
             dirnames[:] = []
             continue
 
-        for filename in filenames:
-            if filename.lower().endswith(".gguf"):
-                manifests.append(_build_gguf_manifest(path / filename))
+        gguf_files = sorted(filename for filename in filenames if filename.lower().endswith(".gguf"))
+        if conversion_output is not None and len(gguf_files) == 1:
+            manifests.append(_build_converted_gguf_manifest(path / gguf_files[0], conversion_output=conversion_output))
+            dirnames[:] = []
+            continue
+        for filename in gguf_files:
+            manifests.append(_build_gguf_manifest(path / filename))
     return manifests
 
 
-def _detect_bundle_format(file_names: set[str], *, config_data: dict[str, Any] | None = None) -> ModelFormat | None:
-    config_data = config_data or {}
+def _detect_bundle_format(file_names: set[str]) -> ModelFormat | None:
+    normalized_names = {name.casefold() for name in file_names}
     if {"adapter_config.json"} <= file_names and any(name.startswith("adapter_model") for name in file_names):
         return ModelFormat.ADAPTER_BUNDLE
-    if "config.json" in file_names and (
-        any(name in {"weights.safetensors", "weights.npz"} for name in file_names)
-        or (
-            "model.safetensors.index.json" in file_names
-            and any(name.startswith("model-") and name.endswith(".safetensors") for name in file_names)
-            and _looks_like_quantized_mlx_bundle(config_data)
+    if any(name in normalized_names for name in ONNX_GENAI_CONFIG_FILENAMES) or (
+        any(name.endswith(".onnx") for name in normalized_names)
+        and (
+            "config.json" in normalized_names
+            or any(name in normalized_names for name in TOKENIZER_FILENAMES)
+            or any(name in normalized_names for name in PROCESSOR_FILENAMES)
         )
     ):
+        return ModelFormat.ONNX_GENAI
+    if "config.json" in file_names and any(name in {"weights.safetensors", "weights.npz"} for name in file_names):
         return ModelFormat.MLX
     if "config.json" in file_names and (
         any(name.endswith(".safetensors") for name in file_names)
@@ -180,6 +187,28 @@ def _build_gguf_manifest(path: Path) -> ModelManifest:
                 config_data={},
                 architecture_subtype=architecture_subtype,
             ),
+        },
+    )
+
+
+def _build_converted_gguf_manifest(path: Path, *, conversion_output: ConversionOutputMetadata) -> ModelManifest:
+    base_manifest = _build_gguf_manifest(path)
+    return base_manifest.model_copy(
+        update={
+            "model_id": _build_converted_model_id(
+                conversion_output.source_display_name,
+                artifact_role=conversion_output.artifact_role,
+            ),
+            "display_name": conversion_output.display_name,
+            "artifact_role": conversion_output.artifact_role,
+            "artifact_family_id": conversion_output.artifact_family_id,
+            "metadata": {
+                **base_manifest.metadata,
+                "converted_output": True,
+                "source_display_name": conversion_output.source_display_name,
+                "source_model_id": conversion_output.source_model_id,
+                **conversion_output.metadata,
+            },
         },
     )
 
@@ -421,6 +450,8 @@ def _infer_runtime_affinity(
 ) -> tuple[RuntimeAffinity, ...]:
     if format_type == ModelFormat.GGUF:
         return (RuntimeAffinity.LLAMACPP,)
+    if format_type == ModelFormat.ONNX_GENAI:
+        return (RuntimeAffinity.ONNX_GENAI,)
     if format_type == ModelFormat.MLX:
         if ModelModality.VISION in modalities:
             return (RuntimeAffinity.MLX_VISION,)
@@ -493,7 +524,7 @@ def _layered_lineage(*, path: Path, layered_manifest: LayeredConversionManifest)
 
 
 def _infer_conversion_status(format_type: ModelFormat) -> ConversionStatus:
-    if format_type in {ModelFormat.GGUF, ModelFormat.MLX, ModelFormat.AUDIO_FOLDER}:
+    if format_type in {ModelFormat.GGUF, ModelFormat.MLX, ModelFormat.ONNX_GENAI, ModelFormat.AUDIO_FOLDER}:
         return ConversionStatus.RUNNABLE
     if format_type in {ModelFormat.HUGGINGFACE, ModelFormat.ADAPTER_BUNDLE}:
         return ConversionStatus.REQUIRES_CONVERSION
@@ -510,7 +541,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -528,15 +559,6 @@ def _extract_context_length(config_data: dict[str, Any]) -> int | None:
     if not values:
         return None
     return max(values)
-
-
-def _looks_like_quantized_mlx_bundle(config_data: dict[str, Any]) -> bool:
-    quantization = config_data.get("quantization")
-    if not isinstance(quantization, dict):
-        return False
-    if isinstance(quantization.get("bits"), int):
-        return True
-    return any(isinstance(value, dict) and isinstance(value.get("bits"), int) for value in quantization.values())
 
 
 def _infer_quantization(name: str, config_data: dict[str, Any] | None = None) -> str | None:
@@ -784,12 +806,29 @@ def _ensure_unique_model_ids(manifests: list[ModelManifest]) -> list[ModelManife
     by_model_id: dict[str, list[ModelManifest]] = {}
     for manifest in manifests:
         by_model_id.setdefault(manifest.model_id, []).append(manifest)
-    return [
-        manifest
-        if len(by_model_id[manifest.model_id]) == 1
-        else manifest.model_copy(update={"model_id": f"{manifest.model_id}_{manifest.fingerprint[:6]}"})
-        for manifest in manifests
-    ]
+    assigned: set[str] = set()
+    result: list[ModelManifest] = []
+    for manifest in manifests:
+        if len(by_model_id[manifest.model_id]) == 1:
+            assigned.add(manifest.model_id)
+            result.append(manifest)
+            continue
+        # Disambiguate duplicate base ids with the path fingerprint, then fall
+        # back to a positional suffix when fingerprints also collide. The
+        # fingerprint is content-blind (name + size + mtime), so sibling bundles
+        # with identical names and sizes can share a fingerprint on filesystems
+        # with coarse mtime resolution -- without this fallback they would
+        # collapse to the same model id, which differs by host filesystem.
+        candidate = f"{manifest.model_id}_{manifest.fingerprint[:6]}"
+        if candidate in assigned:
+            base_candidate = candidate
+            ordinal = 2
+            while candidate in assigned:
+                candidate = f"{base_candidate}_{ordinal}"
+                ordinal += 1
+        assigned.add(candidate)
+        result.append(manifest.model_copy(update={"model_id": candidate}))
+    return result
 
 
 def _slugify(value: str) -> str:

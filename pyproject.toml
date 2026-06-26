@@ -40,6 +40,23 @@ llamacpp = [
   "llama-cpp-python>=0.3.0,<1.0.0",
   "cmake>=3.30.0,<4.0.0; platform_system == 'Windows'",
   "ninja>=1.11.1,<2.0.0; platform_system == 'Windows'",
+  "numpy>=1.26.0,<3.0.0",
+  "protobuf>=5.0.0,<7.0.0",
+  "safetensors>=0.4.5,<1.0.0",
+  "sentencepiece>=0.2.0,<1.0.0",
+  "torch>=2.3.0,<3.0.0",
+  "transformers>=4.45.0,<6.0.0",
+]
+gguf_conversion = [
+  "numpy>=1.26.0,<3.0.0",
+  "protobuf>=5.0.0,<7.0.0",
+  "safetensors>=0.4.5,<1.0.0",
+  "sentencepiece>=0.2.0,<1.0.0",
+  "torch>=2.3.0,<3.0.0",
+  "transformers>=4.45.0,<6.0.0",
+]
+onnx_genai = [
+  "onnxruntime-genai>=0.6.0,<1.0.0",
 ]
 documents = [
   "openpyxl>=3.1.0,<4.0.0",

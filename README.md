@@ -80,6 +80,7 @@ Choose the install profile that matches what you want LewLM to do:
 | Core only | `python -m pip install -e .` | contract-first integration, registry, health, and config work | CLI, local API, model registry, routing, readiness surfaces | No inference runtime or documents extras |
 | Apple MLX local backend | `python -m pip install -e ".[mlx]"` | Apple Silicon local text, vision, and audio serving | MLX runtime adapters on supported hosts | First-class packaged runtime on Apple Silicon |
 | Cross-platform GGUF backend | `python -m pip install -e ".[llamacpp]"` | packaged local serving on macOS, Linux, and Windows | llama.cpp-backed GGUF runtime for chat, embeddings, and packaged rerank fallback | First-class non-Apple runtime family; non-Apple audio still uses the bridge path |
+| ONNX Runtime GenAI backend | `python -m pip install -e ".[onnx_genai]"` | Windows-native prepared ONNX bundles, provider probing, and HF-to-ONNX conversion | ONNX GenAI discovery plus CPU, DirectML, and CUDA provider metadata, and executable HF-to-ONNX conversion via the onnxruntime-genai model builder | Load/generate adapter for compatible ONNX bundles; HF-to-ONNX conversion is executable when this extra is installed |
 | Cross-platform external accelerator bridge | `python -m pip install -e .` | LewLM in front of another local loopback server | base package plus the built-in bridge runtime pack | Requires `LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true` and `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL`; LewLM does not install the external server |
 | Documents add-on | `python -m pip install -e ".[documents]"` | local ingest, render, and transform workflows | PDF, DOCX, XLSX, OCR-oriented, and deterministic artifact packages | Additive; pair with a runtime profile when you also want inference |
 
@@ -95,7 +96,21 @@ On **Linux** and **Windows**, start with `.[llamacpp]` when you want packaged lo
 
 On Windows, `.[llamacpp]` now also installs CMake and Ninja helper packages, but `llama-cpp-python` may still need to build from source when a wheel is not published for your Python and architecture combination. In that case, install Microsoft C++ Build Tools first. If you do not want that local build step, use the external accelerator bridge with a loopback-only local server that already owns GGUF execution.
 
+The new `.[onnx_genai]` profile is LewLM's Windows-native ONNX/DirectML path for ONNX GenAI bundles. It can load and generate through compatible `onnxruntime-genai` Python packages, and — when this extra is installed — it makes HF-to-ONNX conversion executable through the official `onnxruntime-genai` model builder. Conversion precision follows the conversion policy (`max_quality` → fp16, otherwise int4) and the execution provider follows `LEWLM_ONNX_GENAI_CONVERSION_EXECUTION_PROVIDER` (`cpu` default, or `dml`/`cuda`). Use `lewlm convert <model-id> --target onnx_genai` to run it.
+
 `lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host, plus `recommended_feature_paths` for the current host's default operator routes. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
+
+### Docker (recommended for portable, cross-platform runs)
+
+Docker is the most consistent way to run LewLM across operating systems, and the cleanest fix if your host cannot load a prebuilt `llama-cpp-python` wheel — including the Windows `0xc000001d` (`STATUS_ILLEGAL_INSTRUCTION`) crash on `llama.dll`. The image compiles llama.cpp with `GGML_NATIVE=OFF`, so the backend does not require CPU instructions your host might lack.
+
+```bash
+docker build -t lewlm:cpu .                                   # portable CPU image
+docker run -d -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cpu  # reuse host models in ~/.lewlm
+curl -s http://127.0.0.1:8080/v1/health                       # confirm readiness
+```
+
+NVIDIA GPUs use `Dockerfile.cuda` (`docker compose --profile gpu up --build lewlm-cuda`). Apple MLX is **not** containerizable — run MLX natively on macOS. See [docs/operations/docker.md](docs/operations/docker.md) for GPU builds, bind mounts, build args, and the full container support matrix.
 
 ## Recommended feature paths by platform
 
@@ -103,7 +118,7 @@ On Windows, `.[llamacpp]` now also installs CMake and Ninja helper packages, but
 | --- | --- | --- | --- | --- | --- |
 | macOS | Apple MLX on Apple Silicon; GGUF on non-MLX Macs | Apple MLX on Apple Silicon; external bridge on non-MLX Macs | Apple MLX vision on Apple Silicon; external bridge on non-MLX Macs | Apple MLX audio on Apple Silicon; external bridge on non-MLX Macs | GGUF/llama.cpp when you need decode-time enforcement; MLX remains prompt-guided fallback |
 | Linux | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
-| Windows | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
+| Windows | GGUF/llama.cpp packaged default; ONNX GenAI/DirectML is probe-gated candidate work | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
 
 `semantic text` covers embeddings and rerank, and `structured output` here means requests that need decode-time JSON-schema or grammar enforcement. On non-Apple hosts, GGUF keeps the packaged semantic default while the bridge remains explicit adapter guidance when another local server owns semantic execution, and `lewlm doctor` plus `GET /v1/health` surface the current-host mapping directly.
 
@@ -129,12 +144,13 @@ Use the quick path that matches the profile you installed:
    lewlm scan
    lewlm list-models
    lewlm capabilities "<model name or id>"
+   lewlm runtime probe --model "<model name or id>" --mode load
    lewlm warm "<model name or id>"
    lewlm chat "Hello from LewLM"
    lewlm serve
    ```
 
-   Use **Apple MLX** only on Apple Silicon macOS. On Linux, Windows, and non-MLX Mac hosts, use the **Cross-platform GGUF backend** instead. It is the first-class non-Apple path LewLM now productizes.
+   Use **Apple MLX** only on Apple Silicon macOS. On Linux, Windows, and non-MLX Mac hosts, use the **Cross-platform GGUF backend** instead. It is the first-class non-Apple path LewLM now productizes. `runtime probe --mode load` upgrades a model from routing-only evidence to a persisted load smoke test without generating text; use `--mode generate` when you want to verify output too.
 
    On Windows, make sure the `.[llamacpp]` install completed successfully before expecting this step to run. If `llama-cpp-python` had to build from source and your host lacks Microsoft C++ Build Tools, packaged GGUF inference will stay unavailable until that compiler toolchain is installed.
 

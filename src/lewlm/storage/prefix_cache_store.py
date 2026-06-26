@@ -15,6 +15,11 @@ from lewlm.core.contracts import utc_now
 
 _CACHE_VERSION = 2
 _SAFE_MODEL_ID_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+_MAX_CACHE_NAMESPACE_SEGMENT_LENGTH = 12
+_MAX_LEGACY_CACHE_NAMESPACE_SEGMENT_LENGTH = 32
+_MAX_CACHE_MODEL_SEGMENT_LENGTH = 20
+_CACHE_SEGMENT_DIGEST_LENGTH = 12
+_CACHE_KEY_FILENAME_LENGTH = 20
 
 
 @dataclass(slots=True)
@@ -76,7 +81,18 @@ class PersistentPrefixCacheStore:
     """Persist paged prompt-prefix cache entries on disk."""
 
     def __init__(self, *, cache_root: Path, namespace: str, page_size_tokens: int = 16) -> None:
-        self.cache_root = cache_root / "prompt-prefix-cache" / namespace
+        self.cache_root = cache_root / "ppc" / _compact_cache_path_segment(
+            namespace,
+            fallback="runtime",
+            max_length=_MAX_CACHE_NAMESPACE_SEGMENT_LENGTH,
+        )
+        self._legacy_cache_roots = (
+            cache_root / "prompt-prefix-cache" / _compact_cache_path_segment(
+                namespace,
+                fallback="runtime",
+                max_length=_MAX_LEGACY_CACHE_NAMESPACE_SEGMENT_LENGTH,
+            ),
+        )
         self.page_size_tokens = max(int(page_size_tokens), 1)
         self._entries_by_model: dict[str, dict[str, StoredPrefixCacheEntry]] = {}
         self._pages_by_model: dict[str, dict[str, StoredPrefixCachePage]] = {}
@@ -221,7 +237,7 @@ class PersistentPrefixCacheStore:
                 )
                 evicted_entries.append(_copy_stored_entry(entry))
                 entries.pop(cache_key, None)
-                self._entry_path(model_id=model_id, cache_key=cache_key).unlink(missing_ok=True)
+                self._unlink_entry_paths(model_id=model_id, cache_key=cache_key)
                 page_evictions += self._release_page_keys_locked(model_id=model_id, page_keys=entry.page_keys)
         return PersistentPrefixCacheEvictionSummary(
             entries=tuple(evicted_entries),
@@ -246,7 +262,7 @@ class PersistentPrefixCacheStore:
             for entry in matching_entries:
                 evicted_entries.append(_copy_stored_entry(entry))
                 entries.pop(entry.cache_key, None)
-                self._entry_path(model_id=model_id, cache_key=entry.cache_key).unlink(missing_ok=True)
+                self._unlink_entry_paths(model_id=model_id, cache_key=entry.cache_key)
                 page_evictions += self._release_page_keys_locked(model_id=model_id, page_keys=entry.page_keys)
         return PersistentPrefixCacheEvictionSummary(
             entries=tuple(evicted_entries),
@@ -396,17 +412,17 @@ class PersistentPrefixCacheStore:
         return best_entry, best_prefix_length, best_page_length
 
     def _load_model_entries_locked(self, model_id: str) -> dict[str, StoredPrefixCacheEntry]:
-        model_dir = self._model_dir(model_id)
-        entry_dir = self._entry_dir(model_id)
         paths: list[Path] = []
-        if model_dir.is_dir():
-            paths.extend(
-                sorted(path for path in model_dir.glob("*.json") if path.is_file())
-            )
-        if entry_dir.is_dir():
-            paths.extend(
-                sorted(path for path in entry_dir.glob("*.json") if path.is_file())
-            )
+        for model_dir in self._model_dirs(model_id):
+            entry_dir = model_dir / "entries"
+            if model_dir.is_dir():
+                paths.extend(
+                    sorted(path for path in model_dir.glob("*.json") if path.is_file())
+                )
+            if entry_dir.is_dir():
+                paths.extend(
+                    sorted(path for path in entry_dir.glob("*.json") if path.is_file())
+                )
         entries: dict[str, StoredPrefixCacheEntry] = {}
         for path in paths:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -444,36 +460,36 @@ class PersistentPrefixCacheStore:
         return entries
 
     def _load_model_pages_locked(self, model_id: str) -> dict[str, StoredPrefixCachePage]:
-        page_dir = self._page_dir(model_id)
-        if not page_dir.is_dir():
-            return {}
         pages: dict[str, StoredPrefixCachePage] = {}
-        for path in page_dir.glob("*.json"):
-            if not path.is_file():
+        for page_dir in self._page_dirs(model_id):
+            if not page_dir.is_dir():
                 continue
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            tokens = tuple(int(token) for token in payload.get("tokens", []))
-            if not tokens:
-                continue
-            page = StoredPrefixCachePage(
-                page_key=str(payload["page_key"]),
-                model_id=str(payload["model_id"]),
-                parent_page_key=(
-                    str(payload["parent_page_key"])
-                    if payload.get("parent_page_key") is not None
-                    else None
-                ),
-                page_index=max(int(payload.get("page_index", 0)), 0),
-                page_size_tokens=max(int(payload.get("page_size_tokens", self.page_size_tokens)), 1),
-                tokens=tokens,
-                estimated_size_bytes=max(int(payload.get("estimated_size_bytes", 0)), int(path.stat().st_size)),
-                ref_count=max(int(payload.get("ref_count", 1)), 1),
-                access_count=max(int(payload.get("access_count", 0)), 0),
-                created_at=str(payload["created_at"]),
-                updated_at=str(payload["updated_at"]),
-                last_used_at=str(payload.get("last_used_at") or payload["updated_at"]),
-            )
-            pages[page.page_key] = page
+            for path in page_dir.glob("*.json"):
+                if not path.is_file():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                tokens = tuple(int(token) for token in payload.get("tokens", []))
+                if not tokens:
+                    continue
+                page = StoredPrefixCachePage(
+                    page_key=str(payload["page_key"]),
+                    model_id=str(payload["model_id"]),
+                    parent_page_key=(
+                        str(payload["parent_page_key"])
+                        if payload.get("parent_page_key") is not None
+                        else None
+                    ),
+                    page_index=max(int(payload.get("page_index", 0)), 0),
+                    page_size_tokens=max(int(payload.get("page_size_tokens", self.page_size_tokens)), 1),
+                    tokens=tokens,
+                    estimated_size_bytes=max(int(payload.get("estimated_size_bytes", 0)), int(path.stat().st_size)),
+                    ref_count=max(int(payload.get("ref_count", 1)), 1),
+                    access_count=max(int(payload.get("access_count", 0)), 0),
+                    created_at=str(payload["created_at"]),
+                    updated_at=str(payload["updated_at"]),
+                    last_used_at=str(payload.get("last_used_at") or payload["updated_at"]),
+                )
+                pages[page.page_key] = page
         return pages
 
     def _rebuild_pages_from_entries(
@@ -520,6 +536,7 @@ class PersistentPrefixCacheStore:
             json.dumps(self._serialize_entry(entry), indent=2, sort_keys=True, ensure_ascii=True),
             encoding="utf-8",
         )
+        self._unlink_legacy_paths(path, self._legacy_entry_paths(model_id=entry.model_id, cache_key=entry.cache_key))
         entry.estimated_size_bytes = max(entry.estimated_size_bytes, int(path.stat().st_size))
 
     def _write_page_locked(self, page: StoredPrefixCachePage) -> None:
@@ -529,6 +546,7 @@ class PersistentPrefixCacheStore:
             json.dumps(self._serialize_page(page), indent=2, sort_keys=True, ensure_ascii=True),
             encoding="utf-8",
         )
+        self._unlink_legacy_paths(path, self._legacy_page_paths(model_id=page.model_id, page_key=page.page_key))
         page.estimated_size_bytes = max(page.estimated_size_bytes, int(path.stat().st_size))
 
     def _release_page_keys_locked(self, *, model_id: str, page_keys: tuple[str, ...] | list[str]) -> int:
@@ -544,7 +562,7 @@ class PersistentPrefixCacheStore:
                 self._write_page_locked(page)
                 continue
             pages.pop(page_key, None)
-            self._page_path(model_id=model_id, page_key=page_key).unlink(missing_ok=True)
+            self._unlink_page_paths(model_id=model_id, page_key=page_key)
             removed += 1
         return removed
 
@@ -639,9 +657,16 @@ class PersistentPrefixCacheStore:
         }
 
     def _model_dir(self, model_id: str) -> Path:
-        normalized = _SAFE_MODEL_ID_PATTERN.sub("-", model_id).strip("-") or "model"
-        digest = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:10]
-        return self.cache_root / f"{normalized[:48]}-{digest}"
+        return self.cache_root / _compact_cache_path_segment(
+            model_id,
+            fallback="model",
+            max_length=_MAX_CACHE_MODEL_SEGMENT_LENGTH,
+        )
+
+    def _model_dirs(self, model_id: str) -> tuple[Path, ...]:
+        current = self._model_dir(model_id)
+        legacy_dirs = self._legacy_model_dirs(model_id)
+        return _unique_paths((current, *legacy_dirs))
 
     def _entry_dir(self, model_id: str) -> Path:
         return self._model_dir(model_id) / "entries"
@@ -649,11 +674,98 @@ class PersistentPrefixCacheStore:
     def _page_dir(self, model_id: str) -> Path:
         return self._model_dir(model_id) / "pages"
 
+    def _page_dirs(self, model_id: str) -> tuple[Path, ...]:
+        return tuple(model_dir / "pages" for model_dir in self._model_dirs(model_id))
+
     def _entry_path(self, *, model_id: str, cache_key: str) -> Path:
-        return self._entry_dir(model_id) / f"{cache_key}.json"
+        return self._entry_dir(model_id) / f"{_compact_cache_key_filename(cache_key)}.json"
 
     def _page_path(self, *, model_id: str, page_key: str) -> Path:
-        return self._page_dir(model_id) / f"{page_key}.json"
+        return self._page_dir(model_id) / f"{_compact_cache_key_filename(page_key)}.json"
+
+    def _legacy_model_dirs(self, model_id: str) -> tuple[Path, ...]:
+        legacy_dirs: list[Path] = []
+        for cache_root in self._legacy_cache_roots:
+            legacy_dirs.append(
+                cache_root / _compact_cache_path_segment(
+                    model_id,
+                    fallback="model",
+                    max_length=_MAX_CACHE_MODEL_SEGMENT_LENGTH,
+                ),
+            )
+            legacy_dirs.append(self._legacy_model_dir(cache_root, model_id))
+        return tuple(legacy_dirs)
+
+    @staticmethod
+    def _legacy_model_dir(cache_root: Path, model_id: str) -> Path:
+        normalized = _SAFE_MODEL_ID_PATTERN.sub("-", model_id).strip("-") or "model"
+        digest = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:10]
+        return cache_root / f"{normalized[:48]}-{digest}"
+
+    def _legacy_entry_paths(self, *, model_id: str, cache_key: str) -> tuple[Path, ...]:
+        paths: list[Path] = []
+        for model_dir in self._model_dirs(model_id):
+            paths.append(model_dir / "entries" / f"{cache_key}.json")
+            paths.append(model_dir / f"{cache_key}.json")
+        return tuple(paths)
+
+    def _legacy_page_paths(self, *, model_id: str, page_key: str) -> tuple[Path, ...]:
+        return tuple(page_dir / f"{page_key}.json" for page_dir in self._page_dirs(model_id))
+
+    def _unlink_entry_paths(self, *, model_id: str, cache_key: str) -> None:
+        paths = (
+            self._entry_path(model_id=model_id, cache_key=cache_key),
+            *self._legacy_entry_paths(model_id=model_id, cache_key=cache_key),
+        )
+        self._unlink_legacy_paths(None, paths)
+
+    def _unlink_page_paths(self, *, model_id: str, page_key: str) -> None:
+        paths = (
+            self._page_path(model_id=model_id, page_key=page_key),
+            *self._legacy_page_paths(model_id=model_id, page_key=page_key),
+        )
+        self._unlink_legacy_paths(None, paths)
+
+    @staticmethod
+    def _unlink_legacy_paths(primary_path: Path | None, paths: tuple[Path, ...]) -> None:
+        seen: set[Path] = set()
+        for path in paths:
+            if primary_path is not None and path == primary_path:
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            path.unlink(missing_ok=True)
+
+
+def _compact_cache_path_segment(value: str, *, fallback: str, max_length: int) -> str:
+    normalized = _SAFE_MODEL_ID_PATTERN.sub("-", value).strip("-") or fallback
+    if len(normalized) <= max_length:
+        return normalized
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_CACHE_SEGMENT_DIGEST_LENGTH]
+    prefix_length = max(max_length - len(digest) - 1, 0)
+    prefix = normalized[:prefix_length].rstrip("-._")
+    if not prefix:
+        return digest[:max_length]
+    return f"{prefix}-{digest}"
+
+
+def _compact_cache_key_filename(key: str) -> str:
+    if len(key) <= _CACHE_KEY_FILENAME_LENGTH:
+        return key
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:_CACHE_KEY_FILENAME_LENGTH]
+
+
+def _unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return tuple(unique)
 
 
 def _normalize_payload(payload: Any) -> Any | None:

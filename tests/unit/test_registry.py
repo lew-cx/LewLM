@@ -122,7 +122,7 @@ def test_registry_inventory_prefers_converted_artifacts_after_conversion(
     job = services.conversion_service.submit(
         ConversionJobRequest(model_id=source_manifest.model_id, policy=ConversionPolicy.BALANCED),
     )
-    for _ in range(30):
+    for _ in range(200):
         job = services.conversion_service.get_job(job.job_id)
         if job.status == JobStatus.COMPLETED:
             break
@@ -131,6 +131,43 @@ def test_registry_inventory_prefers_converted_artifacts_after_conversion(
     assert job.status == JobStatus.COMPLETED
     inventory = services.model_registry.inventory()
     assert inventory.count == 3
+    assert source_manifest.model_id not in {manifest.model_id for manifest in inventory.items}
+    assert any(
+        Path(manifest.source_path).is_relative_to(Path(job.payload["result_path"]))
+        for manifest in inventory.items
+    )
+
+
+def test_registry_default_scan_includes_persisted_conversion_artifact_roots(
+    temp_settings,
+    services_with_fake_runtime_and_conversion,
+) -> None:
+    services = services_with_fake_runtime_and_conversion
+    services.model_registry.scan()
+    source_manifest = next(
+        manifest
+        for manifest in services.model_registry.list_manifests()
+        if manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION
+    )
+
+    job = services.conversion_service.submit(
+        ConversionJobRequest(model_id=source_manifest.model_id, policy=ConversionPolicy.BALANCED),
+    )
+    for _ in range(200):
+        job = services.conversion_service.get_job(job.job_id)
+        if job.status == JobStatus.COMPLETED:
+            break
+        time.sleep(0.05)
+
+    assert job.status == JobStatus.COMPLETED
+    reloaded_services = bootstrap_services(temp_settings)
+    summary = reloaded_services.model_registry.scan()
+    inventory = reloaded_services.model_registry.inventory()
+
+    assert any(
+        Path(manifest.source_path).is_relative_to(Path(job.payload["result_path"]))
+        for manifest in summary.manifests
+    )
     assert source_manifest.model_id not in {manifest.model_id for manifest in inventory.items}
     assert any(
         Path(manifest.source_path).is_relative_to(Path(job.payload["result_path"]))

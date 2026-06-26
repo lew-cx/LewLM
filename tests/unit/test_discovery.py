@@ -39,6 +39,33 @@ def test_converted_model_id_builder_uses_readable_suffixes() -> None:
     )
 
 
+def test_discovery_reads_bom_prefixed_conversion_output_metadata_for_gguf(tmp_path: Path) -> None:
+    output_dir = tmp_path / "converted"
+    output_dir.mkdir()
+    (output_dir / "gemma-q8_0.gguf").write_bytes(b"gguf")
+    (output_dir / CONVERSION_OUTPUT_METADATA_FILENAME).write_text(
+        json.dumps(
+            {
+                "source_display_name": "Gemma Source",
+                "source_model_id": "gemma-source",
+                "display_name": "Gemma Source (converted)",
+                "artifact_role": "standalone",
+                "artifact_family_id": "cache-key",
+                "metadata": {"source_preprocessing": "jang_normalization"},
+            },
+        ),
+        encoding="utf-8-sig",
+    )
+
+    manifests = discover_models([output_dir])
+
+    assert len(manifests) == 1
+    assert manifests[0].model_id == "gemma-source_converted"
+    assert manifests[0].display_name == "Gemma Source (converted)"
+    assert manifests[0].metadata["converted_output"] is True
+    assert manifests[0].metadata["source_preprocessing"] == "jang_normalization"
+
+
 def test_fingerprint_path_is_stable_until_bundle_contents_change(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "model"
     bundle_dir.mkdir()
@@ -82,7 +109,7 @@ def test_modality_and_runtime_inference_cover_vision_and_audio_paths(tmp_path: P
     )
 
 
-def test_discovery_treats_quantized_sharded_outputs_as_mlx_bundles(tmp_path: Path) -> None:
+def test_discovery_treats_quantized_sharded_outputs_as_huggingface_conversion_sources(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "converted-gemma4"
     bundle_dir.mkdir()
     (bundle_dir / "config.json").write_text(
@@ -102,12 +129,32 @@ def test_discovery_treats_quantized_sharded_outputs_as_mlx_bundles(tmp_path: Pat
 
     assert len(manifests) == 1
     manifest = manifests[0]
-    assert manifest.format_type == ModelFormat.MLX
+    assert manifest.format_type == ModelFormat.HUGGINGFACE
+    assert manifest.conversion_status == ConversionStatus.REQUIRES_CONVERSION
+    assert manifest.runtime_affinity == (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_VISION)
+    assert manifest.text_only_runtime_affinity == ()
+    assert manifest.text_only_runtime_source is None
+    assert manifest.text_only_runtime_reason is None
+
+
+def test_discovery_detects_onnx_genai_bundles_as_windows_native_candidates(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "phi-3-mini-onnx"
+    bundle_dir.mkdir()
+    (bundle_dir / "genai_config.json").write_text(
+        json.dumps({"model": {"type": "phi3"}, "search": {"max_length": 4096}}),
+        encoding="utf-8",
+    )
+    (bundle_dir / "model.onnx").write_bytes(b"onnx")
+    (bundle_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest.format_type == ModelFormat.ONNX_GENAI
     assert manifest.conversion_status == ConversionStatus.RUNNABLE
-    assert manifest.runtime_affinity == (RuntimeAffinity.MLX_VISION,)
-    assert manifest.text_only_runtime_affinity == (RuntimeAffinity.MLX_TEXT,)
-    assert manifest.text_only_runtime_source == "same_bundle"
-    assert "text-only prompts" in str(manifest.text_only_runtime_reason)
+    assert manifest.runtime_affinity == (RuntimeAffinity.ONNX_GENAI,)
+    assert manifest.modality == (ModelModality.TEXT,)
 
 
 def test_discovery_expands_layered_conversion_bundle_into_text_and_multimodal_artifacts(tmp_path: Path) -> None:

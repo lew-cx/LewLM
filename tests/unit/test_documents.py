@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from io import BytesIO
 
+import pytest
+
+pytest.importorskip("openpyxl")
+pytest.importorskip("docx")
+
 from openpyxl import load_workbook
 
 from lewlm.core.errors import DocumentValidationError

@@ -81,6 +81,9 @@ class LewLMSettings(BaseSettings):
     conversion_sandbox_timeout_seconds: int = 1800
     conversion_sandbox_clear_environment: bool = True
     conversion_worker_count: int = 1
+    llamacpp_convert_hf_to_gguf_path: Path | None = None
+    llamacpp_quantize_path: Path | None = None
+    onnx_genai_conversion_execution_provider: Literal["cpu", "cuda", "dml"] = "cpu"
     runtime_policy: Literal["keep_warm", "balanced", "aggressive_unload"] = "balanced"
     kv_cache_page_size: int = 256
     kv_cache_max_pages: int | None = 64
@@ -105,6 +108,8 @@ class LewLMSettings(BaseSettings):
         "vllm_mlx",
         "vllm_local",
         "sglang_local",
+        "tensorrt_llm_server",
+        "openvino_model_server",
         "ollama_local",
         "llamacpp_server",
     ] = "openai_compatible"
@@ -144,6 +149,10 @@ class LewLMSettings(BaseSettings):
             _normalize_path(Path(path))
             for path in self.validation_manifest_paths
         )
+        if self.llamacpp_convert_hf_to_gguf_path is not None:
+            self.llamacpp_convert_hf_to_gguf_path = _normalize_path(self.llamacpp_convert_hf_to_gguf_path)
+        if self.llamacpp_quantize_path is not None:
+            self.llamacpp_quantize_path = _normalize_path(self.llamacpp_quantize_path)
         if set(self.runtime_packs) & set(self.disabled_runtime_packs):
             raise ValueError("runtime_packs and disabled_runtime_packs cannot contain the same pack.")
         if set(self.feature_packs) & set(self.disabled_feature_packs):
@@ -192,6 +201,21 @@ class LewLMSettings(BaseSettings):
     @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
+
+    @computed_field(return_type=Path)
+    @property
+    def home_dir(self) -> Path:
+        return _normalize_path(Path.home())
+
+    @computed_field(return_type=Path)
+    @property
+    def default_data_dir(self) -> Path:
+        return self.home_dir / ".lewlm"
+
+    @computed_field(return_type=Path)
+    @property
+    def default_models_dir(self) -> Path:
+        return self.default_data_dir / "models"
 
     @computed_field(return_type=Path)
     @property
@@ -277,6 +301,9 @@ class LewLMSettings(BaseSettings):
             "host": self.host,
             "port": self.port,
             "log_level": self.log_level,
+            "home_dir": str(self.home_dir),
+            "default_data_dir": str(self.default_data_dir),
+            "default_models_dir": str(self.default_models_dir),
             "data_dir": str(self.data_dir),
             "models_dir": [str(path) for path in self.models_dir],
             "runtime_packs": list(self.runtime_packs),
@@ -334,6 +361,17 @@ class LewLMSettings(BaseSettings):
             "conversion_sandbox_clear_environment": self.conversion_sandbox_clear_environment,
             "conversion_sandbox_dir": str(self.conversion_sandbox_dir),
             "conversion_worker_count": self.conversion_worker_count,
+            "llamacpp_convert_hf_to_gguf_path": (
+                str(self.llamacpp_convert_hf_to_gguf_path)
+                if self.llamacpp_convert_hf_to_gguf_path is not None
+                else None
+            ),
+            "llamacpp_quantize_path": (
+                str(self.llamacpp_quantize_path)
+                if self.llamacpp_quantize_path is not None
+                else None
+            ),
+            "onnx_genai_conversion_execution_provider": self.onnx_genai_conversion_execution_provider,
             "runtime_policy": self.runtime_policy,
             "kv_cache_page_size": self.kv_cache_page_size,
             "kv_cache_max_pages": self.kv_cache_max_pages,

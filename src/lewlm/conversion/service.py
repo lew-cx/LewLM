@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import platform
 import shutil
 import tarfile
 import time
@@ -15,8 +16,11 @@ from uuid import uuid4
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.conversion.backend import (
+    AutoConversionBackend,
     ConversionBackend,
+    LlamaCppConversionBackend,
     MLXConversionBackend,
+    OnnxGenAIConversionBackend,
     backend_descriptor,
     run_isolated_conversion,
 )
@@ -27,6 +31,7 @@ from lewlm.conversion.models import (
     ConversionCompatibilityReport,
     ConversionJobRequest,
     ConversionPolicy,
+    ConversionTargetPlanningReport,
     JobRecord,
     JobStatus,
     JobType,
@@ -37,7 +42,18 @@ from lewlm.conversion.models import (
     quantization_mode_from_profile,
     quantization_profile_cache_payload,
 )
-from lewlm.core.contracts import ConversionStatus, IdempotentOperationRecord, ModelArtifactRole, ModelManifest
+from lewlm.core.contracts import (
+    ConversionStatus,
+    ConversionTarget,
+    IdempotentOperationRecord,
+    ModelArtifactRole,
+    ModelFormat,
+    ModelManifest,
+    ModelModality,
+    RuntimeAffinity,
+    RuntimeProvider,
+    RuntimeSupportPath,
+)
 from lewlm.core.errors import ConversionError, IdempotencyConflictError, JobNotFoundError
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
@@ -69,7 +85,7 @@ class ConversionService:
         self.model_registry = model_registry
         self.metadata_store = metadata_store
         self.event_bus = event_bus
-        self.backend = backend or MLXConversionBackend()
+        self.backend = backend or AutoConversionBackend()
         self.audit_logger = audit_logger
         self.executor = ThreadPoolExecutor(
             max_workers=max(1, settings.conversion_worker_count),
@@ -130,6 +146,58 @@ class ConversionService:
             "cleared_idempotent_records": cleared_idempotent_records,
         }
 
+    def plan_targets(
+        self,
+        model_id: str,
+        *,
+        policy: ConversionPolicy = ConversionPolicy.BALANCED,
+        custom_bits: int | None = None,
+        quantization_profile=None,
+    ) -> ConversionTargetPlanningReport:
+        """Return non-executing conversion target options for one registered model."""
+
+        manifest = self.model_registry.get_manifest(model_id)
+        cache_key = self._build_cache_key(
+            manifest.fingerprint,
+            policy,
+            custom_bits,
+            quantization_profile,
+        )
+        output_path = self._output_path(cache_key)
+        targets = [
+            _target_from_compatibility_report(
+                target_id=_target_id_for_backend(backend.name),
+                report=backend.compatibility_report(
+                    manifest,
+                    settings=self.settings,
+                    policy=policy,
+                    custom_bits=custom_bits,
+                    quantization_profile=quantization_profile,
+                    cache_key=cache_key,
+                    output_path=output_path,
+                ),
+            )
+            for backend in _planning_backend_order(manifest)
+        ]
+        targets.append(_onnx_genai_planning_target(manifest, settings=self.settings))
+        default_target_id = _default_conversion_target_id(manifest, targets)
+        notes = [
+            "This is a read-only target plan. It does not queue conversion work or materialize artifacts.",
+            "Use `lewlm convert` without `--plan` or POST `/v1/lewlm/conversions` to queue an executable conversion.",
+        ]
+        if any(target.target_id == "onnx_genai" and target.state == "requires_install" for target in targets):
+            notes.append(
+                "ONNX Runtime GenAI HF-to-ONNX conversion is executable once the `onnx_genai` extra is installed on this host.",
+            )
+        return ConversionTargetPlanningReport(
+            model_id=manifest.model_id,
+            source_format=manifest.format_type,
+            conversion_status=manifest.conversion_status.value,
+            default_target_id=default_target_id,
+            targets=targets,
+            notes=notes,
+        )
+
     def submit(self, request: ConversionJobRequest) -> JobRecord:
         manifest = self.model_registry.get_manifest(request.model_id)
         cache_key = self._build_cache_key(
@@ -137,6 +205,7 @@ class ConversionService:
             request.policy,
             request.custom_bits,
             request.quantization_profile,
+            target_id=request.target_id,
         )
         replayed_job = self._lookup_idempotent_job(request, cache_key=cache_key)
         if replayed_job is not None:
@@ -153,14 +222,14 @@ class ConversionService:
             )
             return replayed_job
         output_path = self._output_path(cache_key)
-        compatibility = self.backend.compatibility_report(
+        compatibility, conversion_backend = self._compatibility_for_request(
             manifest,
-            settings=self.settings,
             policy=request.policy,
             custom_bits=request.custom_bits,
             quantization_profile=request.quantization_profile,
             cache_key=cache_key,
             output_path=output_path,
+            target_id=request.target_id,
         )
 
         if not request.force:
@@ -308,7 +377,7 @@ class ConversionService:
             EventType.REQUEST_QUEUED,
             {"job_id": job.job_id, "model_id": manifest.model_id, "cache_key": cache_key},
         )
-        self.executor.submit(self._run_job, job.job_id, manifest.model_id, request, compatibility)
+        self.executor.submit(self._run_job, job.job_id, manifest.model_id, request, compatibility, conversion_backend)
         return job
 
     def get_job(self, job_id: str) -> JobRecord:
@@ -348,12 +417,52 @@ class ConversionService:
             "cache_misses": self.metadata_store.get_counter("cache_misses"),
         }
 
+    def _compatibility_for_request(
+        self,
+        manifest: ModelManifest,
+        *,
+        policy: ConversionPolicy,
+        custom_bits: int | None,
+        quantization_profile,
+        cache_key: str,
+        output_path: Path,
+        target_id: str | None,
+    ) -> tuple[ConversionCompatibilityReport, ConversionBackend]:
+        backend = _backend_for_target_id(target_id) or self.backend
+        if target_id is not None and _backend_for_target_id(target_id) is None:
+            return (
+                ConversionCompatibilityReport(
+                    model_id=manifest.model_id,
+                    source_format=manifest.format_type,
+                    target_format=str(target_id),
+                    backend_name="unknown",
+                    can_convert=False,
+                    reason=f"Unknown conversion target `{target_id}`. Run `lewlm convert {manifest.model_id} --plan` to list supported targets.",
+                    cache_key=cache_key,
+                    output_path=str(output_path),
+                ),
+                backend,
+            )
+        return (
+            backend.compatibility_report(
+                manifest,
+                settings=self.settings,
+                policy=policy,
+                custom_bits=custom_bits,
+                quantization_profile=quantization_profile,
+                cache_key=cache_key,
+                output_path=output_path,
+            ),
+            backend,
+        )
+
     def _run_job(
         self,
         job_id: str,
         model_id: str,
         request: ConversionJobRequest,
         compatibility: ConversionCompatibilityReport,
+        conversion_backend: ConversionBackend,
     ) -> None:
         started = time.perf_counter()
         manifest = self.model_registry.get_manifest(model_id)
@@ -367,9 +476,10 @@ class ConversionService:
         sandboxed = self.settings.conversion_sandbox_enabled
         try:
             with secure_workspace(work_root, prefix="convert-") as temp_dir:
-                temp_output = temp_dir / "mlx-output"
+                temp_output = temp_dir / "conversion-output"
                 result = self._run_conversion_backend(
                     manifest,
+                    backend=conversion_backend,
                     policy=request.policy,
                     custom_bits=request.custom_bits,
                     quantization_profile=request.quantization_profile,
@@ -393,7 +503,7 @@ class ConversionService:
                     output_path=str(output_path),
                     policy=request.policy,
                     metadata={
-                        "backend_name": self.backend.name,
+                        "backend_name": conversion_backend.name,
                         "source_path": manifest.source_path,
                         "quantization_mode": compatibility.quantization_mode,
                         "quantization_profile": (
@@ -606,7 +716,7 @@ class ConversionService:
                 output_path=str(output_path),
                 policy=policy,
                 metadata={
-                    "backend_name": self.backend.name,
+                    "backend_name": compatibility.backend_name,
                     "source_path": manifest.source_path,
                     "quantization_mode": quantization_mode_from_profile(quantization_profile),
                     "quantization_profile": (
@@ -674,14 +784,16 @@ class ConversionService:
         self,
         manifest,
         *,
+        backend: ConversionBackend | None = None,
         policy: ConversionPolicy,
         custom_bits: int | None,
         quantization_profile,
         work_dir: Path,
         output_path: Path,
     ):
+        selected_backend = backend or self.backend
         if not self.settings.conversion_sandbox_enabled:
-            return self.backend.convert(
+            return selected_backend.convert(
                 manifest,
                 settings=self.settings,
                 policy=policy,
@@ -690,7 +802,7 @@ class ConversionService:
                 output_path=output_path,
                 work_dir=work_dir,
             )
-        backend_module, backend_qualname = backend_descriptor(self.backend)
+        backend_module, backend_qualname = backend_descriptor(selected_backend)
         return run_in_subprocess(
             run_isolated_conversion,
             operation="Conversion sandbox worker",
@@ -793,7 +905,7 @@ class ConversionService:
                 for plan in compatibility.artifact_plans
             ],
             metadata={
-                "backend_name": self.backend.name,
+                "backend_name": compatibility.backend_name,
                 "layered_output": compatibility.layered_output,
             },
         )
@@ -811,6 +923,11 @@ class ConversionService:
     ) -> None:
         if not output_path.is_dir():
             return
+        artifact_metadata = (
+            dict(compatibility.artifact_plans[0].metadata)
+            if len(compatibility.artifact_plans) == 1
+            else {}
+        )
         metadata = ConversionOutputMetadata(
             source_display_name=source_manifest.display_name,
             source_model_id=source_manifest.model_id,
@@ -818,8 +935,11 @@ class ConversionService:
             artifact_role=ModelArtifactRole.STANDALONE,
             artifact_family_id=compatibility.cache_key,
             metadata={
-                "backend_name": self.backend.name,
+                **artifact_metadata,
+                "backend_name": compatibility.backend_name,
                 "layered_output": compatibility.layered_output,
+                "quantization_mode": compatibility.quantization_mode,
+                "target_format": compatibility.target_format,
             },
         )
         (output_path / CONVERSION_OUTPUT_METADATA_FILENAME).write_text(
@@ -1021,10 +1141,12 @@ class ConversionService:
         policy: ConversionPolicy,
         custom_bits: int | None,
         quantization_profile,
+        target_id: str | None = None,
     ) -> str:
         digest = hashlib.sha256()
         digest.update(fingerprint.encode("utf-8"))
         digest.update(policy.value.encode("utf-8"))
+        digest.update(str(target_id or "").encode("utf-8"))
         digest.update(str(custom_bits or "").encode("utf-8"))
         digest.update(quantization_profile_cache_payload(quantization_profile).encode("utf-8"))
         return digest.hexdigest()
@@ -1036,3 +1158,175 @@ class ConversionService:
 
     def _emit_event(self, event_type: EventType, payload: dict[str, object]) -> None:
         self.event_bus.publish_threadsafe(StreamEvent(type=event_type, scope=EventScope.JOB, payload=payload))
+
+
+def _planning_backend_order(manifest: ModelManifest) -> tuple[ConversionBackend, ...]:
+    gguf_backend = LlamaCppConversionBackend()
+    mlx_backend = MLXConversionBackend()
+    if manifest.format_type == ModelFormat.MLX:
+        return (mlx_backend, gguf_backend)
+    if platform.system() == "Darwin" and platform.machine().casefold() == "arm64":
+        return (mlx_backend, gguf_backend)
+    return (gguf_backend, mlx_backend)
+
+
+def _backend_for_target_id(target_id: str | None) -> ConversionBackend | None:
+    normalized = _normalize_target_id(target_id)
+    if normalized is None:
+        return None
+    if normalized in {"gguf_llamacpp", "llamacpp", "llamacpp_gguf", "gguf"}:
+        return LlamaCppConversionBackend()
+    if normalized in {"mlx", "mlx_lm", "mlx_vlm"}:
+        return MLXConversionBackend()
+    if normalized in {"onnx", "onnx_genai", "onnx_genai_builder", "onnxruntime_genai"}:
+        return OnnxGenAIConversionBackend()
+    return None
+
+
+def _normalize_target_id(target_id: str | None) -> str | None:
+    if target_id is None:
+        return None
+    normalized = target_id.strip().casefold().replace("-", "_")
+    return normalized or None
+
+
+def _target_from_compatibility_report(
+    *,
+    target_id: str,
+    report: ConversionCompatibilityReport,
+) -> ConversionTarget:
+    provider = _provider_for_conversion_backend(report.backend_name)
+    runtime_affinity = _runtime_affinity_for_conversion_report(report)
+    return ConversionTarget(
+        target_id=target_id,
+        target_format=report.target_format,
+        runtime_provider=provider,
+        runtime_affinity=runtime_affinity,
+        backend_name=report.backend_name,
+        state=_conversion_target_state(report),
+        can_convert=report.can_convert,
+        already_runnable=report.already_runnable,
+        reason=report.reason,
+        support_path=RuntimeSupportPath.PACKAGED,
+        optimization_profiles=_optimization_profiles_for_target(target_id),
+        artifact_plans=[artifact.model_dump(mode="json") for artifact in report.artifact_plans],
+        notes=[*report.warnings],
+    )
+
+
+def _onnx_genai_planning_target(
+    manifest: ModelManifest,
+    *,
+    settings: LewLMSettings,
+) -> ConversionTarget:
+    backend = OnnxGenAIConversionBackend()
+    report = backend.compatibility_report(
+        manifest,
+        settings=settings,
+        policy=ConversionPolicy.BALANCED,
+        custom_bits=None,
+        quantization_profile=None,
+        cache_key="conversion-plan",
+        output_path=Path(manifest.source_path).parent / "onnx-genai",
+    )
+    available = backend.is_available()
+    if report.already_runnable:
+        state = "already_runnable"
+    elif report.can_convert:
+        state = "available"
+    elif not available and report.source_format == ModelFormat.HUGGINGFACE and ModelModality.TEXT in manifest.modality:
+        # Structurally convertible, but the onnxruntime-genai builder is not installed.
+        state = "requires_install"
+    else:
+        state = "unsupported"
+    notes = [
+        "Executable on this host once `onnxruntime-genai` is installed; precision follows the conversion policy "
+        "and the execution provider follows LEWLM_ONNX_GENAI_CONVERSION_EXECUTION_PROVIDER (cpu/cuda/dml).",
+    ]
+    if not available:
+        notes.append("Install the `onnx_genai` extra to enable executable HF-to-ONNX conversion on this host.")
+    return ConversionTarget(
+        target_id="onnx_genai",
+        target_format=ModelFormat.ONNX_GENAI.value,
+        runtime_provider=RuntimeProvider.ONNX_GENAI,
+        runtime_affinity=RuntimeAffinity.ONNX_GENAI,
+        backend_name=backend.name,
+        state=state,
+        can_convert=report.can_convert,
+        already_runnable=report.already_runnable,
+        reason=report.reason,
+        support_path=RuntimeSupportPath.PACKAGED,
+        optimization_profiles=["fp16", "int4", "fp32", "directml_auto"],
+        artifact_plans=[artifact.model_dump(mode="json") for artifact in report.artifact_plans],
+        notes=notes,
+    )
+
+
+def _default_conversion_target_id(manifest: ModelManifest, targets: list[ConversionTarget]) -> str | None:
+    if manifest.format_type == ModelFormat.GGUF:
+        return "gguf_llamacpp"
+    if manifest.format_type == ModelFormat.MLX:
+        return "mlx"
+    if manifest.format_type == ModelFormat.ONNX_GENAI:
+        return "onnx_genai"
+    for target in targets:
+        if target.can_convert:
+            return target.target_id
+    for target in targets:
+        if target.already_runnable:
+            return target.target_id
+    return None
+
+
+def _target_id_for_backend(backend_name: str) -> str:
+    if backend_name == "llamacpp_gguf":
+        return "gguf_llamacpp"
+    if backend_name in {"mlx_lm", "mlx_vlm"}:
+        return "mlx"
+    if backend_name in {"onnx_genai_builder", "onnx_genai_planned"}:
+        return "onnx_genai"
+    return backend_name
+
+
+def _provider_for_conversion_backend(backend_name: str) -> RuntimeProvider:
+    if backend_name == "llamacpp_gguf":
+        return RuntimeProvider.LLAMACPP
+    if backend_name in {"mlx_lm", "mlx_vlm"}:
+        return RuntimeProvider.MLX
+    if "onnx" in backend_name:
+        return RuntimeProvider.ONNX_GENAI
+    return RuntimeProvider.UNKNOWN
+
+
+def _runtime_affinity_for_conversion_report(report: ConversionCompatibilityReport) -> RuntimeAffinity | None:
+    for artifact in report.artifact_plans:
+        if artifact.runtime_affinity:
+            return artifact.runtime_affinity[0]
+    if report.backend_name == "llamacpp_gguf":
+        return RuntimeAffinity.LLAMACPP
+    if report.backend_name == "mlx_vlm":
+        return RuntimeAffinity.MLX_VISION
+    if report.backend_name == "mlx_lm":
+        return RuntimeAffinity.MLX_TEXT
+    return None
+
+
+def _conversion_target_state(report: ConversionCompatibilityReport) -> str:
+    if report.already_runnable:
+        return "already_runnable"
+    if report.can_convert:
+        return "available"
+    reason = report.reason.casefold()
+    if "missing" in reason or "not found" in reason or "install" in reason or "unavailable" in reason:
+        return "requires_install"
+    return "unsupported"
+
+
+def _optimization_profiles_for_target(target_id: str) -> list[str]:
+    if target_id == "gguf_llamacpp":
+        return ["q4_k_m", "q5_k_m", "q6_k", "q8_0", "f16"]
+    if target_id == "mlx":
+        return ["fp16", "int4_weight_only"]
+    if target_id == "onnx_genai":
+        return ["fp16", "int8", "int4", "directml_auto"]
+    return []

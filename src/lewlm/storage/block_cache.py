@@ -14,6 +14,9 @@ from lewlm.core.errors import StorageError
 from lewlm.storage.metadata import MetadataStore
 
 
+_BLOCK_CACHE_FILENAME_LENGTH = 20
+
+
 class BlockDiskCache:
     """Persist reusable JSON cache blocks on disk and index them in metadata storage."""
 
@@ -101,7 +104,7 @@ class BlockDiskCache:
         }
 
     def _block_path(self, *, cache_key: str, block_kind: str) -> Path:
-        return self.cache_root / block_kind / cache_key[:2] / f"{cache_key}.json"
+        return self.cache_root / block_kind / cache_key[:2] / f"{_compact_cache_filename(cache_key)}.json"
 
     def _record_hit(self, block_kind: str) -> None:
         self.metadata_store.increment_counter("block_cache_hits")
@@ -422,3 +425,9 @@ def _cache_key(payload: dict[str, Any], *, version: int) -> str:
     digest = hashlib.sha256()
     digest.update(serialized.encode("utf-8"))
     return digest.hexdigest()
+
+
+def _compact_cache_filename(cache_key: str) -> str:
+    if len(cache_key) <= _BLOCK_CACHE_FILENAME_LENGTH:
+        return cache_key
+    return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:_BLOCK_CACHE_FILENAME_LENGTH]

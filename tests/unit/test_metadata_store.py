@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lewlm.core.contracts import IdempotentOperationRecord
 from lewlm.security.persistence import PersistenceEncryptor
+from lewlm.storage.block_cache import BlockDiskCache
 from lewlm.storage.metadata import SCHEMA_VERSION, MetadataStore
 
 
@@ -28,6 +29,7 @@ def test_metadata_store_initializes_and_round_trips_values(tmp_path: Path) -> No
     assert snapshot["benchmark_record_count"] == 0
     assert snapshot["benchmark_artifact_count"] == 0
     assert snapshot["capability_probe_record_count"] == 0
+    assert snapshot["runtime_probe_record_count"] == 0
 
 
 def test_metadata_store_persists_benchmark_records(tmp_path: Path) -> None:
@@ -119,6 +121,45 @@ def test_metadata_store_persists_capability_probe_records(tmp_path: Path) -> Non
     assert records[0]["category"] == "batching"
     assert records[0]["probe_name"] == "continuous_batching"
     assert records[0]["runtime_name"] == "fake_llamacpp"
+
+
+def test_metadata_store_persists_runtime_probe_records(tmp_path: Path) -> None:
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    store.initialize()
+    host_platform = {
+        "system": "Windows",
+        "release": "11",
+        "machine": "AMD64",
+        "python_version": "3.12.0",
+    }
+
+    probe_key = store.upsert_runtime_probe_record(
+        model_id="demo-model",
+        capability="chat",
+        mode="generate",
+        host_platform=host_platform,
+        evidence={
+            "capability": "chat",
+            "state": "generate_passed",
+            "ownership": "backend_native",
+            "reason": "Generated successfully.",
+            "runtime_name": "fake_llamacpp",
+            "runtime_affinity": "llamacpp",
+            "provider": "llamacpp",
+            "model_id": "demo-model",
+            "source": "runtime_smoke_probe",
+            "details": {"mode": "generate"},
+        },
+        recorded_at="2024-01-01T00:00:00+00:00",
+    )
+
+    records = store.list_runtime_probe_records(host_platform=host_platform, model_id="demo-model")
+
+    assert store.runtime_probe_record_count(host_platform=host_platform) == 1
+    assert records[0]["probe_key"] == probe_key
+    assert records[0]["mode"] == "generate"
+    assert records[0]["evidence"]["state"] == "generate_passed"
+    assert records[0]["evidence"]["probe_key"] == probe_key
 
 
 def test_metadata_store_persists_serving_profiles(tmp_path: Path) -> None:
@@ -348,6 +389,40 @@ def test_metadata_store_persists_cache_blocks(tmp_path: Path) -> None:
     assert store.cache_block_count(block_kind="multimodal_feature") == 1
     assert store.cache_block_size_bytes() == 128
     assert store.cache_block_size_bytes(block_kind="multimodal_feature") == 128
+
+
+def test_block_disk_cache_keeps_deep_autotune_paths_windows_safe(tmp_path: Path) -> None:
+    store = MetadataStore(tmp_path / "metadata.sqlite3")
+    store.initialize()
+    deep_cache_root = (
+        tmp_path
+        / "state"
+        / "autotune-candidates"
+        / "8ba8496a2525"
+        / "tmp"
+        / "lewlm-benchmark-multimodal-frame_bundle-b_00n4rl"
+        / "cache"
+    )
+    cache = BlockDiskCache(cache_root=deep_cache_root, metadata_store=store)
+    cache_key = "54f1afdcb23854eeb17a6d00c6c61544c7f6d57a56beb5844ae8262c6f938962"
+
+    cache.put_json_block(
+        cache_key=cache_key,
+        block_kind="multimodal_encoder",
+        payload={"feature": "cached"},
+    )
+
+    record = store.get_cache_block(cache_key)
+    assert record is not None
+    block_path = cache.cache_root / str(record["storage_path"])
+    assert len(block_path.stem) <= 20
+    # Budget LewLM's path contribution against a realistic Windows data-dir root
+    # rather than pytest's deep temp prefix, so the MAX_PATH check is independent
+    # of the CI runner's temp directory depth.
+    realistic_windows_root_len = len(r"C:\Users\operator\.lewlm")
+    contributed_len = len(str(block_path)) - len(str(tmp_path))
+    assert realistic_windows_root_len + contributed_len < 260
+    assert cache.get_json_block(cache_key=cache_key, block_kind="multimodal_encoder") == {"feature": "cached"}
 
 
 def test_metadata_store_persists_idempotent_operation_results(tmp_path: Path) -> None:

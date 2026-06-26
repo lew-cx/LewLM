@@ -8,11 +8,15 @@ def test_pack_registry_reports_cross_platform_pack_descriptions(monkeypatch) -> 
 
     registry = PackRegistry()
     gguf = registry.report("llamacpp")
+    onnx = registry.report("onnx")
     external = registry.report("external_accelerator")
     documents = registry.report("documents")
 
     assert gguf.status == PackStatus.MISSING_DEPENDENCY
     assert "Cross-platform GGUF runtime pack" in gguf.description
+    assert onnx.name == "onnx_genai"
+    assert onnx.status == PackStatus.MISSING_DEPENDENCY
+    assert "ONNX Runtime GenAI" in onnx.description
     assert external.status == PackStatus.ACTIVE
     assert "loopback-only OpenAI-compatible local servers" in external.description
     assert documents.status == PackStatus.ACTIVE

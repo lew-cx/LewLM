@@ -19,6 +19,8 @@ def canonicalize_pack_name(name: str) -> str:
     normalized = name.strip().casefold().replace("-", "_")
     aliases = {
         "llama_cpp": "llamacpp",
+        "onnx": "onnx_genai",
+        "onnxruntime_genai": "onnx_genai",
     }
     return aliases.get(normalized, normalized)
 
@@ -86,6 +88,14 @@ _RUNTIME_PACK_DEFINITIONS: tuple[PackDefinition, ...] = (
         optional_dependency_group="llamacpp",
         required_modules=("llama_cpp",),
         runtime_affinities=(RuntimeAffinity.LLAMACPP,),
+    ),
+    PackDefinition(
+        name="onnx_genai",
+        kind=PackKind.RUNTIME,
+        description="Windows-native ONNX Runtime GenAI pack for CPU, DirectML, and CUDA-ready model bundles.",
+        optional_dependency_group="onnx_genai",
+        required_modules=("onnxruntime_genai",),
+        runtime_affinities=(RuntimeAffinity.ONNX_GENAI,),
     ),
     PackDefinition(
         name="external_accelerator",

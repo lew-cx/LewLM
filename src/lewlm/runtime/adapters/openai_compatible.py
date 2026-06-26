@@ -266,6 +266,66 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
             "Structured-output fallback remains available, but decoder-level constrained decoding does not cross the adapter boundary as a portable LewLM contract.",
         ),
     },
+    "tensorrt_llm_server": {
+        "continuous_batching": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "TensorRT-LLM-class local servers can preserve backend-native batching behind the OpenAI-compatible loopback boundary.",
+        ),
+        "prefix_cache": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "KV reuse may remain active upstream, but LewLM cannot inspect TensorRT-LLM cache residency through the adapter.",
+        ),
+        "paged_kv_cache": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "Paged KV-style residency can remain backend-native inside the TensorRT-LLM server.",
+        ),
+        "kv_cache_quantization": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Quantized or compressed KV behavior may remain active upstream, but LewLM cannot tune it per request through the bridge.",
+        ),
+        "prefill_optimization": (
+            PerformanceFeatureOwnership.BACKEND_NATIVE,
+            "TensorRT-LLM prefill optimizations can remain active inside the local server for compatible requests.",
+        ),
+        "speculative_decoding": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Speculative decoding controls are not preserved through the current OpenAI-compatible adapter contract.",
+        ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but portable decode-time constrained decoding is not claimed across this bridge.",
+        ),
+    },
+    "openvino_model_server": {
+        "continuous_batching": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "OpenVINO Model Server may batch requests upstream, but LewLM cannot own or inspect that scheduler through the adapter.",
+        ),
+        "prefix_cache": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Prefix-cache behavior is not part of the portable OpenVINO Model Server bridge contract today.",
+        ),
+        "paged_kv_cache": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Paged KV residency is not claimed through the OpenVINO Model Server bridge profile.",
+        ),
+        "kv_cache_quantization": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "KV cache quantization controls are not preserved through the current OpenAI-compatible adapter contract.",
+        ),
+        "prefill_optimization": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "CPU, GPU, or NPU graph/runtime optimizations may remain active upstream, but LewLM reports them as bridge-owned.",
+        ),
+        "speculative_decoding": (
+            PerformanceFeatureOwnership.UNSUPPORTED,
+            "Speculative decoding remains outside the OpenVINO bridge contract.",
+        ),
+        "constrained_decoding": (
+            PerformanceFeatureOwnership.PARTIAL,
+            "Structured-output fallback remains available, but decoder-level constraints are not claimed through this bridge.",
+        ),
+    },
 }
 _PROFILE_ALIASES = {
     "ollama_local": "openai_compatible",

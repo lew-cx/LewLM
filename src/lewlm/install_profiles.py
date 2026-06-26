@@ -21,6 +21,8 @@ _EXTERNAL_ACCELERATOR_PROFILE_NOTES = {
     "vllm_mlx": "vLLM-style bridge profile for a compatible local loopback server.",
     "vllm_local": "vLLM-style bridge profile for a compatible local loopback server.",
     "sglang_local": "SGLang-style bridge profile for a compatible local loopback server.",
+    "tensorrt_llm_server": "TensorRT-LLM bridge profile for a compatible local loopback server.",
+    "openvino_model_server": "OpenVINO Model Server bridge profile for a compatible local loopback server.",
     "ollama_local": "Ollama-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
     "llamacpp_server": "llama.cpp-server-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
 }
@@ -82,6 +84,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
 
     mlx_missing = _missing_modules(("mlx", "mlx_lm", "mlx_vlm", "mlx_audio"))
     gguf_missing = _missing_modules(("llama_cpp",))
+    onnx_genai_missing = _missing_modules(("onnxruntime_genai",))
     documents_missing = _missing_modules(("openpyxl", "PIL", "pytesseract", "pypdf", "docx", "reportlab", "weasyprint"))
     external_enabled = bool(getattr(settings, "external_accelerator_enabled", False))
     external_base_url = getattr(settings, "external_accelerator_base_url", None)
@@ -103,6 +106,10 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         summary_notes.append(
             "External accelerators remain the supported bridge path for compatible loopback-only local servers, including NVIDIA-oriented operators, and do not replace the packaged GGUF/llama.cpp default when it is available. Non-Apple audio transcription and speech still use this bridge path, while semantic GGUF models can stay packaged on the llama.cpp path.",
         )
+        if system == "Windows":
+            summary_notes.append(
+                "ONNX Runtime GenAI is tracked as LewLM's Windows-native DirectML/CUDA/CPU candidate path for already-prepared ONNX bundles; model-specific load and generation probes still decide evidence strength.",
+            )
     else:
         summary_notes.append(
             f"{host_label} is outside LewLM's documented local runtime host matrix; readiness notes below stay conservative on purpose.",
@@ -196,6 +203,34 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
                 *(
                     [f"Install `.[llamacpp]` for the documented local runtime path on {host_label}."]
                     if gguf_host_supported and gguf_missing
+                    else []
+                ),
+            ],
+        ),
+        InstallProfileStatus(
+            profile="onnx_genai_backend",
+            label="ONNX Runtime GenAI backend",
+            extras=["onnx_genai"],
+            install_spec=".[onnx_genai]",
+            installed=not onnx_genai_missing,
+            ready=system in {"Darwin", "Linux", "Windows"} and not onnx_genai_missing,
+            summary=(
+                "Packaged ONNX Runtime GenAI profile for already-prepared model bundles, with Windows-native CPU, DirectML, "
+                "and CUDA execution-provider planning metadata."
+            ),
+            notes=[
+                *(
+                    [
+                        "On Windows, this is the DirectML-native prepared-bundle route alongside the stable GGUF baseline.",
+                    ]
+                    if system == "Windows"
+                    else []
+                ),
+                "LewLM can load and generate from compatible ONNX GenAI bundles when the installed package exposes the expected Python API; per-model probes and benchmarks still upgrade evidence beyond package readiness.",
+                *([f"Missing Python modules: {', '.join(onnx_genai_missing)}"] if onnx_genai_missing else []),
+                *(
+                    ["Install `.[onnx_genai]` to prepare ONNX Runtime GenAI bundle probing on this host."]
+                    if onnx_genai_missing
                     else []
                 ),
             ],

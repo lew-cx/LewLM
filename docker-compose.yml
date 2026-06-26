@@ -1,0 +1,61 @@
+# LewLM via Docker Compose.
+#
+# CPU (default):
+#   docker compose up --build
+#
+# NVIDIA GPU:
+#   docker compose --profile gpu up --build lewlm-cuda
+#
+# Models + registry state persist in the named volume `lewlm-data` (mounted at
+# /data). To reuse models you already have on the host instead, replace the
+# volume with a bind mount, e.g.:  - "${HOME}/.lewlm:/data"
+
+services:
+  lewlm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: "llamacpp,documents"
+    image: lewlm:cpu
+    ports:
+      - "8080:8080"
+    environment:
+      LEWLM_HOST: "0.0.0.0"
+      LEWLM_PORT: "8080"
+      LEWLM_DATA_DIR: "/data"
+      # Uncomment to front a local OpenAI-compatible server (e.g. LM Studio on
+      # the host) via the external-accelerator bridge:
+      # LEWLM_EXTERNAL_ACCELERATOR_ENABLED: "true"
+      # LEWLM_EXTERNAL_ACCELERATOR_BASE_URL: "http://host.docker.internal:1234"
+    volumes:
+      - lewlm-data:/data
+    restart: unless-stopped
+
+  lewlm-cuda:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+      args:
+        EXTRAS: "llamacpp,documents"
+    image: lewlm:cuda
+    ports:
+      - "8080:8080"
+    environment:
+      LEWLM_HOST: "0.0.0.0"
+      LEWLM_PORT: "8080"
+      LEWLM_DATA_DIR: "/data"
+    volumes:
+      - lewlm-data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  lewlm-data:

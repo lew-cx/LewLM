@@ -19,6 +19,20 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | `POST` | `/v1/benchmarks/autotune` | serving-profile recommendation |
 | `GET` | `/v1/cluster/stats` | experimental cluster status |
 
+### LewLM middleware evidence
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/lewlm/capabilities` | host-level middleware capability evidence, runtime providers, and readiness |
+| `POST` | `/v1/lewlm/probes` | host/model routing probe, or opt-in model load/generation smoke probe |
+| `POST` | `/v1/lewlm/conversions/plan` | read-only conversion target planning without queueing a job |
+| `POST` | `/v1/lewlm/conversions` | conversion job alias in the LewLM namespace |
+| `GET` | `/v1/lewlm/conversions/{job_id}` | conversion job status alias in the LewLM namespace |
+| `POST` | `/v1/lewlm/benchmarks` | benchmark run through the LewLM namespace |
+| `GET` | `/v1/lewlm/models/{model_id}/artifacts` | artifact lineage, conversion artifacts, latest benchmark, and capability evidence |
+
+`POST /v1/lewlm/probes` defaults to `{"mode": "routing"}`, which does not load or generate from a model. Use `{"mode": "load", "model_id": "..."}` for runtime load evidence on any routeable capability, or `{"mode": "generate", "model_id": "...", "prompt": "...", "max_tokens": 1}` for chat-like generation evidence. Successful smoke probes return and persist `load_passed` or `generate_passed`; backend and policy failures return and persist `probe_failed` with the reason. Stored smoke evidence appears in `GET /v1/lewlm/models/{model_id}/artifacts.runtime_probe_records`.
+
 ### Models
 
 | Method | Path | Purpose |
@@ -166,7 +180,11 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/models/{model_id}/capabilities.runtime_candidates[].readiness_state`
 - `/v1/models/{model_id}/capabilities.capabilities[].support_path`
 - `/v1/models/{model_id}/capabilities.capabilities[].readiness_state`
+- `/v1/models/{model_id}/capabilities.capability_evidence[]`
 - `/v1/models/{model_id}/capabilities.measured_capabilities[]`
+- `/v1/lewlm/capabilities.capability_evidence[]`
+- `/v1/lewlm/capabilities.runtime_providers[]`
+- `/v1/lewlm/models/{model_id}/artifacts.capability_evidence[]`
 - `/v1/events` top-level `request_id`, `capability`, `operation`, `stage`, and `status`
 
 ## Guards and expectations
