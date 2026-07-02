@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -242,23 +243,81 @@ class ONNXGenAIRuntime(ManagedTextRuntime):
 
 
 def _provider_plan() -> list[dict[str, str]]:
-    return [
-        {
-            "provider": "directml",
-            "platform": "Windows",
-            "status": "requires_model_probe",
-        },
-        {
-            "provider": "cuda",
-            "platform": "Windows/Linux",
-            "status": "requires_model_probe",
-        },
-        {
-            "provider": "cpu",
-            "platform": "Windows/Linux/Darwin",
-            "status": "requires_model_probe",
-        },
-    ]
+    """Host-aware execution-provider plan with detection-backed statuses.
+
+    Statuses stay honest per host: `unsupported_on_host` when the provider does
+    not apply to the current system, `requires_install` when the GenAI package
+    is missing, `provider_detected` / `provider_not_detected` when the installed
+    ONNX Runtime exposes a queryable provider registry, and
+    `requires_model_probe` when no registry is available. Detection never
+    replaces model load/generate probes or benchmarks as capability evidence.
+    """
+
+    system = platform.system()
+    genai_installed = _module_importable("onnxruntime_genai")
+    available_providers = _detected_onnxruntime_providers()
+    plan: list[dict[str, str]] = []
+    for provider, systems, ort_name in (
+        ("directml", ("Windows",), "DmlExecutionProvider"),
+        ("cuda", ("Windows", "Linux"), "CUDAExecutionProvider"),
+        ("cpu", ("Windows", "Linux", "Darwin"), "CPUExecutionProvider"),
+    ):
+        platform_label = "/".join(systems)
+        if system not in systems:
+            status = "unsupported_on_host"
+            detail = f"`{provider}` planning applies to {platform_label} hosts; the current host is {system}."
+        elif not genai_installed:
+            status = "requires_install"
+            detail = "Install the `onnx_genai` extra before provider readiness can be probed on this host."
+        elif available_providers is None:
+            status = "requires_model_probe"
+            detail = (
+                "Installed packages do not expose a queryable execution-provider registry; "
+                "model load/generate probes decide evidence."
+            )
+        elif ort_name in available_providers:
+            status = "provider_detected"
+            detail = (
+                f"`{ort_name}` is reported available by the installed ONNX Runtime; "
+                "model load/generate probes and benchmarks still decide capability evidence."
+            )
+        else:
+            status = "provider_not_detected"
+            detail = f"`{ort_name}` is not reported by the installed ONNX Runtime provider registry."
+        plan.append(
+            {
+                "provider": provider,
+                "platform": platform_label,
+                "status": status,
+                "detail": detail,
+            },
+        )
+    return plan
+
+
+def _module_importable(module_name: str) -> bool:
+    try:
+        import_module(module_name)
+    except ImportError:
+        return False
+    return True
+
+
+def _detected_onnxruntime_providers() -> frozenset[str] | None:
+    """Query the installed ONNX Runtime provider registry when it exists."""
+
+    try:
+        onnxruntime = import_module("onnxruntime")
+    except ImportError:
+        return None
+    get_available_providers = getattr(onnxruntime, "get_available_providers", None)
+    if not callable(get_available_providers):
+        return None
+    try:
+        providers = get_available_providers()
+    except (OSError, RuntimeError):
+        return None
+    return frozenset(str(provider) for provider in providers)
 
 
 def _int_list(value: Any) -> list[int]:
