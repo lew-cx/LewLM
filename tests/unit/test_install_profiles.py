@@ -350,6 +350,46 @@ def test_install_profiles_describe_ollama_bridge_alias() -> None:
     assert any("Ollama-compatible bridge profile" in note for note in external.notes)
 
 
+def test_backend_inventory_reports_installed_versions_honestly(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Windows", machine="AMD64")
+    _stub_installed_modules(monkeypatch, installed={"llama_cpp"})
+    monkeypatch.setattr(
+        "lewlm.install_profiles._backend_distribution_version",
+        lambda distribution: "0.3.9" if distribution == "llama-cpp-python" else None,
+    )
+
+    summary = summarize_install_profiles()
+    inventory = {entry.module: entry for entry in summary.backend_inventory}
+
+    assert set(inventory) == {"mlx", "mlx_lm", "mlx_vlm", "mlx_audio", "llama_cpp", "onnxruntime_genai"}
+    assert inventory["llama_cpp"].profile == "gguf_fallback_backend"
+    assert inventory["llama_cpp"].installed is True
+    assert inventory["llama_cpp"].version == "0.3.9"
+    assert "still decide capability evidence" in inventory["llama_cpp"].detail
+    assert inventory["onnxruntime_genai"].installed is False
+    assert inventory["onnxruntime_genai"].version is None
+    assert "not importable" in inventory["onnxruntime_genai"].detail
+    assert inventory["mlx"].profile == "mlx_local_backend"
+    assert inventory["mlx"].installed is False
+
+
+def test_backend_inventory_keeps_version_claims_honest_without_metadata(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Linux", machine="x86_64")
+    _stub_installed_modules(monkeypatch, installed={"llama_cpp"})
+    monkeypatch.setattr(
+        "lewlm.install_profiles._backend_distribution_version",
+        lambda distribution: None,
+    )
+
+    summary = summarize_install_profiles()
+    llama_entry = next(entry for entry in summary.backend_inventory if entry.module == "llama_cpp")
+
+    assert llama_entry.installed is True
+    assert llama_entry.version is None
+    assert "no version metadata" in llama_entry.detail
+    assert "without a version claim" in llama_entry.detail
+
+
 def test_install_profile_docs_cover_cross_platform_matrix() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     docs_to_snippets = {
