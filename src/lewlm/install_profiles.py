@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from lewlm.core.contracts import RuntimeSupportPath, StandardsAcceptanceContract, build_standards_acceptance_contract
 from lewlm.documents.ingest.ocr import detect_ocr_backend
+from lewlm.runtime.llamacpp.build_flavor import LlamaCppBuildFlavor, detect_llamacpp_build_flavor
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _BACKEND_MODULE_DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
@@ -80,6 +81,7 @@ class InstallProfileSummary(BaseModel):
     )
     profiles: list[InstallProfileStatus] = Field(default_factory=list)
     backend_inventory: list[BackendModuleStatus] = Field(default_factory=list)
+    llamacpp_build: LlamaCppBuildFlavor | None = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -110,6 +112,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
     mlx_missing = _missing_modules(("mlx", "mlx_lm", "mlx_vlm", "mlx_audio"))
     gguf_missing = _missing_modules(("llama_cpp",))
     onnx_genai_missing = _missing_modules(("onnxruntime_genai",))
+    llamacpp_build = detect_llamacpp_build_flavor() if not gguf_missing else None
     documents_missing = _missing_modules(("openpyxl", "PIL", "pytesseract", "pypdf", "docx", "reportlab", "weasyprint"))
     external_enabled = bool(getattr(settings, "external_accelerator_enabled", False))
     external_base_url = getattr(settings, "external_accelerator_base_url", None)
@@ -230,6 +233,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
                     if gguf_host_supported and gguf_missing
                     else []
                 ),
+                *_llamacpp_build_notes(llamacpp_build, system=system),
             ],
         ),
         InstallProfileStatus(
@@ -312,6 +316,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         ),
         profiles=profiles,
         backend_inventory=_backend_module_inventory(),
+        llamacpp_build=llamacpp_build,
         notes=summary_notes,
     )
 
@@ -325,6 +330,32 @@ def _backend_distribution_version(distribution: str) -> str | None:
         return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def _llamacpp_build_notes(build: LlamaCppBuildFlavor | None, *, system: str) -> list[str]:
+    if build is None or not build.installed:
+        return []
+    notes: list[str] = []
+    if build.gpu_offload_supported is True:
+        hint_label = ", ".join(build.accelerator_hints) if build.accelerator_hints else "backend did not name a specific accelerator"
+        notes.append(
+            f"Installed llama.cpp build reports GPU offload support (heuristic accelerator hints: {hint_label}). "
+            "Hints are inventory evidence only; probes and benchmarks decide capability evidence.",
+        )
+    elif build.gpu_offload_supported is False:
+        notes.append(
+            "Installed llama.cpp build is CPU-only (no GPU offload support reported by the backend).",
+        )
+        if system in {"Linux", "Windows"}:
+            notes.append(
+                "For local GPU acceleration, install a llama-cpp-python build compiled with CUDA on NVIDIA hosts "
+                "or Vulkan as the vendor-neutral option; LewLM keeps reporting whatever the installed build actually exposes.",
+            )
+    else:
+        notes.append(
+            "Installed llama.cpp build did not report GPU offload support either way; see the build-flavor detection reason for details.",
+        )
+    return notes
 
 
 def _backend_module_inventory() -> list[BackendModuleStatus]:

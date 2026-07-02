@@ -17,6 +17,7 @@ from lewlm.core.contracts import (
 )
 from lewlm.documents.ingest.ocr import OcrBackendStatus
 from lewlm.install_profiles import FeaturePathRecommendation, InstallProfileSummary, summarize_install_profiles
+from lewlm.runtime.llamacpp.build_flavor import LlamaCppBuildFlavor
 from lewlm.telemetry.models import RuntimeSupportPathSummary
 
 
@@ -388,6 +389,66 @@ def test_backend_inventory_keeps_version_claims_honest_without_metadata(monkeypa
     assert llama_entry.version is None
     assert "no version metadata" in llama_entry.detail
     assert "without a version claim" in llama_entry.detail
+
+
+def test_install_profiles_surface_llamacpp_build_flavor_when_installed(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Windows", machine="AMD64")
+    _stub_installed_modules(monkeypatch, installed={"llama_cpp"})
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_llamacpp_build_flavor",
+        lambda: LlamaCppBuildFlavor(
+            installed=True,
+            gpu_offload_supported=True,
+            accelerator_hints=["cuda"],
+            system_info="AVX = 1 | CUDA = 1",
+            detection_state="detected",
+            reason="llama.cpp build flavor detected from the installed backend's own reporting APIs.",
+        ),
+    )
+
+    summary = summarize_install_profiles()
+    gguf = next(profile for profile in summary.profiles if profile.profile == "gguf_fallback_backend")
+
+    assert summary.llamacpp_build is not None
+    assert summary.llamacpp_build.accelerator_hints == ["cuda"]
+    assert any("GPU offload support" in note and "cuda" in note for note in gguf.notes)
+    assert any("probes and benchmarks decide capability evidence" in note for note in gguf.notes)
+
+
+def test_install_profiles_recommend_accelerated_build_for_cpu_only_llamacpp(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Linux", machine="x86_64")
+    _stub_installed_modules(monkeypatch, installed={"llama_cpp"})
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_llamacpp_build_flavor",
+        lambda: LlamaCppBuildFlavor(
+            installed=True,
+            gpu_offload_supported=False,
+            accelerator_hints=[],
+            system_info="AVX = 1 | CUDA = 0",
+            detection_state="detected",
+            reason="llama.cpp build flavor detected from the installed backend's own reporting APIs.",
+        ),
+    )
+
+    summary = summarize_install_profiles()
+    gguf = next(profile for profile in summary.profiles if profile.profile == "gguf_fallback_backend")
+
+    assert any("CPU-only" in note for note in gguf.notes)
+    assert any("Vulkan as the vendor-neutral option" in note for note in gguf.notes)
+
+
+def test_install_profiles_skip_build_flavor_detection_when_llamacpp_missing(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Windows", machine="AMD64")
+    _stub_installed_modules(monkeypatch, installed=set())
+
+    def _unexpected_detection() -> LlamaCppBuildFlavor:
+        raise AssertionError("build-flavor detection must not run when llama_cpp is missing")
+
+    monkeypatch.setattr("lewlm.install_profiles.detect_llamacpp_build_flavor", _unexpected_detection)
+
+    summary = summarize_install_profiles()
+
+    assert summary.llamacpp_build is None
 
 
 def test_install_profile_docs_cover_cross_platform_matrix() -> None:
