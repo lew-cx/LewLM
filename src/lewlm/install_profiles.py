@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import platform
 import shutil
@@ -14,6 +15,14 @@ from lewlm.core.contracts import RuntimeSupportPath, StandardsAcceptanceContract
 from lewlm.documents.ingest.ocr import detect_ocr_backend
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_BACKEND_MODULE_DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
+    ("mlx_local_backend", "mlx", "mlx"),
+    ("mlx_local_backend", "mlx_lm", "mlx-lm"),
+    ("mlx_local_backend", "mlx_vlm", "mlx-vlm"),
+    ("mlx_local_backend", "mlx_audio", "mlx-audio"),
+    ("gguf_fallback_backend", "llama_cpp", "llama-cpp-python"),
+    ("onnx_genai_backend", "onnxruntime_genai", "onnxruntime-genai"),
+)
 _EXTERNAL_ACCELERATOR_PROFILE_NOTES = {
     "openai_compatible": "Generic OpenAI-compatible bridge profile for a local loopback server.",
     "vmlx": "MLX-oriented bridge profile for a compatible local loopback server.",
@@ -45,6 +54,21 @@ class InstallProfileStatus(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class BackendModuleStatus(BaseModel):
+    """Installed-version evidence for one optional runtime backend module.
+
+    Version presence is inventory evidence only; capability claims still come from
+    runtime feature probes, load/generate probes, and benchmark records.
+    """
+
+    profile: str
+    module: str
+    distribution: str
+    installed: bool
+    version: str | None = None
+    detail: str
+
+
 class InstallProfileSummary(BaseModel):
     """Current host summary for LewLM's documented install profiles."""
 
@@ -55,6 +79,7 @@ class InstallProfileSummary(BaseModel):
         default_factory=build_standards_acceptance_contract,
     )
     profiles: list[InstallProfileStatus] = Field(default_factory=list)
+    backend_inventory: list[BackendModuleStatus] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -286,12 +311,55 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             gguf_host_supported=gguf_host_supported,
         ),
         profiles=profiles,
+        backend_inventory=_backend_module_inventory(),
         notes=summary_notes,
     )
 
 
 def _missing_modules(module_names: tuple[str, ...]) -> list[str]:
     return [module_name for module_name in module_names if importlib.util.find_spec(module_name) is None]
+
+
+def _backend_distribution_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _backend_module_inventory() -> list[BackendModuleStatus]:
+    """Report installed backend module versions without widening capability claims."""
+
+    inventory: list[BackendModuleStatus] = []
+    for profile, module_name, distribution in _BACKEND_MODULE_DISTRIBUTIONS:
+        installed = not _missing_modules((module_name,))
+        version = _backend_distribution_version(distribution) if installed else None
+        if not installed:
+            detail = (
+                f"`{module_name}` is not importable on this host; "
+                "backend version evidence stays unavailable until the matching extra is installed."
+            )
+        elif version is None:
+            detail = (
+                f"`{module_name}` is importable, but distribution `{distribution}` exposes no version metadata; "
+                "runtime feature probes must decide capability evidence without a version claim."
+            )
+        else:
+            detail = (
+                f"Detected `{distribution}` version {version}; "
+                "runtime feature probes and benchmarks still decide capability evidence."
+            )
+        inventory.append(
+            BackendModuleStatus(
+                profile=profile,
+                module=module_name,
+                distribution=distribution,
+                installed=installed,
+                version=version,
+                detail=detail,
+            ),
+        )
+    return inventory
 
 
 def _is_loopback_url(base_url: str | None) -> bool:

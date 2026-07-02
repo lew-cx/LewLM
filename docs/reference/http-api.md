@@ -163,6 +163,7 @@ For host applications, the main machine-readable readiness fields are:
 
 - `/v1/health.install_profiles.recommended_feature_paths[]`
 - `/v1/health.install_profiles.standards_acceptance_contract`
+- `/v1/health.install_profiles.backend_inventory[]` (installed backend module versions; inventory evidence only, never a capability claim)
 - `/v1/health.readiness`
 - `/v1/health.readiness.capabilities[].available_support_paths`
 - `/v1/health.readiness.capabilities[].bridge_only`
