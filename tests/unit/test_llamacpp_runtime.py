@@ -371,6 +371,121 @@ def test_llamacpp_runtime_applies_prefill_controls_and_surfaces_rejections(monke
     assert health["performance_features"]["kv_cache_quantization"]["ownership"] == "unsupported"
 
 
+class _KvCacheFakeLlama:
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        n_ctx: int,
+        verbose: bool,
+        type_k: int | None = None,
+        type_v: int | None = None,
+    ) -> None:
+        _KvCacheFakeLlama.captured_kwargs = {
+            "model_path": model_path,
+            "type_k": type_k,
+            "type_v": type_v,
+        }
+
+    captured_kwargs: dict[str, object] = {}
+
+    def create_chat_completion(self, **kwargs):
+        return {
+            "choices": [{"message": {"content": "quantized output"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        }
+
+    def tokenize(self, payload: bytes) -> list[int]:
+        return list(payload)
+
+    def detokenize(self, tokens: list[int]) -> bytes:
+        return bytes(tokens)
+
+
+def _kv_cache_fake_import(name: str):
+    if name == "llama_cpp":
+        return SimpleNamespace(Llama=_KvCacheFakeLlama, GGML_TYPE_Q8_0=8)
+    raise ImportError(name)
+
+
+def test_llamacpp_runtime_applies_kv_cache_quantization_when_bindings_expose_cache_types(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", _kv_cache_fake_import)
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", kv_cache_quantization_bits=8),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+    health = asyncio.run(runtime.health_check())
+
+    assert _KvCacheFakeLlama.captured_kwargs["type_k"] == 8
+    assert _KvCacheFakeLlama.captured_kwargs["type_v"] == 8
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_cache_quantization"]
+    assert controls["effective"] == "enabled"
+    assert controls["applied_parameters"] == ["type_k", "type_v"]
+    assert controls["effective_cache_type"] == "q8_0"
+    assert health["performance_features"]["kv_cache_quantization"]["supported"] is True
+    assert health["performance_features"]["kv_cache_quantization"]["ownership"] == "backend_native"
+    assert health["performance_features"]["kv_cache_quantization"]["active"] is True
+
+
+def test_llamacpp_runtime_rejects_unmapped_kv_cache_quantization_bits(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", _kv_cache_fake_import)
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", kv_cache_quantization_bits=6),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_cache_quantization"]
+    assert controls["effective"] == "rejected"
+    assert "6 bits has no stable mapping" in controls["reason"]
+    assert _KvCacheFakeLlama.captured_kwargs["type_k"] is None
+
+
+def test_llamacpp_runtime_rejects_kv_cache_quantization_without_cache_type_constant(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(Llama=_KvCacheFakeLlama)
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", fake_import)
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", kv_cache_quantization_bits=8),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_cache_quantization"]
+    assert controls["effective"] == "rejected"
+    assert "`GGML_TYPE_Q8_0`" in controls["reason"]
+
+
+def test_llamacpp_runtime_reports_kv_cache_quantization_available_when_disabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", _kv_cache_fake_import)
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", kv_cache_quantization_bits=None),
+    )
+
+    health = asyncio.run(runtime.health_check())
+
+    feature = health["performance_features"]["kv_cache_quantization"]
+    assert feature["supported"] is True
+    assert feature["ownership"] == "backend_native"
+    assert feature["active"] is False
+
+
 def test_llamacpp_runtime_normalizes_model_path_and_reports_runtime_load(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
