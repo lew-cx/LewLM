@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from lewlm.core.contracts import RuntimeSupportPath, StandardsAcceptanceContract, build_standards_acceptance_contract
 from lewlm.documents.ingest.ocr import detect_ocr_backend
+from lewlm.runtime.feature_probes import BackendFeatureProbe, probe_backend_features
 from lewlm.runtime.llamacpp.build_flavor import LlamaCppBuildFlavor, detect_llamacpp_build_flavor
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -81,6 +82,7 @@ class InstallProfileSummary(BaseModel):
     )
     profiles: list[InstallProfileStatus] = Field(default_factory=list)
     backend_inventory: list[BackendModuleStatus] = Field(default_factory=list)
+    backend_feature_probes: list[BackendFeatureProbe] = Field(default_factory=list)
     llamacpp_build: LlamaCppBuildFlavor | None = None
     notes: list[str] = Field(default_factory=list)
 
@@ -316,6 +318,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         ),
         profiles=profiles,
         backend_inventory=_backend_module_inventory(),
+        backend_feature_probes=probe_backend_features(),
         llamacpp_build=llamacpp_build,
         notes=summary_notes,
     )

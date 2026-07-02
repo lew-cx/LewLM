@@ -17,6 +17,7 @@ from lewlm.core.contracts import (
 )
 from lewlm.documents.ingest.ocr import OcrBackendStatus
 from lewlm.install_profiles import FeaturePathRecommendation, InstallProfileSummary, summarize_install_profiles
+from lewlm.runtime.feature_probes import BackendFeatureProbe
 from lewlm.runtime.llamacpp.build_flavor import LlamaCppBuildFlavor
 from lewlm.telemetry.models import RuntimeSupportPathSummary
 
@@ -449,6 +450,30 @@ def test_install_profiles_skip_build_flavor_detection_when_llamacpp_missing(monk
     summary = summarize_install_profiles()
 
     assert summary.llamacpp_build is None
+
+
+def test_install_profiles_surface_backend_feature_probes(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Windows", machine="AMD64")
+    _stub_installed_modules(monkeypatch, installed=set())
+    monkeypatch.setattr(
+        "lewlm.install_profiles.probe_backend_features",
+        lambda: [
+            BackendFeatureProbe(
+                profile="gguf_fallback_backend",
+                backend="llama_cpp",
+                feature="decode_time_grammar_enforcement",
+                present=True,
+                detail="`LlamaGrammar.from_string` and `.from_json_schema` are exposed for decode-time enforcement.",
+            ),
+        ],
+    )
+
+    summary = summarize_install_profiles()
+
+    assert len(summary.backend_feature_probes) == 1
+    probe = summary.backend_feature_probes[0]
+    assert probe.feature == "decode_time_grammar_enforcement"
+    assert probe.present is True
 
 
 def test_install_profile_docs_cover_cross_platform_matrix() -> None:
