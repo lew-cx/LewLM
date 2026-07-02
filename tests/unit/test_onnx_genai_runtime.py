@@ -70,6 +70,88 @@ async def test_onnx_genai_runtime_loads_generates_and_streams(monkeypatch, tmp_p
     assert "".join(chunks) == "Hello world"
 
 
+def _provider_status_map(report) -> dict[str, dict[str, str]]:
+    return {item["provider"]: item for item in report.metadata["planned_execution_providers"]}
+
+
+def test_provider_plan_reports_requires_install_on_windows_without_genai(monkeypatch, tmp_path: Path) -> None:
+    manifest = _onnx_manifest(tmp_path)
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.platform.system", lambda: "Windows")
+
+    def fake_import_module(module_name: str):
+        raise ImportError(module_name)
+
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.import_module", fake_import_module)
+
+    plan = _provider_status_map(ONNXGenAIRuntime().candidate_report(manifest))
+
+    assert plan["directml"]["status"] == "requires_install"
+    assert plan["cuda"]["status"] == "requires_install"
+    assert plan["cpu"]["status"] == "requires_install"
+    assert "onnx_genai" in plan["cpu"]["detail"]
+
+
+def test_provider_plan_marks_host_inapplicable_providers_on_darwin(monkeypatch, tmp_path: Path) -> None:
+    manifest = _onnx_manifest(tmp_path)
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.platform.system", lambda: "Darwin")
+
+    def fake_import_module(module_name: str):
+        raise ImportError(module_name)
+
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.import_module", fake_import_module)
+
+    plan = _provider_status_map(ONNXGenAIRuntime().candidate_report(manifest))
+
+    assert plan["directml"]["status"] == "unsupported_on_host"
+    assert plan["cuda"]["status"] == "unsupported_on_host"
+    assert "current host is Darwin" in plan["cuda"]["detail"]
+    assert plan["cpu"]["status"] == "requires_install"
+
+
+def test_provider_plan_uses_onnxruntime_registry_when_available(monkeypatch, tmp_path: Path) -> None:
+    manifest = _onnx_manifest(tmp_path)
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.platform.system", lambda: "Windows")
+    fake_onnxruntime = SimpleNamespace(
+        get_available_providers=lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    def fake_import_module(module_name: str):
+        if module_name == "onnxruntime_genai":
+            return _fake_onnx_module()
+        if module_name == "onnxruntime":
+            return fake_onnxruntime
+        raise ImportError(module_name)
+
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.import_module", fake_import_module)
+
+    plan = _provider_status_map(ONNXGenAIRuntime().candidate_report(manifest))
+
+    assert plan["directml"]["status"] == "provider_detected"
+    assert "still decide capability evidence" in plan["directml"]["detail"]
+    assert plan["cuda"]["status"] == "provider_not_detected"
+    assert "`CUDAExecutionProvider` is not reported" in plan["cuda"]["detail"]
+    assert plan["cpu"]["status"] == "provider_detected"
+
+
+def test_provider_plan_falls_back_to_model_probes_without_provider_registry(monkeypatch, tmp_path: Path) -> None:
+    manifest = _onnx_manifest(tmp_path)
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.platform.system", lambda: "Windows")
+
+    def fake_import_module(module_name: str):
+        if module_name == "onnxruntime_genai":
+            return _fake_onnx_module()
+        raise ImportError(module_name)
+
+    monkeypatch.setattr("lewlm.runtime.onnx_genai.runtime.import_module", fake_import_module)
+
+    plan = _provider_status_map(ONNXGenAIRuntime().candidate_report(manifest))
+
+    assert plan["directml"]["status"] == "requires_model_probe"
+    assert plan["cuda"]["status"] == "requires_model_probe"
+    assert plan["cpu"]["status"] == "requires_model_probe"
+    assert "model load/generate probes decide evidence" in plan["cpu"]["detail"]
+
+
 def _onnx_manifest(tmp_path: Path):
     bundle_dir = tmp_path / "phi-onnx"
     bundle_dir.mkdir()
