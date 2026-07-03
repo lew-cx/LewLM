@@ -88,6 +88,7 @@ class LewLMSettings(BaseSettings):
     kv_cache_page_size: int = 256
     kv_cache_max_pages: int | None = 64
     kv_cache_quantization_bits: int | None = 8
+    gpu_offload_layers: int | None = None
     prefill_token_batch_size: int = 512
     mlx_graph_compile_enabled: bool = False
     mlx_attention_kernel_mode: Literal["stock", "flash_attention", "custom_sdpa"] = "stock"
@@ -167,6 +168,8 @@ class LewLMSettings(BaseSettings):
             raise ValueError("kv_cache_max_pages must be at least 1 when set.")
         if self.kv_cache_quantization_bits is not None and self.kv_cache_quantization_bits < 1:
             raise ValueError("kv_cache_quantization_bits must be at least 1 when set.")
+        if self.gpu_offload_layers is not None and self.gpu_offload_layers < -1:
+            raise ValueError("gpu_offload_layers must be -1 (all layers) or a non-negative layer count when set.")
         if self.prefill_token_batch_size < 1:
             raise ValueError("prefill_token_batch_size must be at least 1.")
         if self.continuous_batch_window_milliseconds < 1:
@@ -376,6 +379,7 @@ class LewLMSettings(BaseSettings):
             "kv_cache_page_size": self.kv_cache_page_size,
             "kv_cache_max_pages": self.kv_cache_max_pages,
             "kv_cache_quantization_bits": self.kv_cache_quantization_bits,
+            "gpu_offload_layers": self.gpu_offload_layers,
             "prefill_token_batch_size": self.prefill_token_batch_size,
             "mlx_graph_compile_enabled": self.mlx_graph_compile_enabled,
             "mlx_attention_kernel_mode": self.mlx_attention_kernel_mode,
