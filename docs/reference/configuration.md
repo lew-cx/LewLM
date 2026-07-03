@@ -73,6 +73,7 @@ Built-in feature pack names: `documents`.
 | `LEWLM_KV_CACHE_PAGE_SIZE` | `256` | paged KV sizing |
 | `LEWLM_KV_CACHE_MAX_PAGES` | `64` | maximum KV pages |
 | `LEWLM_KV_CACHE_QUANTIZATION_BITS` | `8` | KV quantization |
+| `LEWLM_GPU_OFFLOAD_LAYERS` | unset | GPU layer offload for GGUF models (`-1` offloads all layers); applied only when the installed llama.cpp build reports GPU offload support |
 | `LEWLM_MLX_GRAPH_COMPILE_ENABLED` | `false` | MLX graph compile toggle |
 | `LEWLM_MLX_ATTENTION_KERNEL_MODE` | `stock` | MLX attention kernel mode |
 | `LEWLM_REASONING_VISIBILITY` | `hidden` | default reasoning surface |

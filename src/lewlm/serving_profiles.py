@@ -20,6 +20,7 @@ SERVING_PROFILE_SETTING_KEYS = (
     "kv_cache_page_size",
     "kv_cache_max_pages",
     "kv_cache_quantization_bits",
+    "gpu_offload_layers",
     "prefill_token_batch_size",
     "mlx_graph_compile_enabled",
     "mlx_attention_kernel_mode",
@@ -335,6 +336,10 @@ def _setting_rejection_reason(
         if _feature_supported(runtime_features, "kv_cache_quantization"):
             return None
         return f"Runtime `{runtime.name}` does not advertise KV-cache quantization support."
+    if key == "gpu_offload_layers":
+        if _feature_supported(runtime_features, "kv_offload"):
+            return None
+        return f"Runtime `{runtime.name}` does not advertise GPU/KV offload support on this host."
     if key == "prefill_token_batch_size":
         if _feature_supported(runtime_features, "prefill_optimization"):
             return None

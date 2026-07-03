@@ -486,6 +486,207 @@ def test_llamacpp_runtime_reports_kv_cache_quantization_available_when_disabled(
     assert feature["active"] is False
 
 
+class _OffloadFakeLlama:
+    captured_kwargs: dict[str, object] = {}
+
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        n_ctx: int,
+        verbose: bool,
+        n_gpu_layers: int | None = None,
+    ) -> None:
+        _OffloadFakeLlama.captured_kwargs = {
+            "model_path": model_path,
+            "n_gpu_layers": n_gpu_layers,
+        }
+
+    def create_chat_completion(self, **kwargs):
+        return {
+            "choices": [{"message": {"content": "offloaded output"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        }
+
+    def tokenize(self, payload: bytes) -> list[int]:
+        return list(payload)
+
+    def detokenize(self, tokens: list[int]) -> bytes:
+        return bytes(tokens)
+
+
+def _offload_fake_import(*, gpu_capable: bool):
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(
+                Llama=_OffloadFakeLlama,
+                llama_supports_gpu_offload=lambda: gpu_capable,
+            )
+        raise ImportError(name)
+
+    return fake_import
+
+
+def test_llamacpp_runtime_applies_gpu_offload_layers_on_gpu_capable_build(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        _offload_fake_import(gpu_capable=True),
+    )
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", gpu_offload_layers=-1),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+    health = asyncio.run(runtime.health_check())
+
+    assert _OffloadFakeLlama.captured_kwargs["n_gpu_layers"] == -1
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_offload"]
+    assert controls["effective"] == "enabled"
+    assert controls["applied_parameters"] == ["n_gpu_layers"]
+    assert "verified through `llama_supports_gpu_offload`" in controls["reason"]
+    feature = health["performance_features"]["kv_offload"]
+    assert feature["supported"] is True
+    assert feature["ownership"] == "backend_native"
+    assert feature["active"] is True
+
+
+def test_llamacpp_runtime_rejects_gpu_offload_layers_on_cpu_only_build(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        _offload_fake_import(gpu_capable=False),
+    )
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", gpu_offload_layers=20),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+    health = asyncio.run(runtime.health_check())
+
+    assert _OffloadFakeLlama.captured_kwargs["n_gpu_layers"] is None
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_offload"]
+    assert controls["effective"] == "rejected"
+    assert "CPU-only" in controls["reason"]
+    feature = health["performance_features"]["kv_offload"]
+    assert feature["supported"] is False
+    assert feature["ownership"] == "unsupported"
+
+
+def test_llamacpp_runtime_reports_kv_offload_available_when_disabled(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        _offload_fake_import(gpu_capable=True),
+    )
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", gpu_offload_layers=None),
+    )
+
+    health = asyncio.run(runtime.health_check())
+
+    feature = health["performance_features"]["kv_offload"]
+    assert feature["supported"] is True
+    assert feature["active"] is False
+
+
+def test_serving_profile_accepts_gpu_offload_layers_on_gpu_capable_build(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        _offload_fake_import(gpu_capable=True),
+    )
+    settings = LewLMSettings(data_dir=tmp_path / "state")
+    runtime = LlamaCppRuntime(settings=settings)
+    store = MetadataStore(settings.data_dir / "metadata.db")
+    store.initialize()
+    host_platform = {
+        "system": "Windows",
+        "release": "11",
+        "machine": "AMD64",
+        "python_version": "3.11.9",
+    }
+    store.upsert_serving_profile(
+        model_id="gguf-model",
+        capability="chat",
+        host_platform=host_platform,
+        runtime_name="llamacpp",
+        workload_class="text_only",
+        payload={
+            "profile_id": "offload-profile",
+            "model_id": "gguf-model",
+            "capability": "chat",
+            "workload_class": "text_only",
+            "runtime": "llamacpp",
+            "recommended_at": utc_now().isoformat(),
+            "reason": "Benchmarks preferred full GPU offload on this host.",
+            "settings_overrides": {"gpu_offload_layers": -1},
+        },
+    )
+
+    serving_profile = resolve_serving_profile_application(
+        settings=settings,
+        metadata_store=store,
+        host_platform=host_platform,
+        runtime=runtime,
+        model_id="gguf-model",
+        request_capability=CapabilityName.CHAT,
+        apply_serving_profile=True,
+        workload_class="text_only",
+    )
+
+    assert serving_profile.status == "selected"
+    assert serving_profile.accepted_settings["gpu_offload_layers"] == -1
+
+
+def test_serving_profile_rejects_gpu_offload_layers_on_cpu_only_build(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        _offload_fake_import(gpu_capable=False),
+    )
+    settings = LewLMSettings(data_dir=tmp_path / "state")
+    runtime = LlamaCppRuntime(settings=settings)
+    store = MetadataStore(settings.data_dir / "metadata.db")
+    store.initialize()
+    host_platform = {
+        "system": "Linux",
+        "release": "6.8",
+        "machine": "x86_64",
+        "python_version": "3.11.9",
+    }
+    store.upsert_serving_profile(
+        model_id="gguf-model",
+        capability="chat",
+        host_platform=host_platform,
+        runtime_name="llamacpp",
+        workload_class="text_only",
+        payload={
+            "profile_id": "offload-profile",
+            "model_id": "gguf-model",
+            "capability": "chat",
+            "workload_class": "text_only",
+            "runtime": "llamacpp",
+            "recommended_at": utc_now().isoformat(),
+            "reason": "Profile captured on a GPU host.",
+            "settings_overrides": {"gpu_offload_layers": -1},
+        },
+    )
+
+    serving_profile = resolve_serving_profile_application(
+        settings=settings,
+        metadata_store=store,
+        host_platform=host_platform,
+        runtime=runtime,
+        model_id="gguf-model",
+        request_capability=CapabilityName.CHAT,
+        apply_serving_profile=True,
+        workload_class="text_only",
+    )
+
+    assert serving_profile.status == "selected"
+    assert "gpu_offload_layers" not in serving_profile.accepted_settings
+    rejected = serving_profile.rejected_settings["gpu_offload_layers"]
+    assert "does not advertise GPU/KV offload support" in rejected.reason
+
+
 def test_llamacpp_runtime_normalizes_model_path_and_reports_runtime_load(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
