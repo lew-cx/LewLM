@@ -462,6 +462,16 @@ def _describe_types(expected_types: list[str]) -> str:
     return " or ".join(expected_types)
 
 
+def validate_value_against_json_schema(
+    *,
+    schema: dict[str, Any],
+    value: Any,
+) -> list[StructuredOutputIssue]:
+    """Validate a parsed JSON value against a JSON schema and return issues."""
+
+    return _validate_json_schema(schema=schema, value=value)
+
+
 __all__ = [
     "GrammarResponseFormat",
     "JSONSchemaResponseFormat",
@@ -473,4 +483,5 @@ __all__ = [
     "TextResponseFormat",
     "analyze_structured_output",
     "build_structured_output_request",
+    "validate_value_against_json_schema",
 ]
