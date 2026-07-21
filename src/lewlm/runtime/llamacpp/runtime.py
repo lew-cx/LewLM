@@ -47,6 +47,13 @@ from lewlm.structured_output import (
 
 _LLAMA_PREFILL_BATCH_PARAMETERS = ("n_batch", "batch_size", "prompt_batch_size")
 _LLAMA_PREFILL_UBATCH_PARAMETERS = ("n_ubatch", "ubatch_size", "prompt_ubatch_size")
+_LLAMA_KV_CACHE_TYPE_PARAMETERS = ("type_k", "type_v")
+_LLAMA_GPU_OFFLOAD_PARAMETER = "n_gpu_layers"
+_KV_CACHE_QUANTIZATION_TYPE_CONSTANTS: dict[int, tuple[str, str]] = {
+    16: ("GGML_TYPE_F16", "f16"),
+    8: ("GGML_TYPE_Q8_0", "q8_0"),
+    4: ("GGML_TYPE_Q4_0", "q4_0"),
+}
 _WINDOWS_REQUIRED_BUILD_TOOLS = ("cmake",)
 _WINDOWS_OPTIONAL_BUILD_TOOLS = ("ninja",)
 
@@ -133,7 +140,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
     async def _load_model(self, manifest: ModelManifest) -> None:
         llama_cpp = import_module("llama_cpp")
         llama_class = getattr(llama_cpp, "Llama")
-        load_options, control_snapshot = self._load_performance_controls(llama_class)
+        load_options, control_snapshot = self._load_performance_controls(llama_cpp, llama_class)
         effective_model_path = _normalized_model_path(manifest.source_path)
         prompt_lookup_surface = self._prompt_lookup_surface(llama_class)
         semantic_surface = self._semantic_embedding_surface(llama_class=llama_class)
@@ -342,10 +349,16 @@ class LlamaCppRuntime(ManagedTextRuntime):
         prefill_probe = self._prefill_control_payload(self._llama_parameter_names())
         prefill_controls = self._aggregate_control_entries("prefill_optimization") or [prefill_probe]
         paged_controls = self._aggregate_control_entries("paged_kv_cache")
-        quantization_controls = self._aggregate_control_entries("kv_cache_quantization")
+        quantization_controls = self._aggregate_control_entries("kv_cache_quantization") or [
+            self._kv_cache_quantization_probe_payload(),
+        ]
+        kv_offload_controls = self._aggregate_control_entries("kv_offload") or [
+            self._kv_offload_probe_payload(),
+        ]
         prefill_supported = any(bool(entry.get("supported")) for entry in prefill_controls)
         paged_supported = any(bool(entry.get("supported")) for entry in paged_controls)
         quantization_supported = any(bool(entry.get("supported")) for entry in quantization_controls)
+        kv_offload_supported = any(bool(entry.get("supported")) for entry in kv_offload_controls)
         return {
             "continuous_batching": runtime_performance_feature_report(
                 ownership=PerformanceFeatureOwnership.UNSUPPORTED,
@@ -400,7 +413,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
                     if quantization_supported
                     else PerformanceFeatureOwnership.UNSUPPORTED
                 ),
-                active=quantization_supported and self._prefill_request_count > 0,
+                active=any(entry.get("effective") == "enabled" for entry in quantization_controls),
                 reason=(
                     "Installed llama.cpp bindings expose a stable KV-cache quantization surface that LewLM can apply."
                     if quantization_supported
@@ -410,6 +423,25 @@ class LlamaCppRuntime(ManagedTextRuntime):
                     "requested_quantization_bits": self._settings.kv_cache_quantization_bits or 0,
                 },
                 notes=self._control_notes("kv_cache_quantization"),
+            ),
+            "kv_offload": runtime_performance_feature_report(
+                ownership=(
+                    PerformanceFeatureOwnership.BACKEND_NATIVE
+                    if kv_offload_supported
+                    else PerformanceFeatureOwnership.UNSUPPORTED
+                ),
+                active=any(entry.get("effective") == "enabled" for entry in kv_offload_controls),
+                reason=(
+                    "Installed llama.cpp bindings accept GGUF layer offload through `n_gpu_layers` on a GPU-offload-capable build."
+                    if kv_offload_supported
+                    else "LewLM does not currently apply GPU/KV offload through llama.cpp on this host; see control notes for the specific reason."
+                ),
+                metrics={
+                    "requested_gpu_offload_layers": self._settings.gpu_offload_layers
+                    if self._settings.gpu_offload_layers is not None
+                    else 0,
+                },
+                notes=self._control_notes("kv_offload"),
             ),
             "prefill_optimization": runtime_performance_feature_report(
                 ownership=(
@@ -725,11 +757,23 @@ class LlamaCppRuntime(ManagedTextRuntime):
             return None
         return _InstrumentedLlamaRamCache(cache_class=cache_class)
 
-    def _load_performance_controls(self, llama_class: type[Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    def _load_performance_controls(
+        self,
+        llama_cpp: Any,
+        llama_class: type[Any],
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
         parameter_names = _callable_parameter_names(llama_class)
         options, prefill_payload = self._prefill_control_configuration(parameter_names)
+        kv_quantization_options, kv_quantization_payload = self._kv_cache_quantization_configuration(
+            llama_cpp,
+            parameter_names,
+        )
+        options.update(kv_quantization_options)
+        kv_offload_options, kv_offload_payload = self._kv_offload_configuration(llama_cpp, parameter_names)
+        options.update(kv_offload_options)
         return options, {
             "prefill_optimization": prefill_payload,
+            "kv_offload": kv_offload_payload,
             "paged_kv_cache": _performance_control_payload(
                 requested=True,
                 supported=False,
@@ -739,17 +783,158 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 requested_page_size_tokens=self._settings.kv_cache_page_size,
                 requested_max_pages=self._settings.kv_cache_max_pages,
             ),
-            "kv_cache_quantization": _performance_control_payload(
+            "kv_cache_quantization": kv_quantization_payload,
+        }
+
+    def _kv_cache_quantization_configuration(
+        self,
+        llama_cpp: Any,
+        parameter_names: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        requested_bits = self._settings.kv_cache_quantization_bits
+        requested = requested_bits is not None
+        if not all(name in parameter_names for name in _LLAMA_KV_CACHE_TYPE_PARAMETERS):
+            return {}, _performance_control_payload(
+                requested=requested,
+                supported=False,
+                effective="rejected" if requested else "disabled",
+                reason="Installed llama.cpp bindings do not accept `type_k`/`type_v` KV cache-type controls.",
+                rejected_parameters=(("kv_cache_quantization_bits",) if requested else ()),
+                requested_quantization_bits=requested_bits,
+            )
+        if requested_bits is None:
+            return {}, _performance_control_payload(
+                requested=False,
+                supported=True,
+                effective="disabled",
+                reason=(
+                    "Installed llama.cpp bindings accept `type_k`/`type_v` KV cache-type controls; "
+                    "KV-cache quantization is not requested on this host."
+                ),
+            )
+        mapping = _KV_CACHE_QUANTIZATION_TYPE_CONSTANTS.get(requested_bits)
+        if mapping is None:
+            supported_bits = ", ".join(str(bits) for bits in sorted(_KV_CACHE_QUANTIZATION_TYPE_CONSTANTS))
+            return {}, _performance_control_payload(
+                requested=True,
+                supported=False,
+                effective="rejected",
+                reason=(
+                    f"LewLM maps KV-cache quantization onto llama.cpp cache types for {supported_bits} bits; "
+                    f"{requested_bits} bits has no stable mapping."
+                ),
+                rejected_parameters=("kv_cache_quantization_bits",),
+                requested_quantization_bits=requested_bits,
+            )
+        constant_name, cache_type_label = mapping
+        ggml_value = _resolve_ggml_constant(llama_cpp, constant_name)
+        if ggml_value is None:
+            return {}, _performance_control_payload(
+                requested=True,
+                supported=False,
+                effective="rejected",
+                reason=f"Installed llama.cpp bindings do not expose the `{constant_name}` cache-type constant.",
+                rejected_parameters=("kv_cache_quantization_bits",),
+                requested_quantization_bits=requested_bits,
+            )
+        options = {"type_k": ggml_value, "type_v": ggml_value}
+        return options, _performance_control_payload(
+            requested=True,
+            supported=True,
+            effective="enabled",
+            reason=(
+                f"LewLM applies llama.cpp KV-cache quantization by loading with `type_k`/`type_v` = `{cache_type_label}`."
+            ),
+            applied_parameters=_LLAMA_KV_CACHE_TYPE_PARAMETERS,
+            requested_quantization_bits=requested_bits,
+            effective_cache_type=cache_type_label,
+        )
+
+    def _kv_cache_quantization_probe_payload(self) -> dict[str, Any]:
+        if not self.is_available():
+            return _performance_control_payload(
                 requested=self._settings.kv_cache_quantization_bits is not None,
                 supported=False,
-                effective="rejected" if self._settings.kv_cache_quantization_bits is not None else "disabled",
+                effective="unavailable",
+                reason=self.availability_reason() or "llama-cpp-python is not installed or unavailable on this host.",
+            )
+        llama_cpp = import_module("llama_cpp")
+        llama_class = getattr(llama_cpp, "Llama", None)
+        parameter_names = _callable_parameter_names(llama_class) if callable(llama_class) else set()
+        _, payload = self._kv_cache_quantization_configuration(llama_cpp, parameter_names)
+        return payload
+
+    def _kv_offload_configuration(
+        self,
+        llama_cpp: Any,
+        parameter_names: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        requested_layers = self._settings.gpu_offload_layers
+        requested = requested_layers is not None
+        if _LLAMA_GPU_OFFLOAD_PARAMETER not in parameter_names:
+            return {}, _performance_control_payload(
+                requested=requested,
+                supported=False,
+                effective="rejected" if requested else "disabled",
+                reason=f"Installed llama.cpp bindings do not accept the `{_LLAMA_GPU_OFFLOAD_PARAMETER}` offload control.",
+                rejected_parameters=(("gpu_offload_layers",) if requested else ()),
+                requested_gpu_offload_layers=requested_layers,
+            )
+        gpu_offload_capable = _llamacpp_gpu_offload_capability(llama_cpp)
+        if gpu_offload_capable is False:
+            return {}, _performance_control_payload(
+                requested=requested,
+                supported=False,
+                effective="rejected" if requested else "disabled",
                 reason=(
-                    "LewLM does not currently apply KV-cache quantization through llama.cpp because the installed bindings do not expose a stable LewLM-supported type contract."
+                    "Installed llama.cpp build is CPU-only (no GPU offload support reported by the backend); "
+                    "layer offload would be a no-op, so LewLM rejects it explicitly."
                 ),
-                rejected_parameters=(("kv_cache_quantization_bits",) if self._settings.kv_cache_quantization_bits is not None else ()),
-                requested_quantization_bits=self._settings.kv_cache_quantization_bits,
+                rejected_parameters=(("gpu_offload_layers",) if requested else ()),
+                requested_gpu_offload_layers=requested_layers,
+            )
+        capability_note = (
+            "GPU offload capability was verified through `llama_supports_gpu_offload`."
+            if gpu_offload_capable is True
+            else "GPU offload capability could not be verified from the installed bindings; the backend decides at load time."
+        )
+        if requested_layers is None:
+            return {}, _performance_control_payload(
+                requested=False,
+                supported=True,
+                effective="disabled",
+                reason=(
+                    f"Installed llama.cpp bindings accept `{_LLAMA_GPU_OFFLOAD_PARAMETER}`; "
+                    f"GPU layer offload is not requested on this host. {capability_note}"
+                ),
+            )
+        options = {_LLAMA_GPU_OFFLOAD_PARAMETER: requested_layers}
+        return options, _performance_control_payload(
+            requested=True,
+            supported=True,
+            effective="enabled",
+            reason=(
+                f"LewLM applies GGUF layer offload by loading with `{_LLAMA_GPU_OFFLOAD_PARAMETER}` = {requested_layers}. "
+                f"{capability_note}"
             ),
-        }
+            applied_parameters=(_LLAMA_GPU_OFFLOAD_PARAMETER,),
+            requested_gpu_offload_layers=requested_layers,
+            effective_gpu_offload_layers=requested_layers,
+        )
+
+    def _kv_offload_probe_payload(self) -> dict[str, Any]:
+        if not self.is_available():
+            return _performance_control_payload(
+                requested=self._settings.gpu_offload_layers is not None,
+                supported=False,
+                effective="unavailable",
+                reason=self.availability_reason() or "llama-cpp-python is not installed or unavailable on this host.",
+            )
+        llama_cpp = import_module("llama_cpp")
+        llama_class = getattr(llama_cpp, "Llama", None)
+        parameter_names = _callable_parameter_names(llama_class) if callable(llama_class) else set()
+        _, payload = self._kv_offload_configuration(llama_cpp, parameter_names)
+        return payload
 
     def _prefill_control_supported(self) -> bool:
         return bool(self._prefill_control_payload(self._llama_parameter_names()).get("supported"))
@@ -1322,6 +1507,28 @@ def _performance_control_payload(
         if value is not None:
             payload[key] = value
     return payload
+
+
+def _resolve_ggml_constant(llama_cpp_module: Any, constant_name: str) -> int | None:
+    value = getattr(llama_cpp_module, constant_name, None)
+    if isinstance(value, int):
+        return value
+    try:
+        low_level_module = import_module("llama_cpp.llama_cpp")
+    except ImportError:
+        return None
+    value = getattr(low_level_module, constant_name, None)
+    return value if isinstance(value, int) else None
+
+
+def _llamacpp_gpu_offload_capability(llama_cpp_module: Any) -> bool | None:
+    supports_gpu_offload = getattr(llama_cpp_module, "llama_supports_gpu_offload", None)
+    if not callable(supports_gpu_offload):
+        return None
+    try:
+        return bool(supports_gpu_offload())
+    except (OSError, RuntimeError):
+        return None
 
 
 def _normalized_model_path(source_path: str | Path) -> str:
