@@ -25,7 +25,7 @@ from lewlm.core.contracts import (
     RuntimeReadinessState,
     runtime_support_path_for_affinity,
 )
-from lewlm.core.errors import RoutingError
+from lewlm.core.errors import ModelLifecycleConflictError, RoutingError
 from lewlm.pack_registry import PackRegistry
 from lewlm.runtime.llamacpp.runtime import LlamaCppRuntime
 from lewlm.runtime.experimental import DistributedClusterService, DistributedExperimentalRuntime, FrontierExperimentalRuntime
@@ -45,9 +45,12 @@ class RuntimeCatalog:
         runtimes: Mapping[RuntimeAffinity, RuntimeContract],
         *,
         pack_registry: PackRegistry | None = None,
+        backend_feature_probes_enabled: bool = False,
     ) -> None:
         self._runtimes = dict(runtimes)
         self._pack_registry = pack_registry
+        self._backend_feature_probes_enabled = backend_feature_probes_enabled
+        self.model_residency_manager = None
 
     @property
     def pack_registry(self) -> PackRegistry | None:
@@ -102,7 +105,7 @@ class RuntimeCatalog:
         self,
         manifest: ModelManifest,
         *,
-        capability: CapabilityName,
+        capability: CapabilityName | None,
         request_modality: RequestModality | None = None,
     ) -> tuple[list[RuntimeContract], list[str]]:
         alternatives: list[str] = []
@@ -162,14 +165,37 @@ class RuntimeCatalog:
             compatible.append(runtime)
         return compatible, alternatives
 
+    def select_lifecycle_runtime(
+        self,
+        manifest: ModelManifest,
+        *,
+        runtime_name: str | None = None,
+    ) -> RuntimeContract:
+        """Select an available manifest-compatible runtime without requiring an inference capability."""
+
+        compatible, alternatives = self.compatible_runtimes(manifest, capability=None)
+        if runtime_name is not None:
+            compatible = [runtime for runtime in compatible if runtime.name == runtime_name]
+        if compatible:
+            loaded = [runtime for runtime in compatible if runtime.is_model_loaded(manifest.model_id)]
+            return loaded[0] if loaded else compatible[0]
+        raise RoutingError(
+            "No compatible runtime is currently available for the selected model lifecycle operation.",
+            details={
+                "model_id": manifest.model_id,
+                "requested_runtime": runtime_name,
+                "alternatives": alternatives,
+            },
+        )
+
     async def warm_model(self, manifest: ModelManifest) -> RuntimeContract:
-        runtime = self.select_runtime(manifest, capability=CapabilityName.CHAT)
+        runtime = self.select_lifecycle_runtime(manifest)
         await runtime.load_model(manifest)
         await runtime.warm_model(manifest.model_id)
         return runtime
 
     async def unload_model(self, manifest: ModelManifest) -> RuntimeContract:
-        runtime = self.select_runtime(manifest, capability=CapabilityName.CHAT)
+        runtime = self.select_lifecycle_runtime(manifest)
         await runtime.unload_model(manifest.model_id)
         return runtime
 
@@ -298,19 +324,28 @@ class RuntimeCatalog:
         return reports
 
     async def health_snapshot(self) -> list[dict[str, object]]:
-        return [await runtime.health_check() for runtime in self._runtimes.values()]
+        snapshots: list[dict[str, object]] = []
+        for runtime in self._runtimes.values():
+            if self._should_probe_runtime(runtime):
+                snapshots.append(await runtime.health_check())
+                continue
+            lightweight_health_check = getattr(runtime, "lightweight_health_check", None)
+            snapshots.append(
+                await lightweight_health_check()
+                if callable(lightweight_health_check)
+                else await runtime.health_check()
+            )
+        return snapshots
 
     def performance_snapshot(self) -> list[dict[str, object]]:
         return [
             {
                 "name": runtime.name,
                 "available": runtime.is_available(),
-                "supported_capabilities": sorted(
-                    capability.value
-                    for capability in CapabilityName
-                    if runtime.supports_capability(capability)
+                "supported_capabilities": self._supported_capability_names(runtime),
+                "performance_features": (
+                    performance_features := self.performance_features_for(runtime)
                 ),
-                "performance_features": (performance_features := runtime.performance_feature_snapshot()),
                 "performance_core_evidence": [
                     record.model_dump(mode="json")
                     for record in build_portable_performance_core_evidence(
@@ -321,6 +356,37 @@ class RuntimeCatalog:
             }
             for runtime in self._runtimes.values()
         ]
+
+    def _supported_capability_names(self, runtime: RuntimeContract) -> list[str]:
+        if self._should_probe_runtime(runtime):
+            capabilities = (
+                capability
+                for capability in CapabilityName
+                if runtime.supports_capability(capability)
+            )
+        else:
+            capabilities = getattr(runtime, "supported_capabilities", ())
+        return sorted(capability.value for capability in capabilities)
+
+    def performance_features_for(self, runtime: RuntimeContract) -> dict[str, object]:
+        """Return feature details without importing an idle native MLX backend."""
+
+        return runtime.performance_feature_snapshot() if self._should_probe_runtime(runtime) else {}
+
+    def _should_probe_runtime(self, runtime: RuntimeContract) -> bool:
+        module_name = type(runtime).__module__
+        imports_native_mlx = module_name.startswith(
+            (
+                "lewlm.runtime.mlx_text.",
+                "lewlm.runtime.mlx_vision.",
+                "lewlm.runtime.mlx_audio.",
+            ),
+        )
+        return (
+            self._backend_feature_probes_enabled
+            or bool(runtime.loaded_model_ids)
+            or not imports_native_mlx
+        )
 
     async def unload_all_models(self) -> None:
         for runtime in self._runtimes.values():
@@ -555,14 +621,25 @@ class RuntimeCatalog:
         policy: Literal["keep_warm", "balanced", "aggressive_unload"],
     ) -> None:
         if policy == "aggressive_unload":
-            await runtime.unload_model(manifest.model_id)
+            if self.model_residency_manager is not None:
+                await self.model_residency_manager.unload(runtime, manifest)
+            else:
+                await runtime.unload_model(manifest.model_id)
             return
         if policy != "balanced":
             return
         for loaded_manifest in runtime.loaded_manifests():
             if loaded_manifest.model_id == manifest.model_id:
                 continue
-            await runtime.unload_model(loaded_manifest.model_id)
+            if self.model_residency_manager is None:
+                await runtime.unload_model(loaded_manifest.model_id)
+                continue
+            try:
+                await self.model_residency_manager.unload(runtime, loaded_manifest)
+            except ModelLifecycleConflictError:
+                # Balanced cleanup is opportunistic and must never interrupt a
+                # model leased by another application request.
+                continue
 
     def _manifest_supports_target(
         self,
@@ -743,9 +820,11 @@ def _runtime_candidate_readiness_state(
 
 def _required_runtime_capabilities(
     *,
-    capability: CapabilityName,
+    capability: CapabilityName | None,
     request_modality: RequestModality | None,
 ) -> tuple[CapabilityName, ...]:
+    if capability is None:
+        return ()
     required = [capability]
     if capability in {CapabilityName.CHAT, CapabilityName.STREAMING} and request_modality in {
         RequestModality.IMAGE_CONDITIONED,
@@ -774,7 +853,10 @@ def build_default_runtime_catalog(
         ),
         RuntimeAffinity.EXTERNAL_ACCELERATOR: lambda: LocalOpenAICompatibleAdapterRuntime(settings=settings),
         RuntimeAffinity.MLX_TEXT: lambda: MLXTextRuntime(settings=settings),
-        RuntimeAffinity.MLX_AUDIO: lambda: MLXAudioRuntime(multimodal_encoder_cache=multimodal_encoder_cache),
+        RuntimeAffinity.MLX_AUDIO: lambda: MLXAudioRuntime(
+            settings=settings,
+            multimodal_encoder_cache=multimodal_encoder_cache,
+        ),
         RuntimeAffinity.MLX_VISION: lambda: MLXVisionRuntime(
             settings=settings,
             multimodal_encoder_cache=multimodal_encoder_cache,
@@ -801,4 +883,8 @@ def build_default_runtime_catalog(
             if hasattr(runtime, "_multimodal_encoder_cache"):
                 setattr(runtime, "_multimodal_encoder_cache", multimodal_encoder_cache)
             runtimes[affinity] = runtime
-    return RuntimeCatalog(runtimes, pack_registry=resolved_pack_registry)
+    return RuntimeCatalog(
+        runtimes,
+        pack_registry=resolved_pack_registry,
+        backend_feature_probes_enabled=settings.backend_feature_probes_enabled,
+    )

@@ -15,6 +15,7 @@ import shutil
 from typing import Any
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.runtime.sampling import attach_sampling_report, resolve_sampling_controls
 from lewlm.core.contracts import (
     CapabilityName,
     EmbeddingRequest,
@@ -48,12 +49,16 @@ from lewlm.structured_output import (
 _LLAMA_PREFILL_BATCH_PARAMETERS = ("n_batch", "batch_size", "prompt_batch_size")
 _LLAMA_PREFILL_UBATCH_PARAMETERS = ("n_ubatch", "ubatch_size", "prompt_ubatch_size")
 _LLAMA_KV_CACHE_TYPE_PARAMETERS = ("type_k", "type_v")
+_LLAMA_FLASH_ATTENTION_PARAMETER = "flash_attn"
 _LLAMA_GPU_OFFLOAD_PARAMETER = "n_gpu_layers"
 _KV_CACHE_QUANTIZATION_TYPE_CONSTANTS: dict[int, tuple[str, str]] = {
     16: ("GGML_TYPE_F16", "f16"),
     8: ("GGML_TYPE_Q8_0", "q8_0"),
     4: ("GGML_TYPE_Q4_0", "q4_0"),
 }
+# llama.cpp only accepts a non-F16 KV cache when flash attention is enabled;
+# requesting a quantized `type_k`/`type_v` without it fails the model load.
+_KV_CACHE_QUANTIZATION_UNQUANTIZED_BITS = 16
 _WINDOWS_REQUIRED_BUILD_TOOLS = ("cmake",)
 _WINDOWS_OPTIONAL_BUILD_TOOLS = ("ninja",)
 
@@ -208,6 +213,19 @@ class LlamaCppRuntime(ManagedTextRuntime):
         self._model_performance_controls.pop(model_id, None)
         self._model_load_reports.pop(model_id, None)
 
+    def _sampling_options(self, request: GenerateRequest, client) -> dict:
+        """Map requested sampling controls onto this llama.cpp build."""
+
+        available = _callable_parameter_names(getattr(client, "create_chat_completion", None))
+        options, report = resolve_sampling_controls(
+            request.sampling,
+            runtime_name=self.name,
+            family="llamacpp",
+            available_parameters=available,
+        )
+        attach_sampling_report(request.metadata, report)
+        return options
+
     async def _generate(self, request: GenerateRequest) -> GenerateResponse:
         self._validate_speculation_request(request)
         client = self._clients[request.model_id]
@@ -217,11 +235,13 @@ class LlamaCppRuntime(ManagedTextRuntime):
         request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
         prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
         structured_output_options = self._structured_output_options(request=request, client=client)
+        sampling_options = self._sampling_options(request, client)
         response = client.create_chat_completion(
             messages=[{"role": message.role, "content": message.content} for message in request.messages],
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             stream=False,
+            **sampling_options,
             **structured_output_options,
         )
         self._record_prefix_cache_request(
@@ -838,16 +858,44 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 requested_quantization_bits=requested_bits,
             )
         options = {"type_k": ggml_value, "type_v": ggml_value}
+        applied_parameters = _LLAMA_KV_CACHE_TYPE_PARAMETERS
+        quantized = requested_bits != _KV_CACHE_QUANTIZATION_UNQUANTIZED_BITS
+        if quantized:
+            # A quantized KV cache without flash attention makes llama.cpp
+            # reject the load outright, so refuse the control instead of
+            # emitting a combination that cannot load.
+            if _LLAMA_FLASH_ATTENTION_PARAMETER not in parameter_names:
+                return {}, _performance_control_payload(
+                    requested=True,
+                    supported=False,
+                    effective="rejected",
+                    reason=(
+                        f"llama.cpp requires flash attention for the `{cache_type_label}` KV cache, and the installed "
+                        f"bindings do not accept a `{_LLAMA_FLASH_ATTENTION_PARAMETER}` control. LewLM left the KV "
+                        "cache unquantized so the model can load."
+                    ),
+                    rejected_parameters=("kv_cache_quantization_bits",),
+                    requested_quantization_bits=requested_bits,
+                )
+            options[_LLAMA_FLASH_ATTENTION_PARAMETER] = True
+            applied_parameters = (*applied_parameters, _LLAMA_FLASH_ATTENTION_PARAMETER)
+        reason = (
+            f"LewLM applies llama.cpp KV-cache quantization by loading with `type_k`/`type_v` = `{cache_type_label}`."
+        )
+        if quantized:
+            reason = (
+                f"{reason[:-1]} and enables `{_LLAMA_FLASH_ATTENTION_PARAMETER}`, which llama.cpp requires for a "
+                "non-F16 KV cache."
+            )
         return options, _performance_control_payload(
             requested=True,
             supported=True,
             effective="enabled",
-            reason=(
-                f"LewLM applies llama.cpp KV-cache quantization by loading with `type_k`/`type_v` = `{cache_type_label}`."
-            ),
-            applied_parameters=_LLAMA_KV_CACHE_TYPE_PARAMETERS,
+            reason=reason,
+            applied_parameters=applied_parameters,
             requested_quantization_bits=requested_bits,
             effective_cache_type=cache_type_label,
+            flash_attention_enabled=quantized,
         )
 
     def _kv_cache_quantization_probe_payload(self) -> dict[str, Any]:

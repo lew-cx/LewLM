@@ -19,6 +19,7 @@ from lewlm.registry.discovery import (
     _build_converted_model_id,
     _build_model_id,
     _fingerprint_path,
+    _infer_architecture_from_name,
     _infer_modalities,
     _infer_quantization,
     _infer_runtime_affinity,
@@ -84,6 +85,11 @@ def test_fingerprint_path_is_stable_until_bundle_contents_change(tmp_path: Path)
 def test_quantization_inference_prefers_filename_then_config_bits() -> None:
     assert _infer_quantization("llama-3-q4_k_m.gguf") == "q4_k_m"
     assert _infer_quantization("gemma-mlx", {"quantization": {"bits": 8}}) == "int8"
+
+
+def test_gemma4_gguf_name_preserves_architecture_generation() -> None:
+    assert _infer_architecture_from_name("Gemma-4-E4B-hauhau_agg.Q8_K_P") == "gemma4"
+    assert _infer_architecture_from_name("gemma-2-9b-it-q4_k_m") == "gemma"
 
 
 def test_modality_and_runtime_inference_cover_vision_and_audio_paths(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from importlib import import_module
+from importlib.util import find_spec
 import inspect
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 import wave
 
+from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
     AudioSpeechRequest,
     AudioSpeechResponse,
@@ -67,8 +69,14 @@ class MLXAudioRuntime(ManagedAudioRuntime):
     supported_machines = ("arm64", "aarch64")
     platform_guidance = "Install the `mlx` extra on Apple Silicon macOS to enable MLX-native audio inference."
 
-    def __init__(self, *, multimodal_encoder_cache: MultimodalEncoderCache | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: LewLMSettings | None = None,
+        multimodal_encoder_cache: MultimodalEncoderCache | None = None,
+    ) -> None:
         super().__init__()
+        self.settings = settings or LewLMSettings()
         self._clients: dict[str, _AudioClientState] = {}
         self._multimodal_encoder_cache = multimodal_encoder_cache
         self._encoder_cache_request_count = 0
@@ -104,15 +112,27 @@ class MLXAudioRuntime(ManagedAudioRuntime):
         }
 
     def _check_environment(self) -> tuple[bool, str | None]:
+        if self.loaded_model_ids:
+            return True, None
+        if self.settings.backend_feature_probes_enabled:
+            try:
+                import_module("mlx_audio")
+            except ImportError:
+                return False, "mlx-audio is not installed"
+            return True, None
         try:
-            import_module("mlx_audio")
-        except ImportError:
+            spec = find_spec("mlx_audio")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
             return False, "mlx-audio is not installed"
         return True, None
 
     def supports_capability(self, capability: CapabilityName) -> bool:
         if not super().supports_capability(capability):
             return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
+            return self.is_available()
         module = import_module("mlx_audio")
         if capability == CapabilityName.AUDIO_TRANSCRIPTION:
             return _has_audio_transcription_support(module)

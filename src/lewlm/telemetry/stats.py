@@ -9,6 +9,7 @@ import io
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 from statistics import fmean
@@ -201,6 +202,8 @@ class TelemetryService:
         multimodal_orchestrator: MultimodalOrchestrator,
         cluster_service: Any | None = None,
         service_factory: Callable[[LewLMSettings], Any] | None = None,
+        runtime_instance: Any | None = None,
+        model_residency_manager: Any | None = None,
     ) -> None:
         self.settings = settings
         self.metadata_store = metadata_store
@@ -217,6 +220,8 @@ class TelemetryService:
         self.multimodal_orchestrator = multimodal_orchestrator
         self.cluster_service = cluster_service
         self.service_factory = service_factory
+        self.runtime_instance = runtime_instance
+        self.model_residency_manager = model_residency_manager
 
     def cache_stats(self) -> CacheStats:
         conversion_stats = self.conversion_service.cache_stats()
@@ -271,7 +276,17 @@ class TelemetryService:
         cache_stats = self.cache_stats()
         optimization_defaults = self.optimization_defaults(manifests=manifests)
         measured_registry = self.measured_capability_registry(manifests=manifests)
+        residencies = (
+            await self.model_residency_manager.list_residencies()
+            if self.model_residency_manager is not None
+            else []
+        )
+        runtime_instance = self.runtime_instance
         return RuntimeStats(
+            runtime_instance_id=(runtime_instance.runtime_instance_id if runtime_instance is not None else "legacy"),
+            started_at=(runtime_instance.started_at if runtime_instance is not None else utc_now()),
+            process_id=(runtime_instance.process_id if runtime_instance is not None else 0),
+            hostname=(runtime_instance.hostname if runtime_instance is not None else "unknown"),
             platform=self.runtime_catalog.host_platform_snapshot(),
             readiness=self.model_router.capability_readiness_summary(),
             runtime_policy=self.settings.runtime_policy,
@@ -281,6 +296,7 @@ class TelemetryService:
             queue_depth=self.conversion_service.queue_depth(),
             active_jobs=self.conversion_service.active_job_count(),
             current_loaded_models=loaded_models,
+            residencies=residencies,
             runtime_packs=(
                 self.runtime_catalog.pack_registry.runtime_pack_reports()
                 if self.runtime_catalog.pack_registry is not None
@@ -983,7 +999,7 @@ class TelemetryService:
             ),
             max_tokens=32,
         )
-        runtime_features = runtime.performance_feature_snapshot()
+        runtime_features = self.runtime_catalog.performance_features_for(runtime)
         compatible_runtimes, compatibility_alternatives = self.runtime_catalog.compatible_runtimes(
             manifest,
             capability=CapabilityName.CHAT,
@@ -3829,14 +3845,22 @@ class TelemetryService:
         total_start = time.perf_counter()
         load_start = time.perf_counter()
         load_admission = None
-        if not runtime.is_model_loaded(manifest.model_id) or any(
-            not runtime.is_model_loaded(companion_manifest.model_id)
-            for companion_manifest in companion_manifests
-        ):
-            load_admission = await self.model_load_scheduler.acquire()
-        await runtime.load_model(manifest)
-        for companion_manifest in companion_manifests:
-            await runtime.load_model(companion_manifest)
+        residency_stack = None
+        if self.model_residency_manager is not None:
+            residency_stack = await self._acquire_benchmark_residencies(
+                runtime=runtime,
+                manifest=manifest,
+                companion_manifests=companion_manifests,
+            )
+        else:
+            if not runtime.is_model_loaded(manifest.model_id) or any(
+                not runtime.is_model_loaded(companion_manifest.model_id)
+                for companion_manifest in companion_manifests
+            ):
+                load_admission = await self.model_load_scheduler.acquire()
+            await runtime.load_model(manifest)
+            for companion_manifest in companion_manifests:
+                await runtime.load_model(companion_manifest)
         await self.runtime_catalog.prepare_runtime_for_request(
             manifest,
             runtime,
@@ -3848,6 +3872,8 @@ class TelemetryService:
             response = await invoke()
             generate_seconds = time.perf_counter() - generate_start
         finally:
+            if residency_stack is not None:
+                await residency_stack.aclose()
             await self.runtime_catalog.finalize_runtime_for_request(
                 manifest,
                 runtime,
@@ -3855,7 +3881,10 @@ class TelemetryService:
             )
             if self.settings.runtime_policy == "aggressive_unload":
                 for companion_manifest in companion_manifests:
-                    await runtime.unload_model(companion_manifest.model_id)
+                    if self.model_residency_manager is not None:
+                        await self.model_residency_manager.unload(runtime, companion_manifest)
+                    else:
+                        await runtime.unload_model(companion_manifest.model_id)
             if load_admission is not None:
                 load_admission.release()
         total_seconds = time.perf_counter() - total_start
@@ -3872,14 +3901,22 @@ class TelemetryService:
         total_start = time.perf_counter()
         load_start = time.perf_counter()
         load_admission = None
-        if not runtime.is_model_loaded(manifest.model_id) or any(
-            not runtime.is_model_loaded(companion_manifest.model_id)
-            for companion_manifest in companion_manifests
-        ):
-            load_admission = await self.model_load_scheduler.acquire()
-        await runtime.load_model(manifest)
-        for companion_manifest in companion_manifests:
-            await runtime.load_model(companion_manifest)
+        residency_stack = None
+        if self.model_residency_manager is not None:
+            residency_stack = await self._acquire_benchmark_residencies(
+                runtime=runtime,
+                manifest=manifest,
+                companion_manifests=companion_manifests,
+            )
+        else:
+            if not runtime.is_model_loaded(manifest.model_id) or any(
+                not runtime.is_model_loaded(companion_manifest.model_id)
+                for companion_manifest in companion_manifests
+            ):
+                load_admission = await self.model_load_scheduler.acquire()
+            await runtime.load_model(manifest)
+            for companion_manifest in companion_manifests:
+                await runtime.load_model(companion_manifest)
         await self.runtime_catalog.prepare_runtime_for_request(
             manifest,
             runtime,
@@ -3894,6 +3931,8 @@ class TelemetryService:
                     ttft_seconds = round(time.perf_counter() - total_start, 4)
                 output_chunks.append(delta)
         finally:
+            if residency_stack is not None:
+                await residency_stack.aclose()
             await self.runtime_catalog.finalize_runtime_for_request(
                 manifest,
                 runtime,
@@ -3901,7 +3940,10 @@ class TelemetryService:
             )
             if self.settings.runtime_policy == "aggressive_unload":
                 for companion_manifest in companion_manifests:
-                    await runtime.unload_model(companion_manifest.model_id)
+                    if self.model_residency_manager is not None:
+                        await self.model_residency_manager.unload(runtime, companion_manifest)
+                    else:
+                        await runtime.unload_model(companion_manifest.model_id)
             if load_admission is not None:
                 load_admission.release()
         return {
@@ -3910,6 +3952,30 @@ class TelemetryService:
             "ttft_seconds": ttft_seconds if ttft_seconds is not None else 0.0,
             "output_text": "".join(output_chunks),
         }
+
+    async def _acquire_benchmark_residencies(
+        self,
+        *,
+        runtime: RuntimeContract,
+        manifest: ModelManifest,
+        companion_manifests: tuple[ModelManifest, ...],
+    ) -> AsyncExitStack:
+        """Lease benchmark models through this container's residency authority."""
+
+        manager = self.model_residency_manager
+        if manager is None:
+            raise RuntimeError("Model residency management is not configured.")
+        stack = AsyncExitStack()
+        try:
+            await stack.enter_async_context(manager.acquire(runtime, manifest, capability="benchmark"))
+            for companion_manifest in companion_manifests:
+                await stack.enter_async_context(
+                    manager.acquire(runtime, companion_manifest, capability="benchmark"),
+                )
+        except BaseException:
+            await stack.aclose()
+            raise
+        return stack
 
     def _benchmark_candidate_model_ids(self, *, capability: str) -> list[str]:
         candidate_model_ids: list[str] = []

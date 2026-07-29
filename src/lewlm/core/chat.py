@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
@@ -22,6 +22,7 @@ from lewlm.core.chat_metrics import (
     _request_cache_measurements,
     _request_scheduling_measurements,
     _structured_output_result,
+    _tool_call_result,
 )
 from lewlm.core.chat_streams import (
     _content_stream,
@@ -38,6 +39,8 @@ from lewlm.core.citations import (
     resolve_generated_citations,
 )
 from lewlm.core.contracts import (
+    SamplingControlReport,
+    SamplingControls,
     CapabilityName,
     GenerateMessage,
     GenerateRequest,
@@ -81,6 +84,8 @@ from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace, PromptCompiler, PromptOverrideRecord
 from lewlm.routing.service import ModelRouter
 from lewlm.runtime.catalog import RuntimeCatalog
+from lewlm.runtime.request_context import application_id_var, client_instance_id_var
+from lewlm.runtime.residency import ModelResidencyManager
 from lewlm.runtime.scheduler import (
     FrontierBatchMetrics,
     FrontierBatchScheduler,
@@ -101,6 +106,7 @@ from lewlm.structured_output import (
     build_structured_output_request,
 )
 from lewlm.telemetry.runtime_metrics import RuntimeMetricsRecorder
+from lewlm.tool_calls import ToolCallParseResult
 
 
 @dataclass(slots=True)
@@ -115,6 +121,7 @@ class ChatExecution:
     request_metadata: dict[str, object]
     metadata: ExecutionMetadata
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
     serving_profile: ServingProfileApplication | None = None
 
 
@@ -127,6 +134,10 @@ class ChatStreamSession:
     model_id: str
     routing: RoutingDecision
     prompt_trace: PromptCompilationTrace
+    #: The trace is always compiled; this records whether the caller asked to
+    #: see it, so a stream can attach it to its terminal chunk the way a
+    #: non-streaming response attaches it to the body.
+    prompt_trace_requested: bool
     reasoning_visibility: ReasoningVisibility
     request: GenerateRequest
     stream: AsyncIterator[str]
@@ -136,7 +147,13 @@ class ChatStreamSession:
     request_metadata: dict[str, object] | None = None
     metadata: ExecutionMetadata | None = None
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
     serving_profile: ServingProfileApplication | None = None
+    #: Token accounting for the completed stream. Only knowable once every
+    #: delta has been produced, so it is attached to the final chunk.
+    usage: dict[str, int] = field(default_factory=dict)
+    #: False when the backend exposed no tokenizer and counts were estimated.
+    usage_measured: bool = True
 
 
 @dataclass(slots=True)
@@ -151,6 +168,8 @@ class ChatStreamDelta:
 class _ChatInvocationContext:
     request_id: str
     created_at: int
+    application_id: str | None
+    client_instance_id: str | None
     requested_model_id: str | None
     manifest: ModelManifest
     runtime: RuntimeContract
@@ -189,6 +208,7 @@ class ChatOrchestrator:
         runtime_metrics_recorder: RuntimeMetricsRecorder,
         metadata_store: MetadataStore | None = None,
         service_factory: Any | None = None,
+        model_residency_manager: ModelResidencyManager | None = None,
     ) -> None:
         self.model_router = model_router
         self.event_bus = event_bus
@@ -201,6 +221,8 @@ class ChatOrchestrator:
         self.runtime_metrics_recorder = runtime_metrics_recorder
         self.metadata_store = metadata_store
         self.service_factory = service_factory
+        self.model_residency_manager = model_residency_manager
+        self._request_identities: dict[str, tuple[str | None, str | None]] = {}
         self.serving_core = ServingCore()
         self._complete_batch_scheduler: FrontierBatchScheduler[_ChatInvocationContext, ChatExecution] = (
             FrontierBatchScheduler(
@@ -265,6 +287,7 @@ class ChatOrchestrator:
         citation_context: CitationContextPackage | None = None,
         max_tokens: int,
         temperature: float,
+        sampling: SamplingControls | None = None,
         reasoning_visibility: ReasoningVisibility = ReasoningVisibility.HIDDEN,
         prompt_request: PromptCompilationRequest | None = None,
         allowed_prompt_file_roots: Sequence[Path | str] | None = None,
@@ -299,6 +322,7 @@ class ChatOrchestrator:
                 citation_context=citation_context,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                sampling=sampling,
                 reasoning_visibility=reasoning_visibility,
                 prompt_request=prompt_request,
                 allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -310,6 +334,7 @@ class ChatOrchestrator:
             citation_context=citation_context,
             max_tokens=max_tokens,
             temperature=temperature,
+            sampling=sampling,
             reasoning_visibility=reasoning_visibility,
             prompt_request=prompt_request,
             allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -334,6 +359,7 @@ class ChatOrchestrator:
         citation_context: CitationContextPackage | None = None,
         max_tokens: int,
         temperature: float,
+        sampling: SamplingControls | None = None,
         reasoning_visibility: ReasoningVisibility = ReasoningVisibility.HIDDEN,
         prompt_request: PromptCompilationRequest | None = None,
         allowed_prompt_file_roots: Sequence[Path | str] | None = None,
@@ -368,6 +394,7 @@ class ChatOrchestrator:
                 citation_context=citation_context,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                sampling=sampling,
                 reasoning_visibility=reasoning_visibility,
                 prompt_request=prompt_request,
                 allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -379,6 +406,7 @@ class ChatOrchestrator:
             citation_context=citation_context,
             max_tokens=max_tokens,
             temperature=temperature,
+            sampling=sampling,
             reasoning_visibility=reasoning_visibility,
             prompt_request=prompt_request,
             allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -403,6 +431,7 @@ class ChatOrchestrator:
         citation_context: CitationContextPackage | None,
         max_tokens: int,
         temperature: float,
+        sampling: SamplingControls | None,
         reasoning_visibility: ReasoningVisibility,
         prompt_request: PromptCompilationRequest | None,
         allowed_prompt_file_roots: Sequence[Path | str] | None,
@@ -470,6 +499,7 @@ class ChatOrchestrator:
             messages=compiled_messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            sampling=sampling,
             reasoning_visibility=reasoning_visibility,
             speculation=planned_speculation.request if planned_speculation is not None else None,
             structured_output=structured_output_request,
@@ -578,9 +608,14 @@ class ChatOrchestrator:
             chunk_count=prefill_chunk_count_estimate,
         )
         self._sync_serving_request_metadata(request)
+        application_id = application_id_var.get()
+        client_instance_id = client_instance_id_var.get()
+        self._request_identities[request_id] = (application_id, client_instance_id)
         return _ChatInvocationContext(
             request_id=request_id,
             created_at=created_at,
+            application_id=application_id,
+            client_instance_id=client_instance_id,
             requested_model_id=model_id,
             manifest=manifest,
             runtime=runtime,
@@ -639,6 +674,7 @@ class ChatOrchestrator:
         citation_context: CitationContextPackage | None,
         max_tokens: int,
         temperature: float,
+        sampling: SamplingControls | None,
         reasoning_visibility: ReasoningVisibility,
         prompt_request: PromptCompilationRequest | None,
         allowed_prompt_file_roots: Sequence[Path | str] | None,
@@ -653,6 +689,7 @@ class ChatOrchestrator:
                 citation_context=citation_context,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                sampling=sampling,
                 reasoning_visibility=reasoning_visibility,
                 prompt_request=prompt_request,
                 allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -670,6 +707,7 @@ class ChatOrchestrator:
         citation_context: CitationContextPackage | None,
         max_tokens: int,
         temperature: float,
+        sampling: SamplingControls | None,
         reasoning_visibility: ReasoningVisibility,
         prompt_request: PromptCompilationRequest | None,
         allowed_prompt_file_roots: Sequence[Path | str] | None,
@@ -684,6 +722,7 @@ class ChatOrchestrator:
                 citation_context=citation_context,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                sampling=sampling,
                 reasoning_visibility=reasoning_visibility,
                 prompt_request=prompt_request,
                 allowed_prompt_file_roots=allowed_prompt_file_roots,
@@ -1101,15 +1140,10 @@ class ChatOrchestrator:
             **batch_payload,
         )
         load_admission: RuntimeRequestAdmission | None = None
+        residency_lease = None
+        residency_lease_entered = False
         try:
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission(
-                request=context.request,
-                request_id=context.request_id,
-                requested_model_id=context.requested_model_id,
-                manifest=context.manifest,
-                runtime=context.runtime,
-            )
             self._record_serving_phase(
                 request=context.request,
                 phase=ServingPhase.MODEL_LOADING,
@@ -1119,9 +1153,28 @@ class ChatOrchestrator:
                 EventType.MODEL_LOADING,
                 {"request_id": context.request_id, "model_id": context.manifest.model_id, "runtime": context.runtime.name},
             )
-            await context.runtime.load_model(context.manifest)
+            if self.model_residency_manager is not None:
+                residency_lease = await self._acquire_model_residency(
+                    context.runtime,
+                    context.manifest,
+                    companion_manifests=context.companion_manifests,
+                    request_id=context.request_id,
+                    capability=CapabilityName.CHAT.value,
+                    application_id=context.application_id,
+                )
+                residency_lease_entered = True
+            else:
+                load_admission = await self._acquire_model_load_admission(
+                    request=context.request,
+                    request_id=context.request_id,
+                    requested_model_id=context.requested_model_id,
+                    manifest=context.manifest,
+                    runtime=context.runtime,
+                )
+                await context.runtime.load_model(context.manifest)
             for companion_manifest in context.companion_manifests:
-                await context.runtime.load_model(companion_manifest)
+                if self.model_residency_manager is None:
+                    await context.runtime.load_model(companion_manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 context.manifest,
                 context.runtime,
@@ -1251,6 +1304,7 @@ class ChatOrchestrator:
                 request_metadata=dict(context.request.metadata),
                 metadata=response_metadata,
                 structured_output=_structured_output_result(context.request, context.prompt_trace, response.output_text),
+                tool_calls=_tool_call_result(context.prompt_trace, response.output_text),
                 serving_profile=self._serving_profile_from_metadata(context.request.metadata),
             )
         except Exception as exc:
@@ -1283,6 +1337,8 @@ class ChatOrchestrator:
             )
             raise
         finally:
+            if residency_lease is not None and residency_lease_entered:
+                await residency_lease.__aexit__(None, None, None)
             if load_admission is not None:
                 load_admission.release()
             admission.release()
@@ -1384,15 +1440,9 @@ class ChatOrchestrator:
                 **scheduler_payload,
             )
         load_admission: RuntimeRequestAdmission | None = None
+        residency_leases: list[AsyncExitStack] = []
         try:
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission(
-                request=contexts[0].request,
-                request_id=contexts[0].request_id,
-                requested_model_id=contexts[0].requested_model_id,
-                manifest=manifest,
-                runtime=runtime,
-            )
             for context, frontier_metrics in batch_payloads:
                 scheduler_payload = self._request_scheduling_payload(context.request)
                 self._record_serving_phase(
@@ -1410,9 +1460,30 @@ class ChatOrchestrator:
                         **scheduler_payload,
                     },
                 )
-            await runtime.load_model(manifest)
+            if self.model_residency_manager is not None:
+                for context in contexts:
+                    residency_leases.append(
+                        await self._acquire_model_residency(
+                            runtime,
+                            manifest,
+                            companion_manifests=context.companion_manifests,
+                            request_id=context.request_id,
+                            capability=CapabilityName.CHAT.value,
+                            application_id=context.application_id,
+                        ),
+                    )
+            else:
+                load_admission = await self._acquire_model_load_admission(
+                    request=contexts[0].request,
+                    request_id=contexts[0].request_id,
+                    requested_model_id=contexts[0].requested_model_id,
+                    manifest=manifest,
+                    runtime=runtime,
+                )
+                await runtime.load_model(manifest)
             for companion_manifest in self._unique_companion_manifests(contexts):
-                await runtime.load_model(companion_manifest)
+                if self.model_residency_manager is None:
+                    await runtime.load_model(companion_manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 manifest,
                 runtime,
@@ -1564,6 +1635,7 @@ class ChatOrchestrator:
                         request_metadata=dict(context.request.metadata),
                         metadata=response_metadata,
                         structured_output=_structured_output_result(context.request, context.prompt_trace, response.output_text),
+                        tool_calls=_tool_call_result(context.prompt_trace, response.output_text),
                         serving_profile=self._serving_profile_from_metadata(context.request.metadata),
                     ),
                 )
@@ -1601,6 +1673,8 @@ class ChatOrchestrator:
                 )
             raise
         finally:
+            for residency_lease in reversed(residency_leases):
+                await residency_lease.aclose()
             if load_admission is not None:
                 load_admission.release()
             admission.release()
@@ -1694,15 +1768,10 @@ class ChatOrchestrator:
             **batch_payload,
         )
         load_admission: RuntimeRequestAdmission | None = None
+        residency_lease = None
+        residency_lease_entered = False
         try:
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission(
-                request=context.request,
-                request_id=context.request_id,
-                requested_model_id=context.requested_model_id,
-                manifest=context.manifest,
-                runtime=context.runtime,
-            )
             self._record_serving_phase(
                 request=context.request,
                 phase=ServingPhase.MODEL_LOADING,
@@ -1712,9 +1781,28 @@ class ChatOrchestrator:
                 EventType.MODEL_LOADING,
                 {"request_id": context.request_id, "model_id": context.manifest.model_id, "runtime": context.runtime.name},
             )
-            await context.runtime.load_model(context.manifest)
+            if self.model_residency_manager is not None:
+                residency_lease = await self._acquire_model_residency(
+                    context.runtime,
+                    context.manifest,
+                    companion_manifests=context.companion_manifests,
+                    request_id=context.request_id,
+                    capability=CapabilityName.STREAMING.value,
+                    application_id=context.application_id,
+                )
+                residency_lease_entered = True
+            else:
+                load_admission = await self._acquire_model_load_admission(
+                    request=context.request,
+                    request_id=context.request_id,
+                    requested_model_id=context.requested_model_id,
+                    manifest=context.manifest,
+                    runtime=context.runtime,
+                )
+                await context.runtime.load_model(context.manifest)
             for companion_manifest in context.companion_manifests:
-                await context.runtime.load_model(companion_manifest)
+                if self.model_residency_manager is None:
+                    await context.runtime.load_model(companion_manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 context.manifest,
                 context.runtime,
@@ -1793,7 +1881,13 @@ class ChatOrchestrator:
             admission.release()
             raise
 
-        stream_queue: asyncio.Queue[object] = asyncio.Queue()
+        # Bounded so the runtime cannot outrun the SSE writer. An unbounded queue
+        # lets `put` return immediately on every token, so a decode loop that
+        # yields the event loop once per token (which is all `asyncio.sleep(0)`
+        # buys) outpaces a consumer needing several loop turns per delta: the
+        # backlog is only drained once generation ends and the client sees the
+        # tail arrive in one burst. Blocking `put` paces decode to delivery.
+        stream_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=1)
         stream_session = self._stream_session_from_queue(context=context, queue=stream_queue)
 
         async def iterator() -> None:
@@ -1956,6 +2050,8 @@ class ChatOrchestrator:
                 )
                 await stream_queue.put(exc)
             finally:
+                if residency_lease is not None and residency_lease_entered:
+                    await residency_lease.__aexit__(None, None, None)
                 if load_admission is not None:
                     load_admission.release()
                 admission.release()
@@ -2060,15 +2156,9 @@ class ChatOrchestrator:
                 **scheduler_payload,
             )
         load_admission: RuntimeRequestAdmission | None = None
+        residency_leases: list[AsyncExitStack] = []
         try:
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission(
-                request=contexts[0].request,
-                request_id=contexts[0].request_id,
-                requested_model_id=contexts[0].requested_model_id,
-                manifest=manifest,
-                runtime=runtime,
-            )
             for context, frontier_metrics in batch_payloads:
                 self._record_serving_phase(
                     request=context.request,
@@ -2084,9 +2174,30 @@ class ChatOrchestrator:
                         **self._continuous_batch_payload(frontier_metrics),
                     },
                 )
-            await runtime.load_model(manifest)
+            if self.model_residency_manager is not None:
+                for context in contexts:
+                    residency_leases.append(
+                        await self._acquire_model_residency(
+                            runtime,
+                            manifest,
+                            companion_manifests=context.companion_manifests,
+                            request_id=context.request_id,
+                            capability=CapabilityName.STREAMING.value,
+                            application_id=context.application_id,
+                        ),
+                    )
+            else:
+                load_admission = await self._acquire_model_load_admission(
+                    request=contexts[0].request,
+                    request_id=contexts[0].request_id,
+                    requested_model_id=contexts[0].requested_model_id,
+                    manifest=manifest,
+                    runtime=runtime,
+                )
+                await runtime.load_model(manifest)
             for companion_manifest in self._unique_companion_manifests(contexts):
-                await runtime.load_model(companion_manifest)
+                if self.model_residency_manager is None:
+                    await runtime.load_model(companion_manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 manifest,
                 runtime,
@@ -2094,9 +2205,21 @@ class ChatOrchestrator:
             )
             load_seconds = time.perf_counter() - load_started_at
             queues: list[asyncio.Queue[object]] = [asyncio.Queue() for _ in contexts]
+            consumer_closed = [False for _ in contexts]
+            all_consumers_closed = asyncio.Event()
+
+            async def mark_consumer_closed(index: int) -> None:
+                consumer_closed[index] = True
+                if all(consumer_closed):
+                    all_consumers_closed.set()
+
             sessions = [
-                self._stream_session_from_queue(context=context, queue=queue)
-                for context, queue in zip(contexts, queues, strict=True)
+                self._stream_session_from_queue(
+                    context=context,
+                    queue=queue,
+                    on_consumer_close=lambda index=index: mark_consumer_closed(index),
+                )
+                for index, (context, queue) in enumerate(zip(contexts, queues, strict=True))
             ]
             for context, frontier_metrics in batch_payloads:
                 await self._publish(
@@ -2161,10 +2284,15 @@ class ChatOrchestrator:
                     load_seconds=load_seconds,
                     load_admission=load_admission,
                     admission=admission,
+                    residency_leases=residency_leases,
+                    consumer_closed=consumer_closed,
+                    all_consumers_closed=all_consumers_closed,
                 ),
             )
             return sessions
         except Exception as exc:
+            for residency_lease in reversed(residency_leases):
+                await residency_lease.aclose()
             await self.model_router.runtime_catalog.finalize_runtime_for_request(
                 manifest,
                 runtime,
@@ -2206,6 +2334,9 @@ class ChatOrchestrator:
         load_seconds: float,
         load_admission: RuntimeRequestAdmission | None,
         admission: RuntimeRequestAdmission,
+        residency_leases: list[AsyncExitStack],
+        consumer_closed: list[bool],
+        all_consumers_closed: asyncio.Event,
     ) -> None:
         generate_started_at = time.perf_counter()
         emitted_delta_count = [0 for _ in contexts]
@@ -2214,8 +2345,13 @@ class ChatOrchestrator:
         reasoning_processors = [ReasoningStreamProcessor(context.reasoning_visibility) for context in contexts]
         citation_processors = [CitationStreamProcessor(context.citation_context) for context in contexts]
         try:
-            async for request_index, raw_delta in runtime.stream_generate_batch([context.request for context in contexts]):
+            async for request_index, raw_delta in self._stream_batch_until_consumers_close(
+                runtime.stream_generate_batch([context.request for context in contexts]),
+                all_consumers_closed=all_consumers_closed,
+            ):
                 if request_index < 0 or request_index >= len(contexts):
+                    continue
+                if consumer_closed[request_index]:
                     continue
                 context = contexts[request_index]
                 queue = queues[request_index]
@@ -2273,6 +2409,34 @@ class ChatOrchestrator:
             for index, (context, session, queue, item_metrics) in enumerate(
                 zip(contexts, sessions, queues, frontier_metrics, strict=True),
             ):
+                if consumer_closed[index]:
+                    self._finalize_request_scheduling_metadata(context.request)
+                    self.runtime_metrics_recorder.record_failure(
+                        model_id=context.manifest.model_id,
+                        runtime=runtime.name,
+                        capability="streaming",
+                        load_seconds=per_request_load_seconds,
+                        execution_seconds=per_request_execution_seconds,
+                        measurements={
+                            **_request_scheduling_measurements(request=context.request),
+                            **_continuous_batch_measurements(batch_metrics=item_metrics),
+                        },
+                    )
+                    self.serving_core.request_cancellation(
+                        request_id=context.request_id,
+                        reason="stream_consumer_closed",
+                    )
+                    self._sync_serving_request_metadata(context.request)
+                    await self._publish(
+                        EventType.REQUEST_FAILED,
+                        {
+                            "request_id": context.request_id,
+                            "model_id": context.manifest.model_id,
+                            "error": "Stream consumer closed before completion.",
+                            "cancelled": True,
+                        },
+                    )
+                    continue
                 stream_reasoning = reasoning_processors[index].finalize()
                 trailing_content, citations = citation_processors[index].finalize()
                 if trailing_content:
@@ -2382,6 +2546,8 @@ class ChatOrchestrator:
                 )
                 await queue.put(exc)
         finally:
+            for residency_lease in reversed(residency_leases):
+                await residency_lease.aclose()
             if load_admission is not None:
                 load_admission.release()
             admission.release()
@@ -2418,7 +2584,10 @@ class ChatOrchestrator:
         )
         if policy == "aggressive_unload":
             for companion_manifest in companion_manifests:
-                await runtime.unload_model(companion_manifest.model_id)
+                if self.model_residency_manager is not None:
+                    await self.model_residency_manager.unload(runtime, companion_manifest)
+                else:
+                    await runtime.unload_model(companion_manifest.model_id)
 
     @staticmethod
     def _continuous_batch_payload(batch_metrics: FrontierBatchMetrics | None) -> dict[str, object]:
@@ -2433,11 +2602,46 @@ class ChatOrchestrator:
             "queue_delay_seconds": batch_metrics.queue_delay_seconds,
         }
 
+    def _stream_usage(
+        self,
+        *,
+        context: _ChatInvocationContext,
+        output_text: str,
+    ) -> tuple[dict[str, int], bool]:
+        """Count tokens for a completed stream.
+
+        A streaming backend reports no usage of its own, so LewLM counts with
+        the model's tokenizer once generation finishes. When the backend has no
+        tokenizer the counts are estimated, and that is reported rather than
+        presented as measured.
+        """
+
+        prompt_text = "\n".join(f"{message.role}: {message.content}" for message in context.request.messages)
+        measured = True
+        try:
+            if not context.runtime.is_model_loaded(context.manifest.model_id):
+                raise RuntimeError("model is no longer resident")
+            prompt_tokens = len(context.runtime.tokenize(prompt_text))
+            completion_tokens = len(context.runtime.tokenize(output_text)) if output_text else 0
+        except Exception:
+            measured = False
+            prompt_tokens = max(1, len(prompt_text.encode("utf-8")) // 4)
+            completion_tokens = max(0, len(output_text.encode("utf-8")) // 4)
+        return (
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+            measured,
+        )
+
     def _stream_session_from_queue(
         self,
         *,
         context: _ChatInvocationContext,
         queue: asyncio.Queue[object],
+        on_consumer_close: Callable[[], Awaitable[None]] | None = None,
     ) -> ChatStreamSession:
         async def on_close(completed: bool) -> None:
             if completed:
@@ -2447,6 +2651,8 @@ class ChatOrchestrator:
                 reason="stream_consumer_closed",
             )
             self._sync_serving_request_metadata(context.request)
+            if on_consumer_close is not None:
+                await on_consumer_close()
 
         stream_session = ChatStreamSession(
             request_id=context.request_id,
@@ -2454,6 +2660,7 @@ class ChatOrchestrator:
             model_id=context.manifest.model_id,
             routing=context.routing,
             prompt_trace=context.prompt_trace,
+            prompt_trace_requested=context.prompt_trace_requested,
             reasoning_visibility=context.reasoning_visibility,
             request=context.request,
             stream=_empty_stream(),
@@ -2469,6 +2676,15 @@ class ChatOrchestrator:
                 stream_session.prompt_trace,
                 output_text,
             )
+            # Tool calls are only knowable once the full text has streamed, so
+            # they resolve on the same completion hook.
+            stream_session.tool_calls = _tool_call_result(
+                stream_session.prompt_trace,
+                output_text,
+            )
+            usage, measured = self._stream_usage(context=context, output_text=output_text)
+            stream_session.usage = usage
+            stream_session.usage_measured = measured
 
         stream_session.stream_items = _stream_items_with_structured_output(
             _queued_item_stream(
@@ -2481,6 +2697,41 @@ class ChatOrchestrator:
         )
         stream_session.stream = _content_stream(stream_session.stream_items)
         return stream_session
+
+    @staticmethod
+    async def _stream_batch_until_consumers_close(
+        stream: AsyncIterator[tuple[int, str]],
+        *,
+        all_consumers_closed: asyncio.Event,
+    ) -> AsyncIterator[tuple[int, str]]:
+        """Close native batch iteration promptly once no consumer remains."""
+
+        iterator = stream.__aiter__()
+        try:
+            while True:
+                next_item = asyncio.create_task(anext(iterator))
+                closed = asyncio.create_task(all_consumers_closed.wait())
+                done, pending = await asyncio.wait(
+                    {next_item, closed},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if closed in done and all_consumers_closed.is_set():
+                    if not next_item.done():
+                        next_item.cancel()
+                    await asyncio.gather(next_item, return_exceptions=True)
+                    return
+                try:
+                    yield next_item.result()
+                except StopAsyncIteration:
+                    return
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if callable(close):
+                await close()
 
     @staticmethod
     def _queue_milliseconds(
@@ -2524,8 +2775,36 @@ class ChatOrchestrator:
             execute_milliseconds=milliseconds_from_seconds(execute_seconds),
             serving=self._execution_serving_metadata(request.metadata.get("serving")),
         )
+        # The backend records what it could honor; surface it so a caller that
+        # asked for a seed can tell whether it actually got determinism.
+        metadata.sampling = self._sampling_report(request)
         request.metadata["execution_metadata"] = metadata.model_dump(mode="json")
         return metadata
+
+    @staticmethod
+    def _sampling_report(request: GenerateRequest) -> SamplingControlReport | None:
+        """Report what the backend did with the requested sampling controls.
+
+        A runtime that never looked at them records nothing, so the controls are
+        reported as unsupported rather than appearing to have been honored.
+        """
+
+        payload = request.metadata.get("sampling_controls")
+        if isinstance(payload, dict):
+            try:
+                return SamplingControlReport.model_validate(payload)
+            except Exception:
+                pass
+        if request.sampling is None or request.sampling.is_empty:
+            return None
+        requested = request.sampling.requested()
+        return SamplingControlReport(
+            runtime=str(request.metadata.get("runtime_name") or "unknown"),
+            requested=requested,
+            applied={},
+            unsupported=sorted(requested),
+            deterministic=False,
+        )
 
     def _refresh_execution_serving_metadata(
         self,
@@ -2606,11 +2885,78 @@ class ChatOrchestrator:
             )
         return admission
 
+    async def _acquire_model_residency(
+        self,
+        runtime: RuntimeContract,
+        manifest: ModelManifest,
+        *,
+        companion_manifests: Sequence[ModelManifest] = (),
+        request_id: str,
+        capability: str,
+        application_id: str | None,
+    ) -> AsyncExitStack:
+        """Acquire primary and speculative-companion leases as one lifetime."""
+
+        manager = self.model_residency_manager
+        if manager is None:
+            raise RuntimeError("Model residency management is not configured.")
+        stack = AsyncExitStack()
+        try:
+            await stack.enter_async_context(
+                manager.acquire(
+                    runtime,
+                    manifest,
+                    request_id=request_id,
+                    application_id=application_id,
+                    capability=capability,
+                ),
+            )
+            for companion_manifest in companion_manifests:
+                await stack.enter_async_context(
+                    manager.acquire(
+                        runtime,
+                        companion_manifest,
+                        request_id=request_id,
+                        application_id=application_id,
+                        capability=capability,
+                    ),
+                )
+        except BaseException:
+            await stack.aclose()
+            raise
+        return stack
+
     async def _publish(self, event_type: EventType, payload: dict[str, object]) -> None:
+        if self.model_residency_manager is not None:
+            payload = {
+                "runtime_instance_id": self.model_residency_manager.runtime_instance_id,
+                **payload,
+            }
         request_id = payload.get("request_id")
+        identity = None
+        if isinstance(request_id, str) and request_id:
+            identity = self._request_identities.get(request_id)
+            if identity is None:
+                identity = (application_id_var.get(), client_instance_id_var.get())
+                self._request_identities[request_id] = identity
+        application_id, client_instance_id = identity or (
+            application_id_var.get(),
+            client_instance_id_var.get(),
+        )
+        if application_id:
+            payload.setdefault("application_id", application_id)
+        if client_instance_id:
+            payload.setdefault("client_instance_id", client_instance_id)
         if isinstance(request_id, str) and request_id:
             if serving_payload := self.serving_core.sequence_metadata(request_id):
                 payload = {**payload, "serving": serving_payload}
+        if event_type == EventType.REQUEST_ACCEPTED:
+            self.runtime_metrics_recorder.record_application_request(application_id=application_id)
+        elif event_type in {EventType.REQUEST_COMPLETED, EventType.REQUEST_FAILED}:
+            self.runtime_metrics_recorder.record_application_result(
+                application_id=application_id,
+                failed=event_type == EventType.REQUEST_FAILED,
+            )
         await self.event_bus.publish(
             StreamEvent(
                 type=event_type,
@@ -2622,6 +2968,8 @@ class ChatOrchestrator:
                 },
             ),
         )
+        if isinstance(request_id, str) and event_type in {EventType.REQUEST_COMPLETED, EventType.REQUEST_FAILED}:
+            self._request_identities.pop(request_id, None)
 
     async def _publish_progress(
         self,

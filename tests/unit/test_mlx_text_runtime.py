@@ -217,11 +217,48 @@ def test_mlx_text_runtime_rejects_manifest_when_backend_cannot_describe_model_ty
 
     monkeypatch.setattr("lewlm.runtime.mlx_text.runtime.import_module", fake_import)
 
-    runtime = MLXTextRuntime()
+    runtime = MLXTextRuntime(
+        settings=LewLMSettings(
+            data_dir=tmp_path / "state",
+            backend_feature_probes_enabled=True,
+        ),
+    )
     manifest = _manifest(
         model_id="gemma4-text-fast-path",
         source_path=str(bundle_dir),
         modality=(ModelModality.TEXT, ModelModality.MULTIMODAL),
+    )
+
+    assert runtime.supports_manifest(manifest) is False
+
+
+def test_mlx_text_runtime_rejects_gemma4_without_importing_backend_when_model_module_is_absent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "gemma4-bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text('{"model_type":"gemma4"}', encoding="utf-8")
+    package_dir = tmp_path / "mlx_lm"
+    (package_dir / "models").mkdir(parents=True)
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_text.runtime.find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[str(package_dir)]),
+    )
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_text.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(AssertionError(f"unexpected backend import: {name}")),
+    )
+    runtime = MLXTextRuntime(
+        settings=LewLMSettings(
+            data_dir=tmp_path / "state",
+            backend_feature_probes_enabled=False,
+        ),
+    )
+    manifest = _manifest(
+        model_id="gemma4-text-fast-path",
+        source_path=str(bundle_dir),
+        modality=(ModelModality.TEXT,),
     )
 
     assert runtime.supports_manifest(manifest) is False
@@ -240,7 +277,12 @@ def test_mlx_text_runtime_accepts_manifest_when_backend_supports_model_type(
         lambda name: SimpleNamespace(_get_classes=lambda config: ("Model", "Args")),
     )
 
-    runtime = MLXTextRuntime()
+    runtime = MLXTextRuntime(
+        settings=LewLMSettings(
+            data_dir=tmp_path / "state",
+            backend_feature_probes_enabled=True,
+        ),
+    )
     manifest = _manifest(
         model_id="supported-text-model",
         source_path=str(bundle_dir),
@@ -248,6 +290,23 @@ def test_mlx_text_runtime_accepts_manifest_when_backend_supports_model_type(
     )
 
     assert runtime.supports_manifest(manifest) is True
+
+
+def test_mlx_text_runtime_lightweight_health_does_not_import_backend(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_text.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(AssertionError(f"unexpected backend import: {name}")),
+    )
+    runtime = MLXTextRuntime(
+        settings=LewLMSettings(
+            data_dir=tmp_path / "state",
+            backend_feature_probes_enabled=False,
+        ),
+    )
+
+    health = asyncio.run(runtime.lightweight_health_check())
+
+    assert health["performance_features"] == {}
 
 
 def test_mlx_text_runtime_applies_kv_cache_and_prefill_controls(monkeypatch, tmp_path: Path) -> None:
@@ -1467,6 +1526,98 @@ def test_mlx_text_runtime_stream_generate_uses_lewlm_owned_persistent_batch_cont
         for request in (first_request, second_request)
     )
     assert any(request.metadata["native_batching"]["batch_size"] == 2 for request in (first_request, second_request))
+
+
+def test_owned_batch_stream_cancels_one_member_without_interrupting_the_other(monkeypatch) -> None:
+    fake_tokenizer = FakeTokenizer()
+    state = {"started": False, "finish": False, "cancelled": set(), "cancel_calls": [], "closed": False}
+
+    class FakeBatchGenerator:
+        def __init__(self, model, **kwargs):
+            self._uids: list[int] = []
+            self._emitted_first = False
+            self._emitted_second = False
+
+        def insert(self, *, prompts, max_tokens, caches):
+            uids = [11, 22][len(self._uids) : len(self._uids) + len(prompts)]
+            self._uids.extend(uids)
+            state["started"] = len(self._uids) == 2
+            return uids
+
+        def cancel(self, uid):
+            state["cancel_calls"].append(uid)
+            state["cancelled"].add(uid)
+
+        def next_generated(self):
+            if not state["started"]:
+                return []
+            if not self._emitted_first:
+                self._emitted_first = True
+                return [
+                    SimpleNamespace(uid=11, token=65, finish_reason=None),
+                    SimpleNamespace(uid=22, token=66, finish_reason=None),
+                ]
+            if not state["finish"] or self._emitted_second:
+                return []
+            self._emitted_second = True
+            return [
+                SimpleNamespace(uid=22, token=67, finish_reason=None),
+                SimpleNamespace(uid=22, finish_reason="stop"),
+            ]
+
+        def close(self):
+            state["closed"] = True
+
+    def fake_import(name: str):
+        if name == "mlx_lm":
+            return SimpleNamespace(
+                load=lambda path_or_hf_repo: ("fake-model", fake_tokenizer),
+                generate=lambda **kwargs: "unused",
+                generate_stream=lambda **kwargs: [],
+                BatchGenerator=FakeBatchGenerator,
+            )
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.mlx_text.runtime.import_module", fake_import)
+    runtime = MLXTextRuntime()
+    manifest = _manifest(model_id="cancel-stream-model", modality=(ModelModality.TEXT,))
+    asyncio.run(runtime.load_model(manifest))
+
+    async def run_streams() -> tuple[str, str]:
+        first = runtime.stream_generate(
+            GenerateRequest(
+                model_id=manifest.model_id,
+                messages=[GenerateMessage(role="user", content="cancel")],
+                max_tokens=8,
+                temperature=0.0,
+            ),
+        )
+        second = runtime.stream_generate(
+            GenerateRequest(
+                model_id=manifest.model_id,
+                messages=[GenerateMessage(role="user", content="continue")],
+                max_tokens=8,
+                temperature=0.0,
+            ),
+        )
+        first_chunk, second_chunk = await asyncio.gather(anext(first), anext(second))
+        await first.aclose()
+        for _ in range(100):
+            if state["cancel_calls"]:
+                break
+            await asyncio.sleep(0)
+        state["finish"] = True
+        second_output = second_chunk + "".join([chunk async for chunk in second])
+        await runtime.unload_model(manifest.model_id)
+        return first_chunk, second_output
+
+    first_output, second_output = asyncio.run(run_streams())
+
+    assert first_output == "A"
+    assert second_output == "BC"
+    assert state["cancel_calls"] == [11]
+    assert state["closed"] is True
+    assert runtime._paged_kv_manager.snapshot()["active_pages"] == 0
 
 
 def _manifest(*, model_id: str = "semantic-model", source_path: str = "/tmp/semantic-model", modality: tuple[ModelModality, ...]) -> ModelManifest:

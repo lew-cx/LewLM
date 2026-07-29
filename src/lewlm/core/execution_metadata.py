@@ -6,7 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from lewlm.core.contracts import RequestModality, RoutingDecision, RoutingModalityPath, RuntimeAffinity
+from lewlm.core.contracts import (
+    RequestModality,
+    RoutingDecision,
+    RoutingModalityPath,
+    RuntimeAffinity,
+    SamplingControlReport,
+)
+from lewlm.core.provenance import ComponentProvenance
+from lewlm.runtime.request_context import current_correlation_id
 
 
 def milliseconds_from_seconds(value: float) -> int:
@@ -52,14 +60,29 @@ class ExecutionServingMetadata(BaseModel):
 
 
 class ExecutionMetadata(BaseModel):
-    version: Literal["v1"] = "v1"
+    version: Literal["v1"] = Field(
+        default="v1",
+        description="Envelope schema version. This does NOT identify the components that ran; see `components`.",
+    )
     request_id: str
+    correlation_id: str | None = Field(
+        default=None,
+        description="Caller-supplied correlation identifier echoed back on every result that carries it.",
+    )
     created: int
     result_origin: Literal["runtime", "cache_hit", "coalesced", "tool_execution", "idempotent_replay"] = "runtime"
     model: ExecutionModelMetadata = Field(default_factory=ExecutionModelMetadata)
     routing: ExecutionRoutingMetadata
     timing: ExecutionTimingMetadata = Field(default_factory=ExecutionTimingMetadata)
     serving: ExecutionServingMetadata | None = None
+    components: list[ComponentProvenance] = Field(
+        default_factory=list,
+        description="Named, versioned components that produced this result.",
+    )
+    sampling: SamplingControlReport | None = Field(
+        default=None,
+        description="Which requested sampling controls the backend applied, and which it could not.",
+    )
     idempotency_key: str | None = None
     idempotent_replay: bool = False
 
@@ -75,10 +98,16 @@ def build_routed_execution_metadata(
     execute_milliseconds: int = 0,
     serving: ExecutionServingMetadata | None = None,
     result_origin: Literal["runtime", "cache_hit", "coalesced"] = "runtime",
+    correlation_id: str | None = None,
+    components: list[ComponentProvenance] | None = None,
 ) -> ExecutionMetadata:
     total_milliseconds = max(queue_milliseconds + load_milliseconds + execute_milliseconds, 0)
     return ExecutionMetadata(
         request_id=request_id,
+        # Fall back to the ambient request correlation ID so every routed
+        # execution carries it without threading it through each call site.
+        correlation_id=correlation_id if correlation_id is not None else current_correlation_id(),
+        components=list(components or ()),
         created=created,
         result_origin=result_origin,
         model=ExecutionModelMetadata(
@@ -114,6 +143,8 @@ def build_tool_execution_metadata(
     idempotency_key: str | None = None,
     idempotent_replay: bool = False,
     runtime_name: str = "tool_execution_service",
+    correlation_id: str | None = None,
+    components: list[ComponentProvenance] | None = None,
 ) -> ExecutionMetadata:
     result_origin: Literal["tool_execution", "idempotent_replay"] = (
         "idempotent_replay" if idempotent_replay else "tool_execution"
@@ -121,6 +152,8 @@ def build_tool_execution_metadata(
     duration_milliseconds = max(duration_milliseconds, 0)
     return ExecutionMetadata(
         request_id=request_id,
+        correlation_id=correlation_id if correlation_id is not None else current_correlation_id(),
+        components=list(components or ()),
         created=created,
         result_origin=result_origin,
         model=ExecutionModelMetadata(runtime_name=runtime_name),

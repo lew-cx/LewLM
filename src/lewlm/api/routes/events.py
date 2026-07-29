@@ -9,9 +9,12 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from lewlm.api.dependencies import get_services
+from lewlm.core.errors import LewLMError
 
 
 router = APIRouter(tags=["events"])
+#: RFC 6455 close codes for the two ways a handshake can be refused.
+_WEBSOCKET_CLOSE_CODES = {401: 1008, 403: 1008, 429: 1013}
 _EVENT_STREAM_EXAMPLE = (
     'event: request.completed\n'
     'data: {"event_id":"evt-001","type":"request.completed","scope":"request",'
@@ -63,7 +66,21 @@ async def stream_events(request: Request) -> StreamingResponse:
 
 @router.websocket("/v1/events")
 async def websocket_events(websocket: WebSocket) -> None:
-    """Stream runtime and request lifecycle events over WebSocket."""
+    """Stream runtime and request lifecycle events over WebSocket.
+
+    The HTTP middleware that carries `RequestGuard` does not run for WebSocket
+    routes, so the handshake is guarded here before anything is accepted.
+    """
+
+    guard = getattr(websocket.app.state, "request_guard", None)
+    if guard is not None:
+        try:
+            guard.enforce_websocket(websocket)
+        except LewLMError as exc:
+            # Refuse before accepting: the client sees a failed handshake with
+            # the reason, not an open socket that goes quiet.
+            await websocket.close(code=_WEBSOCKET_CLOSE_CODES.get(exc.status_code, 1008), reason=exc.code)
+            return
 
     await websocket.accept()
     services = websocket.app.state.services

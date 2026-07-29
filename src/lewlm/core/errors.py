@@ -43,6 +43,40 @@ class ConfigurationError(LewLMError):
         )
 
 
+class InvalidRequestError(LewLMError):
+    """Raised when a request body or parameter fails validation.
+
+    Distinct from `ConfigurationError`, which is about server settings. This
+    carries per-field detail so a host application can point a user at the
+    offending field instead of re-deriving it from a message string.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="invalid_request",
+            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+            details=details,
+        )
+
+
+class InternalError(LewLMError):
+    """Raised when an unexpected failure would otherwise escape as a bare 500.
+
+    LewLM's contract is that every non-success response carries the same
+    envelope. An unhandled exception reaching the transport as plain text
+    breaks that for exactly the callers least able to diagnose it.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="internal_error",
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            details=details,
+        )
+
+
 class StorageError(LewLMError):
     """Raised when persistence or metadata access fails."""
 
@@ -99,6 +133,56 @@ class RuntimeUnavailableError(LewLMError):
             message,
             code="runtime_unavailable",
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            details=details,
+        )
+
+
+class ModelLoadError(LewLMError):
+    """Raised when a backend cannot load a model on the current host.
+
+    Distinct from `RuntimeUnavailableError`: the runtime itself is installed and
+    usable, but this particular model failed to load — an unsupported
+    architecture or an incompatible load option, for example. Host applications
+    rely on the `model_load_failed` code to explain the failure to a user.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="model_load_failed",
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            details=details,
+        )
+
+
+class BackendContractError(LewLMError):
+    """Raised when a backend returns a result LewLM cannot safely trust.
+
+    Distinct from `ModelLoadError`: the model ran, but its response violated the
+    contract LewLM depends on — a rerank index outside the candidate range or a
+    non-finite score, for example. Silently repairing such a response would
+    corrupt a ranking in a way the caller can never observe, so it fails loudly.
+    Bridge-backed runtimes are third-party servers LewLM does not control, which
+    is exactly where this is expected to fire.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="backend_contract_violation",
+            status_code=HTTPStatus.BAD_GATEWAY,
+            details=details,
+        )
+
+
+class ModelLifecycleConflictError(LewLMError):
+    """Raised when a model lifecycle action would interrupt active use."""
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="model_lifecycle_conflict",
+            status_code=HTTPStatus.CONFLICT,
             details=details,
         )
 
@@ -345,6 +429,11 @@ class NotImplementedLewLMError(LewLMError):
 
 _ERROR_CLASS_BY_CODE: dict[str, type[LewLMError]] = {
     "configuration_error": ConfigurationError,
+    "invalid_request": InvalidRequestError,
+    "internal_error": InternalError,
+    "model_load_failed": ModelLoadError,
+    "backend_contract_violation": BackendContractError,
+    "model_lifecycle_conflict": ModelLifecycleConflictError,
     "storage_error": StorageError,
     "model_scan_error": ModelScanError,
     "model_not_found": ModelNotFoundError,
@@ -371,6 +460,109 @@ _ERROR_CLASS_BY_CODE: dict[str, type[LewLMError]] = {
     "conversion_error": ConversionError,
     "not_implemented": NotImplementedLewLMError,
 }
+
+
+#: Codes emitted for framework-level failures that have no exception class of
+#: their own — an unrouted path, a wrong method. They are declared here so the
+#: published catalog covers every code a caller can actually receive, and
+#: `lewlm.api.app` maps status codes through this table rather than its own.
+FRAMEWORK_ERROR_CODES: dict[int, str] = {
+    401: "authentication_required",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    413: "request_too_large",
+    415: "unsupported_media_type",
+    429: "rate_limited",
+}
+
+_FRAMEWORK_ERROR_DESCRIPTIONS: dict[str, str] = {
+    "authentication_required": "The endpoint requires an API key and none was accepted.",
+    "forbidden": "The credential is valid but not authorized for this endpoint.",
+    "not_found": "No route or resource matched the request path.",
+    "method_not_allowed": "The route exists but does not accept this HTTP method.",
+    "rate_limited": "The configured request rate for this client was exceeded.",
+    "http_error": "A framework-level HTTP failure with no more specific LewLM code.",
+    "lewlm_error": "An unclassified LewLM failure. Treat the message as the only detail.",
+    "response_too_large": (
+        "A response exceeded the client's configured size limit and was refused rather than buffered."
+    ),
+}
+
+#: Codes where the identical request may succeed later without being changed.
+#: Everything else needs the caller to change something first, so retrying is
+#: at best wasted work and at worst a hot loop against a failing host.
+_RETRYABLE_ERROR_CODES = frozenset(
+    {
+        "rate_limit_error",
+        "rate_limited",
+        "backpressure_error",
+        "runtime_unavailable",
+        "model_lifecycle_conflict",
+        "storage_error",
+    },
+)
+
+
+def error_code_catalog() -> list[dict[str, Any]]:
+    """Return every error code the API can emit, with status and retryability.
+
+    Derived from the exception classes themselves — status codes from their
+    constructors, descriptions from their docstrings — so the catalog cannot
+    drift from the behaviour, and a host app never has to scrape this module.
+    """
+
+    entries: dict[str, dict[str, Any]] = {}
+    for error_type in _error_classes():
+        probe = error_type("catalog probe")
+        entries[probe.code] = {
+            "code": probe.code,
+            "http_status": probe.status_code,
+            "retryable": probe.code in _RETRYABLE_ERROR_CODES,
+            "description": _summarize_docstring(error_type),
+        }
+    status_by_framework_code = {code: status for status, code in FRAMEWORK_ERROR_CODES.items()}
+    for code, description in _FRAMEWORK_ERROR_DESCRIPTIONS.items():
+        if code in entries:
+            continue
+        entries[code] = {
+            "code": code,
+            "http_status": status_by_framework_code.get(code, _DEFAULT_FRAMEWORK_STATUS.get(code, 400)),
+            "retryable": code in _RETRYABLE_ERROR_CODES,
+            "description": description,
+        }
+    return [entries[code] for code in sorted(entries)]
+
+
+#: Statuses for catalog codes that are not raised through `FRAMEWORK_ERROR_CODES`.
+_DEFAULT_FRAMEWORK_STATUS = {
+    "http_error": int(HTTPStatus.INTERNAL_SERVER_ERROR),
+    "lewlm_error": int(HTTPStatus.BAD_REQUEST),
+    "response_too_large": int(HTTPStatus.INSUFFICIENT_STORAGE),
+}
+
+
+def _error_classes() -> list[type[LewLMError]]:
+    """Every concrete error class declared in this module, base class included."""
+
+    return [LewLMError, *sorted(_subclasses(LewLMError), key=lambda item: item.__name__)]
+
+
+def _subclasses(root: type[LewLMError]) -> set[type[LewLMError]]:
+    found: set[type[LewLMError]] = set()
+    for subclass in root.__subclasses__():
+        if subclass.__module__ != __name__:
+            continue
+        found.add(subclass)
+        found |= _subclasses(subclass)
+    return found
+
+
+def _summarize_docstring(error_type: type[LewLMError]) -> str:
+    doc = (error_type.__doc__ or "").strip()
+    if not doc:
+        return f"Raised as `{error_type.__name__}`."
+    return " ".join(doc.split("\n\n", 1)[0].split())
 
 
 def error_from_dict(payload: Mapping[str, Any]) -> LewLMError:

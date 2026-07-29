@@ -20,10 +20,13 @@ from lewlm.core.contracts import (
     MeasuredCapabilitySummary,
     PerformanceCoreEvidenceFamily,
     PerformanceCoreEvidenceSource,
+    ModelCapabilityAvailability,
     ModelCapabilityReport,
     ModelCapabilityStatus,
+    ModelInventory,
     ModelManifest,
     ModelModality,
+    ModelStructuredOutputSupport,
     RequestModality,
     RoutingDecision,
     RoutingModalityPath,
@@ -38,6 +41,7 @@ from lewlm.core.contracts import (
 from lewlm.core.errors import RoutingError
 from lewlm.core.middleware import build_model_capability_evidence
 from lewlm.registry.service import ModelRegistry
+from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
 from lewlm.telemetry.constrained_decoding import (
     CONSTRAINED_DECODING_CODE_PROBE_NAME,
     CONSTRAINED_DECODING_PROBE_CONTRACT,
@@ -51,6 +55,7 @@ from lewlm.routing.measured_preferences import (
     runtime_preference_matches,
 )
 from lewlm.runtime.catalog import RuntimeCatalog
+from lewlm.runtime.residency import ModelLifecycleResult, ModelResidencyManager, ModelResidencyState
 from lewlm.runtime.experimental import build_frontier_serving_plan, frontier_plan_notes, frontier_plan_summary
 from lewlm.utils.model_identity import build_manifest_validation_key
 from lewlm.utils.validation_manifests import (
@@ -101,10 +106,12 @@ class ModelRouter:
         model_registry: ModelRegistry,
         runtime_catalog: RuntimeCatalog,
         settings: LewLMSettings,
+        model_residency_manager: ModelResidencyManager | None = None,
     ) -> None:
         self.model_registry = model_registry
         self.runtime_catalog = runtime_catalog
         self.settings = settings
+        self.model_residency_manager = model_residency_manager
 
     def route_chat(
         self,
@@ -266,21 +273,108 @@ class ModelRouter:
         return selected.manifest, selected.runtime, decision
 
     async def warm_model(self, model_id: str) -> RoutingDecision:
-        manifest, runtime, decision = self.route_chat(model_id)
-        await runtime.load_model(manifest)
-        await runtime.warm_model(model_id)
+        manifest, runtime, decision = self.route_lifecycle(model_id)
+        if self.model_residency_manager is None:
+            await runtime.load_model(manifest)
+            await runtime.warm_model(model_id)
+        else:
+            await self.model_residency_manager.warm(runtime, manifest)
         return decision
 
     async def unload_model(self, model_id: str) -> RoutingDecision:
-        manifest, runtime, decision = self.route_chat(model_id)
-        await runtime.unload_model(model_id)
+        manifest, runtime, decision = self.route_lifecycle(model_id)
+        if self.model_residency_manager is None:
+            await runtime.unload_model(model_id)
+        else:
+            await self.model_residency_manager.unload(runtime, manifest)
         return decision
+
+    async def warm_model_lifecycle(
+        self,
+        model_id: str,
+        *,
+        request_id: str | None = None,
+        application_id: str | None = None,
+    ) -> tuple[RoutingDecision, ModelLifecycleResult]:
+        """Warm a model and return both routing and lifecycle details."""
+
+        manifest, runtime, decision = self.route_lifecycle(model_id)
+        if self.model_residency_manager is None:
+            already_loaded = runtime.is_model_loaded(model_id)
+            await runtime.load_model(manifest)
+            await runtime.warm_model(model_id)
+            return decision, ModelLifecycleResult(
+                runtime_instance_id="legacy",
+                model_id=model_id,
+                runtime=runtime.name,
+                previous_state=ModelResidencyState.READY if already_loaded else None,
+                current_state=ModelResidencyState.READY,
+                backend_operation_performed=not already_loaded,
+                reason="Model is loaded and its backend warm hook completed.",
+            )
+        result = await self.model_residency_manager.warm(
+            runtime,
+            manifest,
+            request_id=request_id,
+            application_id=application_id,
+        )
+        return decision, result
+
+    async def unload_model_lifecycle(
+        self,
+        model_id: str,
+        *,
+        drain: bool = False,
+        timeout_seconds: float | None = None,
+        request_id: str | None = None,
+        application_id: str | None = None,
+    ) -> tuple[RoutingDecision, ModelLifecycleResult]:
+        """Unload a model with safe lease-aware semantics."""
+
+        manifest, runtime, decision = self.route_lifecycle(model_id)
+        if self.model_residency_manager is None:
+            was_loaded = runtime.is_model_loaded(model_id)
+            await runtime.unload_model(model_id)
+            return decision, ModelLifecycleResult(
+                runtime_instance_id="legacy",
+                model_id=model_id,
+                runtime=runtime.name,
+                previous_state=ModelResidencyState.READY if was_loaded else None,
+                backend_operation_performed=was_loaded,
+                reason="Model unloaded." if was_loaded else "Model was already unloaded.",
+            )
+        result = await self.model_residency_manager.unload(
+            runtime,
+            manifest,
+            drain=drain,
+            timeout_seconds=timeout_seconds,
+            request_id=request_id,
+            application_id=application_id,
+        )
+        return decision, result
+
+    def route_lifecycle(self, model_id: str) -> tuple[ModelManifest, RuntimeContract, RoutingDecision]:
+        """Resolve an explicit model for lifecycle work independently of its inference capability."""
+
+        manifest = self.model_registry.get_manifest(model_id)
+        runtime = self.runtime_catalog.select_lifecycle_runtime(manifest)
+        return manifest, runtime, RoutingDecision(
+            model_id=manifest.model_id,
+            runtime_name=runtime.name,
+            runtime_affinity=runtime.affinity,
+            support_path=runtime_support_path_for_affinity(runtime.affinity),
+            reason=(
+                f"Selected `{runtime.name}` for lifecycle management of explicitly requested model "
+                f"`{manifest.model_id}`."
+            ),
+        )
 
     def model_capability_report(self, model_id: str) -> ModelCapabilityReport:
         manifest = self.model_registry.get_manifest(model_id)
         validation_manifests = load_validation_manifests(self.settings.validation_manifest_paths)
         frontier_plan = build_frontier_serving_plan(manifest=manifest, settings=self.settings)
         capabilities: list[ModelCapabilityStatus] = []
+        chat_runtime: RuntimeContract | None = None
         blocked_reason = None
         if manifest.conversion_status != ConversionStatus.RUNNABLE:
             blocked_reason = (
@@ -360,6 +454,8 @@ class ModelRouter:
                     capability_notes.append(f"Default `{capability.value}` report assumes `{request_modality.value}` routing.")
                 if modality_path_reason is not None:
                     capability_notes.append(modality_path_reason)
+                if capability is CapabilityName.CHAT:
+                    chat_runtime = runtime
                 capabilities.append(
                     ModelCapabilityStatus(
                         capability=capability,
@@ -403,6 +499,7 @@ class ModelRouter:
                 validation_manifests=validation_manifests,
             ),
             capabilities=capabilities,
+            structured_output=self._structured_output_support(chat_runtime, blocked_reason=blocked_reason),
             measured_capabilities=measured_capabilities,
             performance_core_evidence=self._performance_core_evidence_for_model(
                 manifest=manifest,
@@ -417,6 +514,55 @@ class ModelRouter:
                     runtime_probe_records=self._runtime_probe_records_for_evidence(report.model_id),
                 ),
             },
+        )
+
+    def _structured_output_support(
+        self,
+        runtime: RuntimeContract | None,
+        *,
+        blocked_reason: str | None,
+    ) -> ModelStructuredOutputSupport:
+        """Ask the chat runtime what it would do with each contract type.
+
+        This is the same call the runtime makes during generation, so the
+        prediction and the recorded outcome cannot drift apart.
+        """
+
+        if runtime is None:
+            return ModelStructuredOutputSupport(
+                reason=(
+                    blocked_reason
+                    or "No runtime on this host can serve chat for this model, so no contract can be enforced."
+                ),
+            )
+
+        json_schema_status = runtime.structured_output_runtime_status(
+            JSONSchemaResponseFormat(schema={"type": "object"}),
+        )
+        grammar_status = runtime.structured_output_runtime_status(
+            GrammarResponseFormat(grammar='root ::= "probe"'),
+        )
+        decode_time_modes = [
+            mode
+            for mode, status in (("json_schema", json_schema_status), ("grammar", grammar_status))
+            if status is not None and status.decoder_enforced
+        ]
+        if decode_time_modes:
+            reason = (
+                f"`{runtime.name}` enforces {' and '.join(f'`{mode}`' for mode in decode_time_modes)} "
+                "at decode time on this host."
+            )
+        else:
+            reason = (
+                f"`{runtime.name}` records the contract but falls back to prompt-guided generation; "
+                "LewLM validates the output after the fact rather than constraining the decode."
+            )
+        return ModelStructuredOutputSupport(
+            runtime_name=runtime.name,
+            json_schema=json_schema_status,
+            grammar=grammar_status,
+            decode_time_modes=decode_time_modes,
+            reason=reason,
         )
 
     def _benchmark_records_for_evidence(self) -> list[dict[str, object]]:
@@ -454,7 +600,7 @@ class ModelRouter:
         except RoutingError:
             return []
         evidence = build_portable_performance_core_evidence(
-            performance_features=runtime.performance_feature_snapshot(),
+            performance_features=self.runtime_catalog.performance_features_for(runtime),
             runtime_names=[runtime.name],
         )
         category_to_family = {
@@ -563,6 +709,67 @@ class ModelRouter:
             )
         ]
         return any(record.source == MeasuredCapabilityEvidenceSource.BENCHMARK_SCENARIO for record in records)
+
+    def model_capability_availability(self, manifest: ModelManifest) -> ModelCapabilityAvailability:
+        """Summarize which capabilities this model can actually serve right now.
+
+        Uses only in-memory runtime compatibility checks so the whole inventory
+        can be annotated without per-model probing.
+        """
+
+        advertised = self._capabilities_for_manifest(manifest)
+        if manifest.conversion_status != ConversionStatus.RUNNABLE:
+            return ModelCapabilityAvailability(
+                model_id=manifest.model_id,
+                blocked_capabilities=list(advertised),
+                reason=(
+                    f"Model is `{manifest.conversion_status.value}` and must become runnable before it can serve."
+                ),
+            )
+        ready: list[CapabilityName] = []
+        blocked: list[CapabilityName] = []
+        for capability in advertised:
+            request_modality = (
+                RequestModality.TEXT_ONLY
+                if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}
+                else None
+            )
+            runtimes, _ = self.runtime_catalog.compatible_runtimes(
+                manifest,
+                capability=capability,
+                request_modality=request_modality,
+            )
+            (ready if runtimes else blocked).append(capability)
+        if not advertised:
+            reason = "This model does not advertise any servable capability."
+        elif ready and blocked:
+            reason = (
+                f"{len(ready)} of {len(advertised)} advertised capabilities have a compatible runtime on this host."
+            )
+        elif ready:
+            reason = "Every advertised capability has a compatible runtime on this host."
+        else:
+            reason = "No compatible runtime is available for this model on this host."
+        return ModelCapabilityAvailability(
+            model_id=manifest.model_id,
+            servable=bool(ready),
+            chat_ready=CapabilityName.CHAT in ready,
+            ready_capabilities=ready,
+            blocked_capabilities=blocked,
+            reason=reason,
+        )
+
+    def annotate_inventory(self, inventory: ModelInventory) -> ModelInventory:
+        """Return `inventory` with per-model serving readiness resolved."""
+
+        availability = [self.model_capability_availability(manifest) for manifest in inventory.items]
+        return inventory.model_copy(
+            update={
+                "capability_availability": availability,
+                "servable_count": sum(1 for item in availability if item.servable),
+                "chat_ready_count": sum(1 for item in availability if item.chat_ready),
+            },
+        )
 
     def capability_readiness(self, capability: CapabilityName) -> HostCapabilityReadiness:
         manifests = self.model_registry.list_manifests()

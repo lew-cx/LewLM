@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from lewlm.core.citations import CitationContextPackage
 from lewlm.core.contracts import GenerateMessage, GenerateRequest
-from lewlm.prompting import PromptCompilationTrace
+from lewlm.prompting import PromptCompilationTrace, PromptToolDefinition
 from lewlm.runtime.scheduler import FrontierBatchMetrics
 from lewlm.structured_output import StructuredOutputResult, analyze_structured_output
+from lewlm.tool_calls import ToolCallParseResult, parse_tool_calls
 
 
 def _chat_measurements(
@@ -43,6 +44,29 @@ def _structured_output_result(
         strict=contract.strict,
         runtime_status=request.metadata.get("structured_output_runtime"),
     )
+
+
+def _tool_call_result(
+    prompt_trace: PromptCompilationTrace,
+    output_text: str,
+) -> ToolCallParseResult | None:
+    """Strictly parse model-emitted tool calls against the declared tools.
+
+    Returns `None` when the request declared no tools, so a plain chat response
+    never reports tool-call issues for ordinary JSON output.
+    """
+
+    tools = [
+        PromptToolDefinition(
+            name=entry.name,
+            description=entry.description,
+            input_schema=entry.input_schema,
+        )
+        for entry in prompt_trace.tool_plan
+    ]
+    if not tools:
+        return None
+    return parse_tool_calls(output_text, tools=tools)
 
 
 def _citation_context_metadata(citation_context: CitationContextPackage | None) -> dict[str, object]:

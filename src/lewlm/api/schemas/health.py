@@ -39,6 +39,10 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
     service: str
     version: str
+    runtime_instance_id: str | None = None
+    started_at: datetime | None = None
+    process_id: int | None = None
+    hostname: str | None = None
     time: datetime
     install_profiles: InstallProfileSummary
     readiness: ServiceReadinessSummary

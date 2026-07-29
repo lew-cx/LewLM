@@ -380,11 +380,13 @@ class _KvCacheFakeLlama:
         verbose: bool,
         type_k: int | None = None,
         type_v: int | None = None,
+        flash_attn: bool | None = None,
     ) -> None:
         _KvCacheFakeLlama.captured_kwargs = {
             "model_path": model_path,
             "type_k": type_k,
             "type_v": type_v,
+            "flash_attn": flash_attn,
         }
 
     captured_kwargs: dict[str, object] = {}
@@ -423,13 +425,57 @@ def test_llamacpp_runtime_applies_kv_cache_quantization_when_bindings_expose_cac
 
     assert _KvCacheFakeLlama.captured_kwargs["type_k"] == 8
     assert _KvCacheFakeLlama.captured_kwargs["type_v"] == 8
+    # llama.cpp only accepts a non-F16 KV cache alongside flash attention.
+    assert _KvCacheFakeLlama.captured_kwargs["flash_attn"] is True
     controls = runtime._model_performance_controls[manifest.model_id]["kv_cache_quantization"]
     assert controls["effective"] == "enabled"
-    assert controls["applied_parameters"] == ["type_k", "type_v"]
+    assert controls["applied_parameters"] == ["type_k", "type_v", "flash_attn"]
     assert controls["effective_cache_type"] == "q8_0"
     assert health["performance_features"]["kv_cache_quantization"]["supported"] is True
     assert health["performance_features"]["kv_cache_quantization"]["ownership"] == "backend_native"
     assert health["performance_features"]["kv_cache_quantization"]["active"] is True
+
+
+def test_llamacpp_runtime_loads_when_the_build_cannot_pair_flash_attention(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A build without flash attention must still load, with quantization refused.
+
+    Emitting a quantized `type_k`/`type_v` here makes llama.cpp reject the model
+    outright, which previously made every GGUF model fail to load.
+    """
+
+    class _NoFlashAttentionLlama:
+        captured_kwargs: dict[str, object] = {}
+
+        def __init__(self, *, model_path: str, n_ctx: int, verbose: bool, type_k=None, type_v=None) -> None:
+            _NoFlashAttentionLlama.captured_kwargs = {"type_k": type_k, "type_v": type_v}
+
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(
+                Llama=_NoFlashAttentionLlama,
+                GGML_TYPE_Q8_0=8,
+                GGML_TYPE_F16=1,
+                GGML_TYPE_Q4_0=2,
+            )
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", fake_import)
+    runtime = LlamaCppRuntime(
+        settings=LewLMSettings(data_dir=tmp_path / "state", kv_cache_quantization_bits=8),
+    )
+    manifest = _manifest()
+
+    asyncio.run(runtime.load_model(manifest))
+
+    assert runtime.is_model_loaded(manifest.model_id)
+    assert _NoFlashAttentionLlama.captured_kwargs["type_k"] is None
+    assert _NoFlashAttentionLlama.captured_kwargs["type_v"] is None
+    controls = runtime._model_performance_controls[manifest.model_id]["kv_cache_quantization"]
+    assert controls["effective"] == "rejected"
+    assert "flash attention" in controls["reason"]
 
 
 def test_llamacpp_runtime_rejects_unmapped_kv_cache_quantization_bits(monkeypatch, tmp_path: Path) -> None:

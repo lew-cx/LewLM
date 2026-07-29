@@ -20,6 +20,24 @@ Use it alongside the live OpenAPI document at `/v1/openapi.json`.
 | documents | `POST /v1/documents/ingest`, `POST /v1/documents/generate`, `POST /v1/documents/transform` | `#/schemas/documents.*` | request, response |
 | events | `GET /v1/events` | `#/schemas/events.stream` | SSE frame, WebSocket event |
 
+Alongside `schemas`, the bundle publishes an `errors` array — every code the API
+can emit, with its fixed HTTP status, whether the identical request may succeed
+on retry, and a description:
+
+```json
+{ "code": "rate_limit_error", "http_status": 429, "retryable": true, "description": "…" }
+```
+
+It is generated from the exception classes themselves, so a host app never has
+to scrape `src/lewlm/core/errors.py` to build a code table.
+
+`/v1/openapi.json` names the same shapes in `components/schemas` —
+`ChatCompletionRequest`, `ChatCompletionChunk`, `ResponseCreateRequest`,
+`ResponseChunk`, `StreamEvent`, `EventType` included — so type generation can
+work from the live document alone rather than depending on the bundle to cover
+the streaming surfaces. Every `$ref` in the published document resolves within
+it.
+
 ## How to use it
 
 1. Read `examples/integration-bundle.json` to map a host-app request or response onto LewLM's stable shapes.

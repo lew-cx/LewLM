@@ -14,7 +14,11 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | --- | --- | --- |
 | `GET` | `/v1/health` | service, storage, configuration, install-profile, pack, and capability-readiness health |
 | `GET` | `/v1/cache/stats` | cache and performance-feature snapshot |
+| `GET` | `/v1/runtime` | stable process identity and compact live counts |
 | `GET` | `/v1/runtime/stats` | readiness, runtime, scheduler, residency, and runtime-strategy stats |
+| `GET` | `/v1/runtime/residencies` | live model residency snapshots |
+| `GET` | `/v1/model-lifecycle/operations/{operation_id}` | poll an asynchronous lifecycle operation |
+| `DELETE` | `/v1/model-lifecycle/operations/{operation_id}` | cancel a pending/running lifecycle operation |
 | `GET` | `/v1/jobs/{job_id}` | background job status |
 | `POST` | `/v1/benchmarks/autotune` | serving-profile recommendation |
 | `GET` | `/v1/cluster/stats` | experimental cluster status |
@@ -37,12 +41,18 @@ LewLM serves a local FastAPI app with OpenAPI at:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/models` | list registry manifests |
+| `GET` | `/v1/models` | list registry manifests, annotated with per-model serving readiness |
+| `GET` | `/v1/models/{model_id}` | one manifest plus its readiness annotation |
 | `GET` | `/v1/models/{model_id}/capabilities` | per-model capability, readiness, and runtime report |
 | `POST` | `/v1/models/scan` | scan roots and refresh registry |
 | `POST` | `/v1/models/convert` | queue or replay a conversion job |
-| `POST` | `/v1/models/{model_id}/warm` | warm a model |
-| `POST` | `/v1/models/{model_id}/unload` | unload a model |
+| `GET` | `/v1/models/{model_id}/residency` | one model's live residency, if present |
+| `POST` | `/v1/models/{model_id}/warm` | load once and run the backend warm hook |
+| `POST` | `/v1/models/{model_id}/drain` | refuse new leases, wait up to `model_drain_timeout_seconds`, and unload |
+| `POST` | `/v1/models/{model_id}/drain-operations` | return 202 and drain in a pollable background operation |
+| `POST` | `/v1/models/{model_id}/unload` | unload only when no usage lease is active |
+
+Scoped lifecycle authorization uses operator credentials for residency inspection, warm, and drain, and administrator credentials for unload and disruptive diagnostics. Application identity headers are audit context, not credentials. Async drain records use `pending`, `running`, `succeeded`, `failed`, and `cancelled` states and accept an application-scoped `idempotency_key`.
 
 ### Chat and responses
 
@@ -58,7 +68,8 @@ Features:
 - session integration
 - `response_format` structured-output contracts plus `structured_output` fallback/validation metadata
 - prompt overrides, tools, and MCP-style tool metadata
-- prompt trace output
+- prompt trace output, on the response body and on a stream's terminal chunk alike
+- message `role` is a closed set — `system`, `developer`, `user`, `assistant`, `tool` — so an unrecognized role is rejected rather than serialized into the prompt as an unknown tag
 
 ### Multimodal
 
@@ -69,13 +80,14 @@ Features:
 | `POST` | `/v1/rerank` | rerank candidate documents |
 | `POST` | `/v1/audio/transcriptions` | audio transcription via JSON or multipart |
 | `POST` | `/v1/audio/speech` | speech synthesis |
+| `POST` | `/v1/tokenize/count` | model-accurate token count and deterministic truncation boundary |
 
 ### Documents, tools, and skills
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/documents/generate` | render artifact from `DocumentIR` |
-| `POST` | `/v1/documents/ingest` | ingest local files to structured output |
+| `POST` | `/v1/documents/ingest` | ingest local paths **or uploaded bytes** to structured output |
 | `POST` | `/v1/documents/transform` | apply built-in document skill |
 | `GET` | `/v1/tools` | list local tools |
 | `GET` | `/v1/tools/{tool_name}` | tool descriptor |
@@ -98,6 +110,8 @@ These surfaces are owned by the `documents` feature pack. When that pack is disa
 | `DELETE` | `/v1/sessions/{session_id}` | delete session |
 | `GET` | `/v1/events` | SSE event stream |
 | `WS` | `/v1/events` | WebSocket event stream |
+
+The WebSocket handshake is guarded like every other route. When `api_key_required` is set, send the key as an `x-api-key` header or, from a browser that cannot set handshake headers, as a `lewlm.api-key.<key>` entry in `Sec-WebSocket-Protocol`. The key is never echoed back as the accepted subprotocol. An unauthenticated handshake is closed with code `1008` before it is accepted, and a rate-limited one with `1013`.
 
 ### Cluster
 
@@ -125,8 +139,10 @@ The main execution responses for chat, responses, embeddings, retrieval, rerank,
 
 | Field | Meaning |
 | --- | --- |
-| `version` | metadata contract version (`v1`) |
+| `version` | envelope schema version (`v1`). This does **not** identify the code that ran — see `components` |
 | `request_id`, `created` | request identity and creation timestamp |
+| `correlation_id` | caller-supplied correlation identifier, or `null`. LewLM never generates one |
+| `components[]` | named, versioned parser/renderer/chunker/OCR/scoring/tokenizer records that produced this result |
 | `result_origin` | `runtime`, `cache_hit`, `coalesced`, `tool_execution`, or `idempotent_replay` |
 | `model` | requested/resolved model IDs plus runtime details |
 | `routing` | shared routing summary, including route kind and reason |
@@ -137,6 +153,48 @@ The main execution responses for chat, responses, embeddings, retrieval, rerank,
 For streaming chat and responses APIs, the envelope is attached to the final SSE chunk so consumers can read completed timing data without a separate lookup.
 
 The retrieval surface also includes per-stage `embedding_stage` and `rerank_stage` summaries so host apps can distinguish the overall helper request from the underlying scoring passes.
+
+### Component provenance
+
+`metadata.version` identifies the envelope, not the implementation. Each entry in `metadata.components[]` names one component that actually ran:
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `parser`, `renderer`, `chunker`, `ocr`, `scoring_policy`, or `tokenizer` |
+| `name` | stable LewLM-owned component name, not a package name |
+| `version` | version of the LewLM-owned behaviour; bumped when observable output changes |
+| `implementation` / `implementation_version` | third-party distribution doing the work, when one does |
+| `deterministic` | whether the same input reproduces the same output |
+
+### Request identifiers
+
+Every response carries `x-request-id`. Send your own and LewLM echoes it verbatim; omit it and LewLM mints one. It is set on error responses too, so a failed call is still traceable. This is distinct from `x-lewlm-correlation-id`: the request ID identifies one HTTP call, the correlation ID ties a caller's workflow together across many.
+
+### Sampling controls
+
+Chat and responses requests accept a `sampling` object: `top_p`, `top_k`, `min_p`, `repetition_penalty`, `presence_penalty`, `frequency_penalty`, `seed`, and `stop`.
+
+Backends differ in what they expose, so LewLM never silently drops a control. `metadata.sampling` reports what happened:
+
+| Field | Meaning |
+| --- | --- |
+| `runtime` | which runtime handled the request |
+| `requested` | the controls the caller set |
+| `applied` | the controls that reached the backend |
+| `unsupported` | controls this backend — or this installed build of it — cannot honor |
+| `deterministic` | true only when a `seed` was requested **and** actually applied |
+
+`unsupported` reflects the running system, not the documented API: a control the backend family nominally supports but the installed build does not accept is still reported as unsupported.
+
+### Streaming usage
+
+The final streaming chunk carries `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Earlier chunks have `usage: null`, since the totals are not knowable before the stream ends. `usage.measured` is `true` when the counts came from the model's own tokenizer and `false` when the backend exposed none and LewLM had to estimate.
+
+Abandoning a stream closes it deterministically: LewLM closes the source stream on the way out rather than waiting for garbage collection, so the backend learns the consumer is gone and stops generating.
+
+### Correlation identifiers
+
+Send `x-lewlm-correlation-id`, or set `correlation_id` in the request body on chat, responses, and document routes. The header wins when both are present. LewLM echoes the header on the response, threads the value through `metadata.correlation_id`, and stamps it onto every event emitted for the request. LewLM never invents a correlation ID, so an absent value stays `null` and a caller can always distinguish its own identifier from a LewLM `request_id`. Values are trimmed and bounded to 128 characters.
 
 ## Error envelope
 
@@ -157,6 +215,20 @@ Non-success responses use one top-level machine-readable shape:
 
 `details` is where LewLM surfaces parity-specific guidance such as `support_path`, `feature_class`, `available_support_paths`, `bridge_only`, and `fallback_guidance`.
 
+Common codes include:
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `model_load_failed` | 503 | The runtime is installed, but this model could not be loaded on this host. `details` carries `runtime`, `architecture_family`, `cause_type`, and `cause` so a host app can explain the failure. |
+| `runtime_unavailable` | 503 | The selected runtime is not ready on this host. |
+| `model_lifecycle_conflict` | 409 | A lifecycle action would interrupt active model use. |
+| `invalid_request` | 422 | A request body or parameter failed validation. `details.fields[]` names each offending field with a message and type. |
+| `internal_error` | 500 | An unexpected failure. Carries `details.cause_type` so a host app can report something actionable; LewLM never returns a bare, envelope-less 500. |
+| `not_found` / `method_not_allowed` | 404 / 405 | Framework routing errors, normalized onto the same envelope. |
+| `backend_contract_violation` | 502 | A backend returned a result LewLM cannot trust — a rerank index outside the candidate range, a duplicate index, an unscored candidate, or a non-finite score. Expected mainly on bridge-backed runtimes. |
+
+Backend load failures are always returned in this envelope, including on the streaming chat and responses routes.
+
 ## Consumer-ready fields
 
 For host applications, the main machine-readable readiness fields are:
@@ -166,6 +238,20 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/health.install_profiles.backend_inventory[]` (installed backend module versions; inventory evidence only, never a capability claim)
 - `/v1/health.install_profiles.backend_feature_probes[]` (import-cheap API-presence probes per backend: speculation, KV cache controls, grammar enforcement, multimodal surfaces; presence is inventory evidence only)
 - `/v1/health.install_profiles.llamacpp_build` (feature-detected llama.cpp build flavor: GPU offload support, heuristic accelerator hints, and backend system info; inventory evidence only)
+- `/v1/models.capability_availability[]` (per-model `servable`, `chat_ready`, `ready_capabilities`, `blocked_capabilities`; pick a usable model without one request per model)
+- `/v1/models.chat_ready_count` and `/v1/models.servable_count`
+- `/v1/documents/ingest.sources[]` (upload documents as bytes with a caller-owned `source_id`, `expected_sha256`, and bounded `metadata`; no shared filesystem mount required, and `path` is `null` on every uploaded source)
+- `/v1/documents/ingest.source_results[]` (one outcome per requested source: `status`, stable `error_code`, `retryable`, `chunk_count`, `content_sha256`, `provider_reference`, and per-source `components[]`), plus `ingested_count`, `failed_count`, and `partial`
+- `/v1/retrieval/context.scoring_policy` (named, versioned ranking rules: `primary_signal`, `tie_break_signal`, `final_tie_break`, `normalization`, `missing_score_behaviour`, `deduplication`)
+- `/v1/tokenize/count.token_count` and `.truncated_text` (exact counts from the selected model's tokenizer; truncation lands on a reproducible token boundary)
+- `/v1/runtime.build` (`package_version`, `api_schema_version`, `source_commit`, `source_dirty`, `distribution_digest`, `install_kind`, `release_build`) — enough to prove which implementation produced an artifact
+- `metadata.components[]` on every execution response (which renderer, parser, chunker, OCR engine, scoring policy, or tokenizer ran, and at what version)
+- `metadata.correlation_id` on every execution response, and `correlation_id` on every event
+- `metadata.sampling` (`requested` / `applied` / `unsupported` / `deterministic`) on chat and responses
+- `usage` on the final streaming chunk, with `measured` distinguishing tokenizer counts from estimates
+- `x-request-id` on every response, echoed from the caller when supplied
+- `PATCH /v1/sessions/{session_id}` to rename a session or adjust metadata without touching turn history
+- `/v1/chat/completions.tool_calls` and `/v1/responses.tool_calls` (strict, schema-validated model-emitted tool calls; `status` is one of `no_tool_calls`, `parsed`, `partial`, `failed`, with an explicit `issues[]` reason for anything not accepted, and it is `null` when the request declared no tools). Declaring `tools` also injects the accepted invocation shape into the compiled prompt, so callers do not spend their own `system_prompt` slot on it — see [Tool calling](../guides/host-app-integration.md#tool-calling)
 - `/v1/health.readiness`
 - `/v1/health.readiness.capabilities[].available_support_paths`
 - `/v1/health.readiness.capabilities[].bridge_only`
@@ -185,6 +271,7 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/models/{model_id}/capabilities.capabilities[].readiness_state`
 - `/v1/models/{model_id}/capabilities.capability_evidence[]`
 - `/v1/models/{model_id}/capabilities.measured_capabilities[]`
+- `/v1/models/{model_id}/capabilities.structured_output` (whether a `response_format` will be enforced at decode time or fall back to `prompt_guided`, per contract mode, before you spend a generation finding out)
 - `/v1/lewlm/capabilities.capability_evidence[]`
 - `/v1/lewlm/capabilities.runtime_providers[]`
 - `/v1/lewlm/models/{model_id}/artifacts.capability_evidence[]`

@@ -26,6 +26,8 @@ from lewlm.api.schemas.multimodal import (
     RerankCreateRequest,
     RerankCreateResponse,
     RerankResultItem,
+    TokenCountRequest,
+    TokenCountResponse,
 )
 from lewlm.core.errors import ConfigurationError, UnsupportedMediaTypeError
 from lewlm.security.files import validate_audio_bytes
@@ -163,8 +165,34 @@ async def retrieve_context(payload: RetrievalContextRequest, request: Request) -
             for item in execution.items
         ],
         sources=execution.sources,
+        scoring_policy=execution.scoring_policy,
         embedding_stage=_retrieval_stage_summary(execution.embedding_stage),
         rerank_stage=_retrieval_stage_summary(execution.rerank_stage),
+        metadata=execution.metadata,
+    )
+
+
+@router.post("/v1/tokenize/count", response_model=TokenCountResponse)
+async def count_tokens(payload: TokenCountRequest, request: Request) -> TokenCountResponse:
+    """Count tokens with the selected model's own tokenizer, not an estimate."""
+
+    services = get_services(request)
+    execution = await services.tokenization_service.count_tokens(
+        model_id=payload.model,
+        text=payload.text,
+        max_tokens=payload.max_tokens,
+        correlation_id=payload.correlation_id,
+    )
+    return TokenCountResponse(
+        request_id=execution.request_id,
+        created=execution.created_at,
+        model=execution.model_id,
+        token_count=execution.token_count,
+        character_count=execution.character_count,
+        truncated=execution.truncated,
+        truncated_text=execution.truncated_text,
+        truncated_token_count=execution.truncated_token_count,
+        routing=execution.routing,
         metadata=execution.metadata,
     )
 

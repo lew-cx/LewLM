@@ -15,6 +15,7 @@ from starlette.datastructures import UploadFile
 
 from lewlm.api.dependencies import get_services
 from lewlm.api.message_normalization import normalize_chat_messages, normalize_response_input
+from lewlm.api.openapi import component_ref
 from lewlm.api.schemas.chat import (
     ChatCompletionChoice,
     ChatCompletionChoiceMessage,
@@ -32,7 +33,8 @@ from lewlm.api.schemas.chat import (
 from lewlm.core.chat import ChatStreamDelta
 from lewlm.core.contracts import GenerateMessage, ReasoningOutput, ReasoningVisibility
 from lewlm.core.errors import ConfigurationError
-from lewlm.prompting import PromptCompilationRequest
+from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace
+from lewlm.runtime.request_context import apply_body_correlation_id
 from lewlm.security.workspace import secure_workspace
 
 
@@ -149,6 +151,7 @@ _RESPONSES_STREAM_FRAME_EXAMPLE = (
                             "Server-sent event frames whose `data:` payload lines contain "
                             "`ChatCompletionChunk` JSON objects, followed by `data: [DONE]`."
                         ),
+                        "x-lewlm-frame-schema": component_ref(ChatCompletionChunk),
                     },
                     "example": _CHAT_STREAM_FRAME_EXAMPLE,
                 },
@@ -160,7 +163,7 @@ _RESPONSES_STREAM_FRAME_EXAMPLE = (
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": ChatCompletionRequest.model_json_schema(),
+                    "schema": component_ref(ChatCompletionRequest),
                     "example": _CHAT_JSON_EXAMPLE,
                 },
                 "multipart/form-data": {
@@ -191,6 +194,7 @@ async def create_chat_completion(
 
     services = get_services(request)
     payload, uploaded_files, exit_stack = await _parse_structured_payload(request, ChatCompletionRequest, services=services)
+    apply_body_correlation_id(payload.correlation_id)
     try:
         input_messages = await normalize_chat_messages(payload.messages, services, uploaded_files=uploaded_files)
         messages = _merge_session_messages(services, payload.session_id, input_messages)
@@ -217,6 +221,7 @@ async def create_chat_completion(
                 citation_context=payload.citation_context,
                 max_tokens=payload.max_tokens,
                 temperature=payload.temperature,
+                sampling=payload.sampling,
                 apply_serving_profile=payload.apply_serving_profile,
                 reasoning_visibility=_reasoning_visibility_from_request(
                     payload.reasoning_visibility,
@@ -249,6 +254,7 @@ async def create_chat_completion(
             citation_context=payload.citation_context,
             max_tokens=payload.max_tokens,
             temperature=payload.temperature,
+            sampling=payload.sampling,
             apply_serving_profile=payload.apply_serving_profile,
             reasoning_visibility=_reasoning_visibility_from_request(
                 payload.reasoning_visibility,
@@ -298,6 +304,7 @@ async def create_chat_completion(
         metadata=execution.metadata,
         citations=execution.response.citations,
         structured_output=execution.structured_output,
+        tool_calls=execution.tool_calls,
         prompt_trace=execution.prompt_trace if payload.include_prompt_trace else None,
         serving_profile=execution.serving_profile,
     )
@@ -316,6 +323,7 @@ async def create_chat_completion(
                             "Server-sent event frames whose `data:` payload lines contain "
                             "`ResponseChunk` JSON objects, followed by `data: [DONE]`."
                         ),
+                        "x-lewlm-frame-schema": component_ref(ResponseChunk),
                     },
                     "example": _RESPONSES_STREAM_FRAME_EXAMPLE,
                 },
@@ -327,7 +335,7 @@ async def create_chat_completion(
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": ResponseCreateRequest.model_json_schema(),
+                    "schema": component_ref(ResponseCreateRequest),
                     "example": _RESPONSES_JSON_EXAMPLE,
                 },
                 "multipart/form-data": {
@@ -358,6 +366,7 @@ async def create_response(
 
     services = get_services(request)
     payload, uploaded_files, exit_stack = await _parse_structured_payload(request, ResponseCreateRequest, services=services)
+    apply_body_correlation_id(payload.correlation_id)
     try:
         input_messages = await normalize_response_input(payload.input, services, uploaded_files=uploaded_files)
         messages = _merge_session_messages(services, payload.session_id, input_messages)
@@ -384,6 +393,7 @@ async def create_response(
                 citation_context=payload.citation_context,
                 max_tokens=payload.max_output_tokens,
                 temperature=payload.temperature,
+                sampling=payload.sampling,
                 apply_serving_profile=payload.apply_serving_profile,
                 reasoning_visibility=_reasoning_visibility_from_request(
                     payload.reasoning_visibility,
@@ -417,6 +427,7 @@ async def create_response(
             citation_context=payload.citation_context,
             max_tokens=payload.max_output_tokens,
             temperature=payload.temperature,
+            sampling=payload.sampling,
             apply_serving_profile=payload.apply_serving_profile,
             reasoning_visibility=_reasoning_visibility_from_request(
                 payload.reasoning_visibility,
@@ -463,6 +474,7 @@ async def create_response(
         metadata=execution.metadata,
         citations=execution.response.citations,
         structured_output=execution.structured_output,
+        tool_calls=execution.tool_calls,
         prompt_trace=execution.prompt_trace if payload.include_prompt_trace else None,
         serving_profile=execution.serving_profile,
     )
@@ -544,6 +556,8 @@ def _session_completion_callback(
 
 
 async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=None) -> AsyncIterator[str]:
+    source_stream = None
+    delivered_final_chunk = False
     try:
         sent_role = False
         sent_serving_profile = False
@@ -592,13 +606,25 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
                 ),
             ],
             citations=stream_session.citations,
+            usage=_stream_usage(stream_session),
             metadata=stream_session.metadata,
             structured_output=stream_session.structured_output,
+            tool_calls=stream_session.tool_calls,
+            prompt_trace=_stream_prompt_trace(stream_session),
             serving_profile=stream_session.serving_profile if not sent_serving_profile else None,
         )
         yield f"data: {final_chunk.model_dump_json()}\n\n"
+        delivered_final_chunk = True
         yield "data: [DONE]\n\n"
     finally:
+        # A disconnected client leaves this generator to be closed mid-iteration.
+        # Closing the source explicitly makes cancellation deterministic instead
+        # of waiting on garbage collection to finalize the inner generator.
+        await _close_abandoned_stream(
+            source_stream,
+            completed=delivered_final_chunk,
+            request_id=stream_session.request_id,
+        )
         if on_close is not None:
             try:
                 on_close()
@@ -610,6 +636,8 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
 
 
 async def _response_stream(stream_session, *, on_close=None, on_complete=None) -> AsyncIterator[str]:
+    source_stream = None
+    delivered_final_chunk = False
     try:
         deltas: list[str] = []
         sent_serving_profile = False
@@ -639,12 +667,29 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
                     "Streaming response session completion callback failed.",
                     extra={"request_id": stream_session.request_id, "model_id": stream_session.model_id},
                 )
-        yield (
-            "data: "
-            f"{ResponseChunk(id=stream_session.request_id, created=stream_session.created_at, model=stream_session.model_id, reasoning=stream_session.reasoning, done=True, citations=stream_session.citations, metadata=stream_session.metadata, structured_output=stream_session.structured_output, serving_profile=stream_session.serving_profile if not sent_serving_profile else None).model_dump_json()}\n\n"
+        final_chunk = ResponseChunk(
+            id=stream_session.request_id,
+            created=stream_session.created_at,
+            model=stream_session.model_id,
+            reasoning=stream_session.reasoning,
+            done=True,
+            citations=stream_session.citations,
+            usage=_stream_usage(stream_session),
+            metadata=stream_session.metadata,
+            structured_output=stream_session.structured_output,
+            tool_calls=stream_session.tool_calls,
+            prompt_trace=_stream_prompt_trace(stream_session),
+            serving_profile=stream_session.serving_profile if not sent_serving_profile else None,
         )
+        yield f"data: {final_chunk.model_dump_json()}\n\n"
+        delivered_final_chunk = True
         yield "data: [DONE]\n\n"
     finally:
+        await _close_abandoned_stream(
+            source_stream,
+            completed=delivered_final_chunk,
+            request_id=stream_session.request_id,
+        )
         if on_close is not None:
             try:
                 on_close()
@@ -698,6 +743,47 @@ def _safe_upload_name(*, index: int, file_name: str | None) -> str:
     sanitized = "".join(character if character.isalnum() or character in {".", "-", "_"} else "-" for character in base_name)
     cleaned = sanitized.strip("-.") or f"upload-{index}"
     return f"{index}-{cleaned}"
+
+
+async def _close_abandoned_stream(source_stream, *, completed: bool, request_id: str) -> None:
+    """Close a stream the client stopped reading, so the backend stops too."""
+
+    if source_stream is None or completed:
+        return
+    closer = getattr(source_stream, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to close an abandoned chat stream.",
+            extra={"request_id": request_id},
+        )
+
+
+def _stream_usage(stream_session) -> CompletionUsage | None:
+    """Usage for a completed stream, or None when the backend produced none."""
+
+    raw_usage = getattr(stream_session, "usage", None)
+    if not raw_usage:
+        return None
+    usage = _completion_usage(raw_usage)
+    return usage.model_copy(update={"measured": getattr(stream_session, "usage_measured", True)})
+
+
+def _stream_prompt_trace(stream_session) -> PromptCompilationTrace | None:
+    """The compiled-prompt trace for a stream, when the caller asked for it.
+
+    Attached to the terminal chunk so that inspecting the prompt does not force
+    the caller to give up streaming and re-run the request they were debugging.
+    """
+
+    if not getattr(stream_session, "prompt_trace_requested", False):
+        return None
+    return getattr(stream_session, "prompt_trace", None)
 
 
 def _completion_usage(raw_usage: dict[str, int]) -> CompletionUsage:

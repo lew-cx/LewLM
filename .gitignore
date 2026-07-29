@@ -21,3 +21,4 @@ src/lewlm/models/
 !.github/workflows/
 agent_prompts.md
 milestone_prompts.md
+07-21-devguide.md

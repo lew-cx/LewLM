@@ -1,6 +1,33 @@
 # LewLM
 
-LewLM is a **local-first middleware backend** for multimodal model discovery, routing, serving, and document workflows. It scans local model folders, selects a compatible runtime, and exposes one backend contract through a CLI, a local HTTP API, streaming events, and an embeddable Python interface.
+LewLM is a **local-first AI middleware and shared runtime** that provides model discovery, routing, serving, multimodal capabilities, structured output, retrieval primitives, sessions, tools, and deterministic document infrastructure to application clients. It scans local model folders, selects a compatible runtime, and exposes one backend contract through a CLI, a local HTTP API, streaming events, and an embeddable Python interface.
+
+For production applications, run one long-lived model-owning LewLM process and connect independent applications with `LewLMAppClient.from_http()`. That process owns model objects, scheduling, caches, and residency. Application clients own product schemas, workflows, templates, and artifact lifecycle. Closing a client does not unload shared models.
+
+Lifecycle access can be separated with operator and administrator API keys. Operators may inspect residency, warm models, and request drains; administrators may also unload models and run disruptive diagnostics. Long drains can be started as asynchronous operations and polled without keeping an HTTP connection open. Runtime statistics expose bounded per-application request, lease, wait, failure, model-use, and contention summaries without recording prompts or document content.
+
+An ordinary `uvicorn --workers 4` deployment creates four independent Python processes and can load four copies of a model. Run **one server worker per intended model replica**; scale with explicit replicas, not web-worker count.
+
+```bash
+lewlm serve
+```
+
+```python
+from lewlm import LewLMAppClient
+
+rag_client = LewLMAppClient.from_http(
+    "http://127.0.0.1:8080",
+    application_id="rag-chat",
+)
+document_client = LewLMAppClient.from_http(
+    "http://127.0.0.1:8080",
+    application_id="document-generator",
+)
+
+assert rag_client.runtime_info().runtime_instance_id == document_client.runtime_info().runtime_instance_id
+```
+
+See [ADR-001](docs/architecture/adr-001-shared-runtime-residency.md), the [action plan](docs/architecture/shared-runtime-action-plan.md), and the [shared-client example](examples/shared_runtime_clients.py).
 
 LewLM is optimized first for **Apple Silicon + MLX**, with **llama.cpp/GGUF** as the **first-class non-Apple packaged runtime family** and **loopback-only external accelerators** as a bridge path.
 

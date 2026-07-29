@@ -11,6 +11,7 @@ from lewlm.api.schemas.history import (
     SessionImportRequest,
     SessionListResponse,
     SessionMessagesResponse,
+    SessionUpdateRequest,
 )
 from lewlm.history.models import SessionDetail, SessionExportBundle, SessionRecord
 
@@ -52,6 +53,27 @@ def get_session(session_id: str, request: Request) -> SessionDetail:
 
     services = get_services(request)
     return services.session_history_service.get_session_detail(session_id)
+
+
+@router.patch("/v1/sessions/{session_id}", response_model=SessionRecord)
+def update_session(session_id: str, payload: SessionUpdateRequest, request: Request) -> SessionRecord:
+    """Rename a session or adjust its metadata without touching turn history."""
+
+    services = get_services(request)
+    session = services.session_history_service.update_session(
+        session_id,
+        title=payload.title,
+        metadata=payload.metadata,
+        context_policy=payload.context_policy,
+        merge_metadata=not payload.replace_metadata,
+    )
+    services.audit_logger.record(
+        action="session_update",
+        outcome="success",
+        actor="api",
+        details={"session_id": session_id, "renamed": payload.title is not None},
+    )
+    return session
 
 
 @router.get("/v1/sessions/{session_id}/messages", response_model=SessionMessagesResponse)

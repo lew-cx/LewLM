@@ -62,6 +62,10 @@ class ReceiptExtractionInput(BaseModel):
 class AuthorizedToolRequest(BaseModel):
     authorized_actions: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
+    correlation_id: str | None = Field(
+        default=None,
+        description="Caller correlation identifier echoed back through metadata and events.",
+    )
 
 
 class ContractTextReplacementRequest(AuthorizedToolRequest):

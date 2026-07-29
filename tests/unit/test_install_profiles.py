@@ -344,6 +344,7 @@ def test_install_profiles_describe_ollama_bridge_alias() -> None:
         external_accelerator_enabled=True,
         external_accelerator_base_url="http://127.0.0.1:8080",
         external_accelerator_profile="ollama_local",
+        backend_feature_probes_enabled=False,
     )
 
     summary = summarize_install_profiles(settings)
@@ -457,7 +458,7 @@ def test_install_profiles_surface_backend_feature_probes(monkeypatch) -> None:
     _stub_installed_modules(monkeypatch, installed=set())
     monkeypatch.setattr(
         "lewlm.install_profiles.probe_backend_features",
-        lambda: [
+        lambda **_kwargs: [
             BackendFeatureProbe(
                 profile="gguf_fallback_backend",
                 backend="llama_cpp",

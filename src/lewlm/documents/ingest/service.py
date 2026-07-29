@@ -11,11 +11,28 @@ from pathlib import Path
 import re
 import shutil
 import zipfile
+from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
 
-from lewlm.core.errors import DocumentValidationError, PackUnavailableError, UnsupportedMediaTypeError
-from lewlm.documents.ingest.models import DocumentChunk, DocumentIngestResult, DocumentSourceType, IngestedDocumentSource
+from lewlm.core.errors import (
+    DocumentValidationError,
+    FileAccessError,
+    PackUnavailableError,
+    SandboxExecutionError,
+    UnsupportedMediaTypeError,
+)
+from lewlm.core.provenance import ComponentProvenance, chunker_provenance, ocr_provenance, parser_provenance
+from lewlm.documents.ingest.models import (
+    DocumentChunk,
+    DocumentIngestErrorCode,
+    DocumentIngestResult,
+    DocumentSourceIngestOutcome,
+    DocumentSourceType,
+    IngestedDocumentSource,
+    retryable_for,
+)
 from lewlm.documents.ingest.ocr import OcrBackendStatus, detect_ocr_backend, perform_ocr_on_image_bytes
 from lewlm.documents.ir.models import CalloutBlock, DocumentIR, DocumentSection, ImageBlock, ListBlock, ParagraphBlock, TableBlock
 from lewlm.events.bus import EventBus
@@ -34,6 +51,116 @@ from lewlm.security.workspace import secure_workspace
 class _ParsedSource:
     sections: list[DocumentSection]
     source: IngestedDocumentSource
+
+
+#: Upper bound on a single uploaded source, guarding the ingest workspace from
+#: an unbounded request body.
+MAX_UPLOAD_SOURCE_BYTES = 64 * 1024 * 1024
+
+#: Upper bound on caller-supplied per-source metadata, keeping an opaque
+#: passthrough field from becoming unbounded storage.
+MAX_SOURCE_METADATA_ENTRIES = 32
+MAX_SOURCE_METADATA_VALUE_CHARACTERS = 1024
+
+
+@dataclass(slots=True)
+class UploadedDocumentSource:
+    """A document supplied as bytes instead of a server-local path.
+
+    Path-only ingestion forces the caller and LewLM to share an identical
+    absolute mount, and makes source identity depend on deployment paths.
+    An uploaded source carries its own opaque identity instead.
+    """
+
+    source_id: str
+    file_name: str
+    content: bytes
+    media_type: str | None = None
+    expected_sha256: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class _NormalizedSource:
+    """One requested source, whether it arrived as a path or as bytes."""
+
+    index: int
+    source_id: str | None
+    origin: str
+    path: Path | None = None
+    upload: UploadedDocumentSource | None = None
+
+    @property
+    def reference(self) -> str:
+        if self.source_id is not None:
+            return self.source_id
+        return str(self.path) if self.path is not None else f"source-{self.index}"
+
+
+class _SourceIngestError(Exception):
+    """A single source failed in a way that must not abort the whole request."""
+
+    def __init__(self, code: DocumentIngestErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _safe_upload_file_name(file_name: str, *, index: int) -> str:
+    """Reduce a caller-supplied name to a safe basename inside the workspace."""
+
+    candidate = Path(file_name.strip() or "").name
+    candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate).strip("._") or f"upload-{index}"
+    # A leading dot would hide the file and an empty stem breaks suffix routing.
+    if candidate.startswith("."):
+        candidate = f"upload-{index}{candidate}"
+    return candidate[:128]
+
+
+def _validated_upload_metadata(metadata: dict[str, Any] | None, *, source_id: str) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    if len(metadata) > MAX_SOURCE_METADATA_ENTRIES:
+        raise DocumentValidationError(
+            "Uploaded source metadata exceeds the allowed entry count.",
+            details={
+                "source_id": source_id,
+                "entries": len(metadata),
+                "max_entries": MAX_SOURCE_METADATA_ENTRIES,
+            },
+        )
+    bounded: dict[str, Any] = {}
+    for key, value in metadata.items():
+        text = value if isinstance(value, str) else str(value)
+        if len(text) > MAX_SOURCE_METADATA_VALUE_CHARACTERS:
+            raise DocumentValidationError(
+                "Uploaded source metadata value exceeds the allowed length.",
+                details={
+                    "source_id": source_id,
+                    "key": str(key),
+                    "max_characters": MAX_SOURCE_METADATA_VALUE_CHARACTERS,
+                },
+            )
+        bounded[str(key)] = value
+    return bounded
+
+
+def _error_code_for(exc: Exception) -> DocumentIngestErrorCode:
+    """Map an internal failure onto a stable, caller-facing error code."""
+
+    if isinstance(exc, _SourceIngestError):
+        return exc.code
+    if isinstance(exc, UnsupportedMediaTypeError):
+        return DocumentIngestErrorCode.UNSUPPORTED_SOURCE_TYPE
+    if isinstance(exc, FileAccessError):
+        return DocumentIngestErrorCode.ACCESS_DENIED
+    if isinstance(exc, SandboxExecutionError):
+        return DocumentIngestErrorCode.PARSER_TIMEOUT
+    if isinstance(exc, DocumentValidationError):
+        return DocumentIngestErrorCode.CORRUPT_SOURCE
+    if isinstance(exc, (zipfile.BadZipFile, UnicodeDecodeError, ValueError)):
+        return DocumentIngestErrorCode.CORRUPT_SOURCE
+    return DocumentIngestErrorCode.PARSER_FAILED
 
 
 def _split_headers_and_rows(rows: list[list[str]]) -> tuple[list[str], list[list[str]]]:
@@ -357,34 +484,37 @@ class DocumentIngestService:
 
     def ingest(
         self,
-        paths: list[str] | tuple[str, ...] | list[Path] | tuple[Path, ...],
+        paths: list[str] | tuple[str, ...] | list[Path] | tuple[Path, ...] | None = None,
         *,
+        sources: Sequence[UploadedDocumentSource] | None = None,
         title: str | None = None,
         allowed_file_roots: tuple[Path | str, ...] | list[Path | str] | None = None,
         base_dir: Path | str | None = None,
         request_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> DocumentIngestResult:
         self._ensure_enabled()
-        if not paths:
-            raise DocumentValidationError("Document ingest requires at least one source path.")
+        paths = list(paths or ())
+        uploads = list(sources or ())
+        if not paths and not uploads:
+            raise DocumentValidationError("Document ingest requires at least one source path or uploaded source.")
+
         resolved_request_id = request_id or str(uuid4())
         scoped_roots = tuple(allowed_file_roots) if allowed_file_roots is not None else _default_ingest_scope_roots(paths, base_dir=base_dir)
-        resolved_sources = [
-            resolve_scoped_path(
-                path,
-                allowed_roots=scoped_roots,
-                purpose="Document source",
-                base_dir=base_dir,
-                expect="any",
-            )
-            for path in paths
-        ]
+        normalized = self._normalize_requested_sources(
+            paths,
+            uploads,
+            scoped_roots=scoped_roots,
+            base_dir=base_dir,
+        )
         ocr_status = detect_ocr_backend()
         self._publish(
             EventType.DOCUMENT_PARSE_STARTED,
             {
                 "request_id": resolved_request_id,
-                "source_count": len(resolved_sources),
+                "correlation_id": correlation_id,
+                "source_count": len(normalized),
+                "uploaded_source_count": len(uploads),
                 "title": title,
                 "ocr_available": ocr_status.available,
             },
@@ -392,17 +522,46 @@ class DocumentIngestService:
 
         sections: list[DocumentSection] = []
         source_records: list[IngestedDocumentSource] = []
+        outcomes: list[DocumentSourceIngestOutcome] = []
         try:
             with secure_workspace(self.workspace_root, prefix="ingest-") as workspace:
-                total_sources = len(resolved_sources)
-                for index, source_path in enumerate(resolved_sources):
-                    parsed = self._ingest_source(
-                        source_path,
-                        workspace / f"source-{index}",
-                        allowed_file_roots=scoped_roots,
-                        base_dir=base_dir,
-                        ocr_status=ocr_status,
-                    )
+                total_sources = len(normalized)
+                for requested in normalized:
+                    index = requested.index
+                    # One source failing must not discard the sources that
+                    # parsed cleanly, so each is contained and reported.
+                    try:
+                        parsed, content_digest = self._ingest_requested_source(
+                            requested,
+                            workspace / f"source-{index}",
+                            allowed_file_roots=scoped_roots,
+                            base_dir=base_dir,
+                            ocr_status=ocr_status,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - recorded as a per-source outcome
+                        outcomes.append(
+                            _failed_source_outcome(
+                                requested,
+                                exc,
+                                request_id=resolved_request_id,
+                            ),
+                        )
+                        self._publish(
+                            EventType.OPERATION_PROGRESS,
+                            {
+                                "request_id": resolved_request_id,
+                                "correlation_id": correlation_id,
+                                "operation": "document.parse",
+                                "stage": "source_failed",
+                                "completed_steps": len(outcomes),
+                                "total_steps": total_sources,
+                                "progress": round(len(outcomes) / total_sources, 4),
+                                "source_id": requested.reference,
+                                "error_code": _error_code_for(exc).value,
+                            },
+                        )
+                        continue
+
                     source_record = _standardize_source_record(parsed.source, source_index=index)
                     parsed_sections = _standardize_sections(
                         parsed.sections,
@@ -412,21 +571,44 @@ class DocumentIngestService:
                     )
                     sections.extend(parsed_sections)
                     source_records.append(source_record)
+                    outcomes.append(
+                        _succeeded_source_outcome(
+                            source_record,
+                            section_count=len(parsed_sections),
+                            content_sha256=content_digest,
+                            ocr_status=ocr_status,
+                            request_id=resolved_request_id,
+                        ),
+                    )
                     self._publish(
                         EventType.OPERATION_PROGRESS,
                         {
                             "request_id": resolved_request_id,
+                            "correlation_id": correlation_id,
                             "operation": "document.parse",
                             "stage": "source_parsed",
-                            "completed_steps": index + 1,
+                            "completed_steps": len(outcomes),
                             "total_steps": total_sources,
-                            "progress": round((index + 1) / total_sources, 4),
-                            "path": str(source_path),
+                            "progress": round(len(outcomes) / total_sources, 4),
+                            "source_id": source_record.source_id,
                             "source_type": source_record.source_type.value,
                         },
                     )
 
-            document_title = title or self._default_title(resolved_sources)
+            if not source_records:
+                first_failure = next((item for item in outcomes if item.error_message), None)
+                raise DocumentValidationError(
+                    "Document ingest could not parse any requested source.",
+                    details={
+                        "source_count": len(normalized),
+                        "source_results": [item.model_dump(mode="json") for item in outcomes],
+                        "first_error_code": first_failure.error_code.value if first_failure and first_failure.error_code else None,
+                    },
+                )
+
+            document_title = title or self._default_title(
+                [item.path for item in normalized if item.path is not None] or [Path(item.reference) for item in normalized],
+            )
             document = DocumentIR(
                 title=document_title,
                 metadata={
@@ -451,24 +633,46 @@ class DocumentIngestService:
                     },
                 },
             )
+            chunk_counts = Counter(chunk.source_id for chunk in chunks)
+            outcomes = [
+                item.model_copy(update={"chunk_count": chunk_counts.get(item.source_id, 0)})
+                if item.succeeded
+                else item
+                for item in outcomes
+            ]
+            failed_count = sum(1 for item in outcomes if not item.succeeded)
             self._publish(
                 EventType.DOCUMENT_PARSE_COMPLETED,
                 {
                     "request_id": resolved_request_id,
+                    "correlation_id": correlation_id,
                     "title": document_title,
                     "source_count": len(source_records),
+                    "failed_source_count": failed_count,
                     "section_count": len(sections),
                     "chunk_count": len(chunks),
                     "ocr_used": document.metadata["ocr_used"],
                 },
             )
-            return DocumentIngestResult(document=document, sources=source_records, chunks=chunks)
+            return DocumentIngestResult(
+                document=document,
+                sources=source_records,
+                chunks=chunks,
+                source_results=outcomes,
+                ingested_count=len(source_records),
+                failed_count=failed_count,
+                partial=failed_count > 0,
+                components=_distinct_components(
+                    [component for item in outcomes for component in item.components] + [chunker_provenance()],
+                ),
+            )
         except Exception as exc:
             self._publish(
                 EventType.DOCUMENT_PARSE_FAILED,
                 {
                     "request_id": resolved_request_id,
-                    "source_count": len(resolved_sources),
+                    "correlation_id": correlation_id,
+                    "source_count": len(normalized),
                     "error": str(exc),
                 },
             )
@@ -481,6 +685,130 @@ class DocumentIngestService:
             "Document ingest is unavailable because the `documents` feature pack is disabled.",
             details={"pack": "documents", "reason": self.disabled_reason},
         )
+
+    def _normalize_requested_sources(
+        self,
+        paths: list[Any],
+        uploads: list[UploadedDocumentSource],
+        *,
+        scoped_roots: tuple[Path | str, ...],
+        base_dir: Path | str | None,
+    ) -> list[_NormalizedSource]:
+        """Resolve both transports into one ordered list of requested sources.
+
+        Path scope violations still raise for the whole request: they are an
+        authorization decision about the request, not a per-source parse result.
+        """
+
+        normalized: list[_NormalizedSource] = []
+        for index, path in enumerate(paths):
+            normalized.append(
+                _NormalizedSource(
+                    index=index,
+                    source_id=None,
+                    origin="path",
+                    path=resolve_scoped_path(
+                        path,
+                        allowed_roots=scoped_roots,
+                        purpose="Document source",
+                        base_dir=base_dir,
+                        expect="any",
+                    ),
+                ),
+            )
+
+        seen_ids: set[str] = set()
+        for offset, upload in enumerate(uploads):
+            source_id = upload.source_id.strip()
+            if not source_id:
+                raise DocumentValidationError("Uploaded sources require a non-empty source_id.")
+            if source_id in seen_ids:
+                raise DocumentValidationError(
+                    "Uploaded sources require unique source identifiers.",
+                    details={"source_id": source_id},
+                )
+            seen_ids.add(source_id)
+            # Metadata bounds describe the shape of the request, not the health
+            # of the bytes, so they are rejected here rather than becoming a
+            # misleading per-source parse failure.
+            _validated_upload_metadata(upload.metadata, source_id=source_id)
+            normalized.append(
+                _NormalizedSource(
+                    index=len(paths) + offset,
+                    source_id=source_id,
+                    origin="upload",
+                    upload=upload,
+                ),
+            )
+        return normalized
+
+    def _ingest_requested_source(
+        self,
+        requested: _NormalizedSource,
+        workspace_path: Path,
+        *,
+        allowed_file_roots: tuple[Path | str, ...],
+        base_dir: Path | str | None,
+        ocr_status: OcrBackendStatus,
+    ) -> tuple[_ParsedSource, str | None]:
+        """Parse one requested source, materializing uploaded bytes first."""
+
+        if requested.origin == "path":
+            assert requested.path is not None  # guaranteed by normalization
+            parsed = self._ingest_source(
+                requested.path,
+                workspace_path,
+                allowed_file_roots=allowed_file_roots,
+                base_dir=base_dir,
+                ocr_status=ocr_status,
+            )
+            return parsed, None
+
+        upload = requested.upload
+        assert upload is not None  # guaranteed by normalization
+        staged_path, digest = self._materialize_upload(upload, workspace_path, index=requested.index)
+        # Uploaded bytes live only inside LewLM's own sandboxed workspace, so
+        # the staging directory is the authorized root for this source.
+        parsed = self._ingest_source(
+            staged_path,
+            workspace_path / "parse",
+            allowed_file_roots=(staged_path.parent,),
+            base_dir=staged_path.parent,
+            ocr_status=ocr_status,
+        )
+        return _rebind_uploaded_source(parsed, upload=upload, digest=digest), digest
+
+    def _materialize_upload(
+        self,
+        upload: UploadedDocumentSource,
+        workspace_path: Path,
+        *,
+        index: int,
+    ) -> tuple[Path, str]:
+        """Write uploaded bytes into the ingest workspace after verifying them."""
+
+        if not upload.content:
+            raise _SourceIngestError(
+                DocumentIngestErrorCode.EMPTY_SOURCE,
+                "Uploaded source contained no bytes.",
+            )
+        if len(upload.content) > MAX_UPLOAD_SOURCE_BYTES:
+            raise _SourceIngestError(
+                DocumentIngestErrorCode.SOURCE_TOO_LARGE,
+                f"Uploaded source exceeds the {MAX_UPLOAD_SOURCE_BYTES}-byte limit.",
+            )
+        digest = hashlib.sha256(upload.content).hexdigest()
+        if upload.expected_sha256 and digest.casefold() != upload.expected_sha256.strip().casefold():
+            # The caller asked LewLM to prove it parsed the bytes it sent.
+            raise _SourceIngestError(
+                DocumentIngestErrorCode.CHECKSUM_MISMATCH,
+                "Uploaded source did not match the expected SHA-256 digest.",
+            )
+        staging = workspace_path / "upload"
+        staging.mkdir(parents=True, exist_ok=True)
+        staged_path = staging / _safe_upload_file_name(upload.file_name, index=index)
+        staged_path.write_bytes(upload.content)
+        return staged_path, digest
 
     def _ingest_source(
         self,
@@ -1312,6 +1640,108 @@ def _guess_source_media_type(path: str, source_type: DocumentSourceType) -> str 
     if source_type == DocumentSourceType.IMAGE_BUNDLE:
         return None
     return mimetypes.guess_type(path)[0]
+
+
+def _rebind_uploaded_source(
+    parsed: _ParsedSource,
+    *,
+    upload: UploadedDocumentSource,
+    digest: str,
+) -> _ParsedSource:
+    """Replace workspace-derived identity with the caller's opaque identity.
+
+    The staged path is a LewLM implementation detail, so it never reaches the
+    caller and never becomes part of source identity.
+    """
+
+    source = parsed.source.model_copy(
+        update={
+            "source_id": upload.source_id,
+            "path": None,
+            "source_name": upload.file_name,
+            "source_label": upload.file_name,
+            "media_type": upload.media_type or parsed.source.media_type,
+            "metadata": {
+                **parsed.source.metadata,
+                **_validated_upload_metadata(upload.metadata, source_id=upload.source_id),
+                "source_origin": "upload",
+                "content_sha256": digest,
+                "content_bytes": len(upload.content),
+            },
+        },
+    )
+    return _ParsedSource(sections=parsed.sections, source=source)
+
+
+def _source_components(
+    source_type: DocumentSourceType,
+    *,
+    ocr_status: OcrBackendStatus,
+    ocr_used: bool,
+) -> list[ComponentProvenance]:
+    components = [parser_provenance(source_type.value)]
+    if ocr_used:
+        components.append(
+            ocr_provenance(backend_name=ocr_status.backend_name, available=ocr_status.available),
+        )
+    return components
+
+
+def _succeeded_source_outcome(
+    source: IngestedDocumentSource,
+    *,
+    section_count: int,
+    content_sha256: str | None,
+    ocr_status: OcrBackendStatus,
+    request_id: str,
+) -> DocumentSourceIngestOutcome:
+    return DocumentSourceIngestOutcome(
+        source_id=source.source_id,
+        status="ingested",
+        source_label=source.source_label,
+        source_type=source.source_type,
+        media_type=source.media_type,
+        section_count=section_count,
+        content_sha256=content_sha256 or (source.metadata.get("content_sha256") if source.metadata else None),
+        provider_reference=f"{request_id}:{source.source_id}",
+        components=_source_components(
+            source.source_type,
+            ocr_status=ocr_status,
+            ocr_used=bool(source.metadata.get("ocr_used")),
+        ),
+    )
+
+
+def _failed_source_outcome(
+    requested: _NormalizedSource,
+    exc: Exception,
+    *,
+    request_id: str,
+) -> DocumentSourceIngestOutcome:
+    code = _error_code_for(exc)
+    upload = requested.upload
+    return DocumentSourceIngestOutcome(
+        source_id=requested.source_id or _stable_source_id(str(requested.path or requested.reference)),
+        status="failed",
+        source_label=upload.file_name if upload is not None else (requested.path.name if requested.path else None),
+        media_type=upload.media_type if upload is not None else None,
+        error_code=code,
+        error_message=str(exc),
+        retryable=retryable_for(code),
+        provider_reference=f"{request_id}:{requested.reference}",
+    )
+
+
+def _distinct_components(components: list[ComponentProvenance]) -> list[ComponentProvenance]:
+    seen: set[tuple[str, str, str]] = set()
+    distinct: list[ComponentProvenance] = []
+    for item in components:
+        key = (item.kind.value, item.name, item.version)
+        if key in seen:
+            continue
+        seen.add(key)
+        distinct.append(item)
+    return distinct
 
 
 def _standardize_source_record(source: IngestedDocumentSource, *, source_index: int) -> IngestedDocumentSource:

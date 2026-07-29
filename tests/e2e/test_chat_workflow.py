@@ -84,7 +84,7 @@ def test_end_to_end_model_lifecycle_and_event_workflow(app_with_fake_runtime) ->
                 },
             )
             assert chat_response.status_code == 200
-            events = [websocket.receive_json() for _ in range(9)]
+            events = [websocket.receive_json() for _ in range(10)]
 
         unload_response = client.post(f"/v1/models/{gguf_model_id}/unload")
         assert unload_response.status_code == 200
@@ -94,6 +94,7 @@ def test_end_to_end_model_lifecycle_and_event_workflow(app_with_fake_runtime) ->
         "request.accepted",
         "operation.progress",
         "model.loading",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "prefill.started",
@@ -102,8 +103,8 @@ def test_end_to_end_model_lifecycle_and_event_workflow(app_with_fake_runtime) ->
         "request.completed",
     ]
     assert events[1]["payload"]["stage"] == "prompt_compiled"
-    assert events[4]["payload"]["stage"] == "model_ready"
-    assert events[6]["payload"]["reasoning_exposed"] is False
+    assert events[5]["payload"]["stage"] == "model_ready"
+    assert events[7]["payload"]["reasoning_exposed"] is False
 
 
 def test_end_to_end_document_ingest_event_workflow(app_with_fake_runtime, sample_ingest_sources) -> None:
@@ -222,13 +223,15 @@ def test_end_to_end_http_audio_event_workflow(
             )
             assert transcription_response.status_code == 200
             request_id = transcription_response.json()["request_id"]
-            events = [websocket.receive_json() for _ in range(8)]
+            events = [websocket.receive_json() for _ in range(10)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "audio.transcription.started",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "audio.transcription.completed",
@@ -259,13 +262,15 @@ def test_end_to_end_audio_workflow_emits_chunk_events_for_long_audio(
             )
             assert transcription_response.status_code == 200
             request_id = transcription_response.json()["request_id"]
-            events = [websocket.receive_json() for _ in range(14)]
+            events = [websocket.receive_json() for _ in range(16)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "audio.transcription.started",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "audio.chunk",

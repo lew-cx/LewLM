@@ -94,13 +94,14 @@ class PromptTemplateCatalogService:
         """Serialize compiled messages with the selected prompt template."""
 
         descriptor = self._templates_by_id.get(template_selection.id, self._default_template)
+        rendered_messages = _template_messages(messages)
         if descriptor.render_style == "llama":
-            return _render_llama_prompt(messages)
+            return _render_llama_prompt(rendered_messages)
         if descriptor.render_style == "chatml":
-            return _render_chatml_prompt(messages)
+            return _render_chatml_prompt(rendered_messages)
         if descriptor.render_style == "gemma":
-            return _render_gemma_prompt(messages)
-        return _render_generic_prompt(messages)
+            return _render_gemma_prompt(rendered_messages)
+        return _render_generic_prompt(rendered_messages)
 
     def _match_descriptor(self, value: str) -> PromptTemplateDescriptor | None:
         normalized = _normalize_marker(value)
@@ -112,6 +113,42 @@ class PromptTemplateCatalogService:
 
 def _normalize_marker(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+#: Roles a caller may send that no local chat template has a turn token for.
+#: Rendering them under their own name emits a tag the model has never seen, so
+#: each is folded onto the nearest role the template does understand, with the
+#: original role preserved in the text so the model can still tell them apart.
+_ROLE_ALIASES = {"developer": "system", "tool": "user"}
+_ROLE_PREFIXES = {
+    "developer": "Developer instructions:",
+    "tool": "Tool result:",
+}
+
+
+def _template_role(role: str) -> str:
+    return _ROLE_ALIASES.get(role, role)
+
+
+def _template_content(message: GenerateMessage) -> str:
+    content = message.content.strip()
+    prefix = _ROLE_PREFIXES.get(message.role)
+    if prefix and content:
+        return f"{prefix}\n{content}"
+    return content
+
+
+def _template_messages(messages: list[GenerateMessage]) -> list[GenerateMessage]:
+    """Rewrite messages onto the roles the templates can actually serialize."""
+
+    if not any(message.role in _ROLE_ALIASES for message in messages):
+        return messages
+    return [
+        message.model_copy(update={"role": _template_role(message.role), "content": _template_content(message)})
+        if message.role in _ROLE_ALIASES
+        else message
+        for message in messages
+    ]
 
 
 def _render_generic_prompt(messages: list[GenerateMessage]) -> str:

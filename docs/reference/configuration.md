@@ -14,6 +14,7 @@ All settings live on `LewLMSettings` and use the `LEWLM_` prefix.
 | `LEWLM_MODELS_DIR` | derived from `data_dir/models` | scan roots |
 | `LEWLM_PRIVACY_MODE` | `false` | privacy-oriented behaviors |
 | `LEWLM_TELEMETRY_ENABLED` | `false` | telemetry toggle |
+| `LEWLM_BACKEND_FEATURE_PROBES_ENABLED` | `false` | opt-in import-based installed-backend inventory probes for diagnostic hosts; leave disabled in constrained or model-serving processes |
 | `LEWLM_ALLOW_OUTBOUND_NETWORK` | `false` | outbound network policy |
 
 ## Pack selection
@@ -44,6 +45,8 @@ Built-in feature pack names: `documents`.
 | --- | --- | --- |
 | `LEWLM_API_KEY_REQUIRED` | `false` | require API keys for guarded routes |
 | `LEWLM_API_KEYS` | empty | accepted API keys |
+| `LEWLM_LIFECYCLE_OPERATOR_API_KEYS` | empty | scoped keys for residency inspection, warm, and drain |
+| `LEWLM_LIFECYCLE_ADMINISTRATOR_API_KEYS` | empty | scoped keys for unload and disruptive diagnostics, including all operator permissions |
 | `LEWLM_REQUEST_MAX_BYTES` | `52428800` | request size limit |
 | `LEWLM_RATE_LIMIT_REQUESTS` | `120` | requests per window |
 | `LEWLM_RATE_LIMIT_WINDOW_SECONDS` | `60` | rate-limit window |
@@ -54,6 +57,7 @@ Built-in feature pack names: `documents`.
 | --- | --- | --- |
 | `LEWLM_MAX_CONCURRENT_RUNTIME_REQUESTS` | `4` | runtime request concurrency |
 | `LEWLM_MAX_CONCURRENT_MODEL_LOADS` | `1` | concurrent warm/load control |
+| `LEWLM_MAX_APPLICATION_METRIC_ENTRIES` | `64` | bounded named application metric entries before overflow aggregation |
 | `LEWLM_RUNTIME_REQUEST_QUEUE_LIMIT` | `16` | queue depth limit |
 | `LEWLM_RUNTIME_REQUEST_QUEUE_TIMEOUT_SECONDS` | `15` | queue wait timeout |
 | `LEWLM_CONTINUOUS_BATCH_WINDOW_MILLISECONDS` | `8` | native batch join window |
@@ -70,9 +74,10 @@ Built-in feature pack names: `documents`.
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `LEWLM_RUNTIME_POLICY` | `balanced` | keep-warm vs unload policy |
+| `LEWLM_MODEL_DRAIN_TIMEOUT_SECONDS` | `30` | synchronous and default asynchronous drain timeout |
 | `LEWLM_KV_CACHE_PAGE_SIZE` | `256` | paged KV sizing |
 | `LEWLM_KV_CACHE_MAX_PAGES` | `64` | maximum KV pages |
-| `LEWLM_KV_CACHE_QUANTIZATION_BITS` | `8` | KV quantization |
+| `LEWLM_KV_CACHE_QUANTIZATION_BITS` | unset | KV quantization (`16`/`8`/`4`); a quantized cache also enables llama.cpp flash attention, and is refused when the installed build cannot accept it |
 | `LEWLM_GPU_OFFLOAD_LAYERS` | unset | GPU layer offload for GGUF models (`-1` offloads all layers); applied only when the installed llama.cpp build reports GPU offload support |
 | `LEWLM_MLX_GRAPH_COMPILE_ENABLED` | `false` | MLX graph compile toggle |
 | `LEWLM_MLX_ATTENTION_KERNEL_MODE` | `stock` | MLX attention kernel mode |
@@ -133,6 +138,22 @@ On Linux and Windows, including NVIDIA-backed local servers, this is the intende
 | `LEWLM_PERSISTENCE_ENCRYPTION_ENABLED` | `false` | enable encrypted persistence |
 | `LEWLM_PERSISTENCE_ENCRYPTION_PASSPHRASE` | unset | encryption passphrase |
 | `LEWLM_PERSISTENCE_ENCRYPTION_KDF_ITERATIONS` | `600000` | KDF cost |
+
+## Browser access (CORS)
+
+LewLM serves no CORS headers by default: it is local-first, and a permissive default would let any page an operator visits reach a loopback model server.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `LEWLM_CORS_ENABLED` | `false` | Turn CORS on. Requires `cors_allow_origins`. |
+| `LEWLM_CORS_ALLOW_ORIGINS` | `()` | Explicit origin allowlist. |
+| `LEWLM_CORS_ALLOW_CREDENTIALS` | `false` | Cannot be combined with a `*` origin; startup refuses that pairing. |
+| `LEWLM_CORS_ALLOW_METHODS` | `GET, POST, PATCH, DELETE, OPTIONS` | Permitted methods. |
+| `LEWLM_CORS_ALLOW_HEADERS` | LewLM request headers | Includes `x-api-key`, `x-lewlm-*`, and `x-request-id`. |
+| `LEWLM_CORS_EXPOSE_HEADERS` | `x-request-id, x-lewlm-correlation-id` | Headers a browser caller can read. |
+| `LEWLM_CORS_MAX_AGE_SECONDS` | `600` | Preflight cache duration. |
+
+Two misconfigurations are refused at startup rather than at request time: enabling CORS with no origins, and combining credentials with a wildcard origin.
 
 ## Cluster
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Self
+from types import UnionType
+from typing import Any, Literal, Self, Union, get_args, get_origin
 
 from pydantic import SecretStr, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,9 +13,17 @@ from lewlm._version import __version__
 from lewlm.core.contracts import ReasoningVisibility
 from lewlm.pack_registry import KNOWN_FEATURE_PACKS, KNOWN_RUNTIME_PACKS, canonicalize_pack_name
 
+# Environment variables are always strings, so an operator has no way to spell
+# `None` for an optional setting without an explicit unset sentinel.
+_NULL_ENV_SENTINELS = frozenset({"", "null", "none", "~"})
+
 
 def _normalize_path(path: Path) -> Path:
     return path.expanduser().resolve(strict=False)
+
+
+def _field_accepts_none(annotation: Any) -> bool:
+    return get_origin(annotation) in {Union, UnionType} and type(None) in get_args(annotation)
 
 
 class LewLMSettings(BaseSettings):
@@ -40,14 +49,37 @@ class LewLMSettings(BaseSettings):
     disabled_feature_packs: tuple[str, ...] = ()
     privacy_mode: bool = False
     telemetry_enabled: bool = False
+    backend_feature_probes_enabled: bool = False
     allow_outbound_network: bool = False
     api_keys: tuple[SecretStr, ...] = ()
+    lifecycle_operator_api_keys: tuple[SecretStr, ...] = ()
+    lifecycle_administrator_api_keys: tuple[SecretStr, ...] = ()
     api_key_required: bool = False
+    # Off by default: LewLM is local-first, and a permissive default would let
+    # any page the operator visits reach a loopback model server.
+    cors_enabled: bool = False
+    cors_allow_origins: tuple[str, ...] = ()
+    cors_allow_credentials: bool = False
+    cors_allow_methods: tuple[str, ...] = ("GET", "POST", "PATCH", "DELETE", "OPTIONS")
+    cors_allow_headers: tuple[str, ...] = (
+        "authorization",
+        "content-type",
+        "x-api-key",
+        "x-lewlm-application-id",
+        "x-lewlm-client-instance-id",
+        "x-lewlm-authorized-actions",
+        "x-lewlm-correlation-id",
+        "x-request-id",
+    )
+    cors_expose_headers: tuple[str, ...] = ("x-request-id", "x-lewlm-correlation-id")
+    cors_max_age_seconds: int = 600
     request_max_bytes: int = 50 * 1024 * 1024
     rate_limit_requests: int = 120
     rate_limit_window_seconds: int = 60
     max_concurrent_runtime_requests: int = 4
     max_concurrent_model_loads: int = 1
+    max_application_metric_entries: int = 64
+    model_drain_timeout_seconds: int = 30
     runtime_request_queue_limit: int = 16
     runtime_request_queue_timeout_seconds: int = 15
     continuous_batch_window_milliseconds: int = 8
@@ -87,7 +119,9 @@ class LewLMSettings(BaseSettings):
     runtime_policy: Literal["keep_warm", "balanced", "aggressive_unload"] = "balanced"
     kv_cache_page_size: int = 256
     kv_cache_max_pages: int | None = 64
-    kv_cache_quantization_bits: int | None = 8
+    # Off by default: a quantized KV cache constrains which runtimes and builds
+    # can load a model at all, so it stays an explicit opt-in.
+    kv_cache_quantization_bits: int | None = None
     gpu_offload_layers: int | None = None
     prefill_token_batch_size: int = 512
     mlx_graph_compile_enabled: bool = False
@@ -118,6 +152,27 @@ class LewLMSettings(BaseSettings):
     external_accelerator_timeout_seconds: int = 10
     file_access_roots: tuple[Path, ...] = ()
     validation_manifest_paths: tuple[Path, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_null_environment_sentinels(cls, values: Any) -> Any:
+        """Let optional settings be unset from the environment.
+
+        `LEWLM_KV_CACHE_QUANTIZATION_BITS=""` (or `null`/`none`) resolves to
+        `None` instead of failing validation, so a deployment can turn an
+        optional feature off without editing a config file.
+        """
+
+        if not isinstance(values, dict):
+            return values
+        normalized = dict(values)
+        for name, value in values.items():
+            field = cls.model_fields.get(name)
+            if field is None or not isinstance(value, str):
+                continue
+            if _field_accepts_none(field.annotation) and value.strip().casefold() in _NULL_ENV_SENTINELS:
+                normalized[name] = None
+        return normalized
 
     @model_validator(mode="after")
     def normalize_paths(self) -> Self:
@@ -158,8 +213,18 @@ class LewLMSettings(BaseSettings):
             raise ValueError("runtime_packs and disabled_runtime_packs cannot contain the same pack.")
         if set(self.feature_packs) & set(self.disabled_feature_packs):
             raise ValueError("feature_packs and disabled_feature_packs cannot contain the same pack.")
-        if self.api_key_required and not self.api_keys:
-            raise ValueError("api_key_required cannot be enabled without at least one api key.")
+        if self.api_key_required and not (
+            self.api_keys
+            or self.lifecycle_operator_api_keys
+            or self.lifecycle_administrator_api_keys
+        ):
+            raise ValueError("api_key_required cannot be enabled without at least one API key.")
+        if self.cors_enabled and not self.cors_allow_origins:
+            raise ValueError("cors_enabled requires at least one entry in cors_allow_origins.")
+        if self.cors_allow_credentials and "*" in self.cors_allow_origins:
+            # A wildcard origin with credentials lets any site issue authenticated
+            # requests to a loopback model server, so it is refused outright.
+            raise ValueError("cors_allow_credentials cannot be combined with a wildcard origin.")
         if self.persistence_encryption_enabled and self.persistence_encryption_passphrase is None:
             raise ValueError("persistence_encryption_enabled requires persistence_encryption_passphrase.")
         if self.kv_cache_page_size < 1:
@@ -188,6 +253,10 @@ class LewLMSettings(BaseSettings):
             raise ValueError("cluster_worker_heartbeat_timeout_seconds must be at least 1.")
         if self.cluster_stage_timeout_seconds < 1:
             raise ValueError("cluster_stage_timeout_seconds must be at least 1.")
+        if self.model_drain_timeout_seconds < 1:
+            raise ValueError("model_drain_timeout_seconds must be at least 1.")
+        if self.max_application_metric_entries < 1:
+            raise ValueError("max_application_metric_entries must be at least 1.")
         if self.speculative_decoding_num_draft_tokens < 1:
             raise ValueError("speculative_decoding_num_draft_tokens must be at least 1.")
         if self.prompt_lookup_max_ngram_size < 1:
@@ -320,14 +389,19 @@ class LewLMSettings(BaseSettings):
             "database_path": str(self.database_path),
             "privacy_mode": self.privacy_mode,
             "telemetry_enabled": self.telemetry_enabled,
+            "backend_feature_probes_enabled": self.backend_feature_probes_enabled,
             "allow_outbound_network": self.allow_outbound_network,
             "api_key_count": len(self.api_keys),
+            "lifecycle_operator_api_key_count": len(self.lifecycle_operator_api_keys),
+            "lifecycle_administrator_api_key_count": len(self.lifecycle_administrator_api_keys),
             "api_key_required": self.api_key_required,
             "request_max_bytes": self.request_max_bytes,
             "rate_limit_requests": self.rate_limit_requests,
             "rate_limit_window_seconds": self.rate_limit_window_seconds,
             "max_concurrent_runtime_requests": self.max_concurrent_runtime_requests,
             "max_concurrent_model_loads": self.max_concurrent_model_loads,
+            "max_application_metric_entries": self.max_application_metric_entries,
+            "model_drain_timeout_seconds": self.model_drain_timeout_seconds,
             "runtime_request_queue_limit": self.runtime_request_queue_limit,
             "runtime_request_queue_timeout_seconds": self.runtime_request_queue_timeout_seconds,
             "continuous_batch_window_milliseconds": self.continuous_batch_window_milliseconds,

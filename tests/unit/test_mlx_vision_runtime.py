@@ -144,6 +144,39 @@ def test_load_mlx_vlm_backend_client_uses_local_gemma4_loader_after_namespace_mi
     )
 
 
+def test_mlx_vision_runtime_statically_accepts_gemma4_without_importing_metal(monkeypatch, tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "gemma4-bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text('{"model_type":"gemma4"}', encoding="utf-8")
+    package_dir = tmp_path / "mlx_vlm"
+    model_dir = package_dir / "models" / "gemma4"
+    model_dir.mkdir(parents=True)
+    (model_dir / "gemma4.py").write_text("# model marker\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_vision.runtime.find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[str(package_dir)]),
+    )
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_vision.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(AssertionError(f"unexpected backend import: {name}")),
+    )
+    runtime = MLXVisionRuntime(
+        settings=LewLMSettings(
+            data_dir=tmp_path / "state",
+            backend_feature_probes_enabled=False,
+        ),
+    )
+    manifest = _manifest().model_copy(
+        update={
+            "architecture_family": "gemma4",
+            "source_path": str(bundle_dir),
+            "modality": (ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+        },
+    )
+
+    assert runtime.supports_manifest(manifest) is True
+
+
 def test_mlx_vision_runtime_uses_graph_compile_and_custom_sdpa(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {"compiled_calls": 0}
     fake_model = SimpleNamespace(config=SimpleNamespace(model_type="gemma4", image_token_index=42))

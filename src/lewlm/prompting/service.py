@@ -26,6 +26,7 @@ from lewlm.prompting.models import (
 )
 from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat, StructuredOutputRequest
 from lewlm.security.files import read_scoped_text_file
+from lewlm.tool_call_contract import tool_call_invocation_instructions
 from lewlm.tools.catalog import ToolCatalogService
 from lewlm.prompting.templates import PromptTemplateCatalogService
 
@@ -256,6 +257,14 @@ class PromptCompiler:
 
             if requested_mcp_tools:
                 self._append_message(compiled_messages, _render_mcp_tool_listings(requested_mcp_tools))
+
+            if requested_tools or requested_mcp_tools:
+                # Declaring tools without stating the invocation format fails
+                # quietly: the model emits bare arguments and the strict parser
+                # reports `no_tool_calls`, which reads as the model declining.
+                # Emitted once, after every declaration, and covering both
+                # native and MCP tools since both are parsed identically.
+                self._append_message(compiled_messages, tool_call_invocation_instructions())
 
             resolved_response_format = request.response_format
             if request.response_format_path:

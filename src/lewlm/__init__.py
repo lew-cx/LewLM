@@ -9,6 +9,7 @@ from lewlm._version import __version__
 if TYPE_CHECKING:
     from lewlm.api.app import create_app
     from lewlm.app_helpers import LewLMAppClient
+    from lewlm.async_helpers import LewLMAsyncClient
     from lewlm.config.settings import LewLMSettings
     from lewlm.core.bootstrap import LewLMServices, bootstrap_services
     from lewlm.library import LewLM
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 __all__ = [
     "LewLM",
     "LewLMAppClient",
+    "LewLMAsyncClient",
     "LewLMServices",
     "LewLMSettings",
     "__version__",
@@ -45,4 +47,8 @@ def __getattr__(name: str) -> Any:
         from lewlm.app_helpers import LewLMAppClient
 
         return LewLMAppClient
+    if name == "LewLMAsyncClient":
+        from lewlm.async_helpers import LewLMAsyncClient
+
+        return LewLMAsyncClient
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

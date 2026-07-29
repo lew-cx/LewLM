@@ -63,21 +63,46 @@ async def run_model_smoke_probe(
             max_tokens=max_tokens,
         )
         support_path = runtime_support_path_for_affinity(runtime.affinity) or RuntimeSupportPath.PACKAGED
-        await runtime.load_model(manifest)
         generated_text: str | None = None
         state = CapabilityEvidenceState.LOAD_PASSED
         reason = f"`{runtime.name}` loaded `{manifest.model_id}` successfully."
         if mode == "generate":
-            response = await runtime.generate(
-                GenerateRequest(
-                    model_id=manifest.model_id,
-                    messages=[GenerateMessage(role="user", content=prompt)],
-                    max_tokens=max_tokens,
-                ),
-            )
+            residency_manager = getattr(services, "model_residency_manager", None)
+            if residency_manager is None:
+                await runtime.load_model(manifest)
+                response = await runtime.generate(
+                    GenerateRequest(
+                        model_id=manifest.model_id,
+                        messages=[GenerateMessage(role="user", content=prompt)],
+                        max_tokens=max_tokens,
+                    ),
+                )
+            else:
+                async with residency_manager.acquire(
+                    runtime,
+                    manifest,
+                    capability=capability.value,
+                ):
+                    response = await runtime.generate(
+                        GenerateRequest(
+                            model_id=manifest.model_id,
+                            messages=[GenerateMessage(role="user", content=prompt)],
+                            max_tokens=max_tokens,
+                        ),
+                    )
             generated_text = response.output_text
             state = CapabilityEvidenceState.GENERATE_PASSED
             reason = f"`{runtime.name}` loaded and generated from `{manifest.model_id}` successfully."
+        else:
+            residency_manager = getattr(services, "model_residency_manager", None)
+            if residency_manager is None:
+                await runtime.load_model(manifest)
+            else:
+                await residency_manager.ensure_loaded(
+                    runtime,
+                    manifest,
+                    capability=capability.value,
+                )
         evidence = [
             CapabilityEvidence(
                 capability=capability,

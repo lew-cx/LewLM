@@ -6,7 +6,8 @@
     "This bundle is app-agnostic and checked in so host applications can map their own contracts onto LewLM without reading implementation files.",
     "Use the schema refs here for stable request and response shapes, and use /v1/openapi.json for the live route index and operation metadata.",
     "Chat and responses support both application/json and multipart/form-data requests; multipart requests send a JSON-encoded payload_json field plus uniquely named file parts.",
-    "Chat and responses can optionally accept citation_context source/chunk packages and return machine-readable citations keyed to ingest ids and labels."
+    "Chat and responses can optionally accept citation_context source/chunk packages and return machine-readable citations keyed to ingest ids and labels.",
+    "Every non-success response carries {\"error\": {code, message, details}}. The `errors` section lists every code with its fixed HTTP status and whether the identical request may succeed on retry."
   ],
   "schemas": {
     "chat.request": {
@@ -14,6 +15,14 @@
         "ChatMessage": {
           "properties": {
             "role": {
+              "default": "user",
+              "enum": [
+                "system",
+                "developer",
+                "user",
+                "assistant",
+                "tool"
+              ],
               "title": "Role",
               "type": "string"
             },
@@ -59,7 +68,6 @@
             }
           },
           "required": [
-            "role",
             "content"
           ],
           "title": "ChatMessage",
@@ -252,13 +260,22 @@
         "IngestedDocumentSource": {
           "properties": {
             "source_id": {
-              "description": "Stable source identifier derived from the local source path.",
+              "description": "Stable source identifier. Caller-provided for uploaded sources, otherwise derived from the local source path.",
               "title": "Source Id",
               "type": "string"
             },
             "path": {
-              "title": "Path",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Server-local path. Always null for uploaded sources, which never make the caller depend on a shared filesystem mount.",
+              "title": "Path"
             },
             "source_type": {
               "$ref": "#/$defs/DocumentSourceType"
@@ -294,7 +311,6 @@
           },
           "required": [
             "source_id",
-            "path",
             "source_type",
             "source_name",
             "source_label"
@@ -595,6 +611,116 @@
           "title": "ReasoningVisibility",
           "type": "string"
         },
+        "SamplingControls": {
+          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently — a caller that asked for a seed needs to know whether it\nactually got determinism.",
+          "properties": {
+            "top_p": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "maximum": 1.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Top P"
+            },
+            "top_k": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Top K"
+            },
+            "min_p": {
+              "anyOf": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Min P"
+            },
+            "repetition_penalty": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Repetition Penalty"
+            },
+            "presence_penalty": {
+              "anyOf": [
+                {
+                  "maximum": 2.0,
+                  "minimum": -2.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Presence Penalty"
+            },
+            "frequency_penalty": {
+              "anyOf": [
+                {
+                  "maximum": 2.0,
+                  "minimum": -2.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Frequency Penalty"
+            },
+            "seed": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Set for reproducible sampling where the backend supports it.",
+              "title": "Seed"
+            },
+            "stop": {
+              "description": "Stop sequences that end generation.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Stop",
+              "type": "array"
+            }
+          },
+          "title": "SamplingControls",
+          "type": "object"
+        },
         "TextResponseFormat": {
           "description": "Explicit plain-text response format.",
           "properties": {
@@ -634,6 +760,19 @@
           "default": null,
           "title": "Session Id"
         },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Caller correlation identifier echoed back through metadata and events.",
+          "title": "Correlation Id"
+        },
         "messages": {
           "items": {
             "$ref": "#/$defs/ChatMessage"
@@ -661,6 +800,18 @@
           "default": 0.7,
           "title": "Temperature",
           "type": "number"
+        },
+        "sampling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SamplingControls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Decode controls beyond temperature. Backends differ in support; `metadata.sampling` reports which were applied and which were not."
         },
         "apply_serving_profile": {
           "default": true,
@@ -917,9 +1068,85 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
             }
           },
           "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
           "type": "object"
         },
         "ExecutionMetadata": {
@@ -927,12 +1154,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -969,6 +1210,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -1373,6 +1634,30 @@
             "schema"
           ],
           "title": "JSONSchemaResponseFormat",
+          "type": "object"
+        },
+        "ParsedToolCall": {
+          "description": "One strictly parsed and schema-validated tool call.",
+          "properties": {
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            }
+          },
+          "required": [
+            "call_id",
+            "name"
+          ],
+          "title": "ParsedToolCall",
           "type": "object"
         },
         "PromptAttachmentPlanEntry": {
@@ -1859,6 +2144,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -1866,6 +2152,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         },
         "ServingProfileApplication": {
           "properties": {
@@ -2235,6 +2559,87 @@
           },
           "title": "TextResponseFormat",
           "type": "object"
+        },
+        "ToolCallParseIssue": {
+          "description": "One explicit reason a tool-call candidate was not accepted.",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_json",
+                "unrecognized_shape",
+                "missing_name",
+                "unknown_tool",
+                "arguments_not_object",
+                "schema_violation"
+              ],
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "candidate_index": {
+              "title": "Candidate Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "candidate_index"
+          ],
+          "title": "ToolCallParseIssue",
+          "type": "object"
+        },
+        "ToolCallParseResult": {
+          "description": "Strict parse outcome for one model output text.",
+          "properties": {
+            "status": {
+              "enum": [
+                "no_tool_calls",
+                "parsed",
+                "partial",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "parser": {
+              "default": "lewlm_strict_tool_parser",
+              "title": "Parser",
+              "type": "string"
+            },
+            "tool_calls": {
+              "items": {
+                "$ref": "#/$defs/ParsedToolCall"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/ToolCallParseIssue"
+              },
+              "title": "Issues",
+              "type": "array"
+            },
+            "remaining_text": {
+              "default": "",
+              "title": "Remaining Text",
+              "type": "string"
+            },
+            "parallel": {
+              "default": false,
+              "title": "Parallel",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "title": "ToolCallParseResult",
+          "type": "object"
         }
       },
       "properties": {
@@ -2292,6 +2697,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/StructuredOutputResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallParseResult"
             },
             {
               "type": "null"
@@ -2405,17 +2821,128 @@
           "title": "ChatCompletionDelta",
           "type": "object"
         },
+        "CompletionUsage": {
+          "properties": {
+            "prompt_tokens": {
+              "default": 0,
+              "title": "Prompt Tokens",
+              "type": "integer"
+            },
+            "completion_tokens": {
+              "default": 0,
+              "title": "Completion Tokens",
+              "type": "integer"
+            },
+            "total_tokens": {
+              "default": 0,
+              "title": "Total Tokens",
+              "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
+            }
+          },
+          "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
+          "type": "object"
+        },
         "ExecutionMetadata": {
           "properties": {
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -2452,6 +2979,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -2858,6 +3405,438 @@
           "title": "JSONSchemaResponseFormat",
           "type": "object"
         },
+        "ParsedToolCall": {
+          "description": "One strictly parsed and schema-validated tool call.",
+          "properties": {
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            }
+          },
+          "required": [
+            "call_id",
+            "name"
+          ],
+          "title": "ParsedToolCall",
+          "type": "object"
+        },
+        "PromptAttachmentPlanEntry": {
+          "description": "Attachment metadata surfaced by prompt compilation.",
+          "properties": {
+            "message_index": {
+              "title": "Message Index",
+              "type": "integer"
+            },
+            "role": {
+              "title": "Role",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "attachment_type": {
+              "title": "Attachment Type",
+              "type": "string"
+            },
+            "media_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Media Type"
+            },
+            "source_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Path"
+            },
+            "extracted_text_characters": {
+              "default": 0,
+              "title": "Extracted Text Characters",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_index",
+            "role",
+            "name",
+            "attachment_type"
+          ],
+          "title": "PromptAttachmentPlanEntry",
+          "type": "object"
+        },
+        "PromptCompilationTrace": {
+          "description": "Inspectable trace for a compiled prompt.",
+          "properties": {
+            "selected_template": {
+              "title": "Selected Template",
+              "type": "string"
+            },
+            "requested_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requested Model Id"
+            },
+            "resolved_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Resolved Model Id"
+            },
+            "model_prompt_template": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PromptModelTemplateSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "serialized_model_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Serialized Model Prompt"
+            },
+            "message_count": {
+              "title": "Message Count",
+              "type": "integer"
+            },
+            "message_roles": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Message Roles",
+              "type": "array"
+            },
+            "attachment_plan": {
+              "items": {
+                "$ref": "#/$defs/PromptAttachmentPlanEntry"
+              },
+              "title": "Attachment Plan",
+              "type": "array"
+            },
+            "tool_plan": {
+              "items": {
+                "$ref": "#/$defs/PromptToolPlanEntry"
+              },
+              "title": "Tool Plan",
+              "type": "array"
+            },
+            "output_contract": {
+              "$ref": "#/$defs/PromptOutputContract"
+            },
+            "overrides": {
+              "items": {
+                "$ref": "#/$defs/PromptOverrideRecord"
+              },
+              "title": "Overrides",
+              "type": "array"
+            }
+          },
+          "required": [
+            "selected_template",
+            "message_count"
+          ],
+          "title": "PromptCompilationTrace",
+          "type": "object"
+        },
+        "PromptModelTemplateSelection": {
+          "description": "Selected model-aware prompt template used for serialization.",
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "string"
+            },
+            "source": {
+              "default": "default",
+              "enum": [
+                "default",
+                "architecture_family",
+                "model_id"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "matched_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Matched On"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ],
+          "title": "PromptModelTemplateSelection",
+          "type": "object"
+        },
+        "PromptOutputContract": {
+          "description": "Declared output contract for a compiled prompt.",
+          "properties": {
+            "format": {
+              "default": "text",
+              "enum": [
+                "text",
+                "json_schema",
+                "grammar"
+              ],
+              "title": "Format",
+              "type": "string"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "strict": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Strict"
+            },
+            "schema": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Schema"
+            },
+            "grammar": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Grammar"
+            },
+            "syntax": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Syntax"
+            }
+          },
+          "title": "PromptOutputContract",
+          "type": "object"
+        },
+        "PromptOverrideRecord": {
+          "description": "Inspectable record of an applied prompt override.",
+          "properties": {
+            "source": {
+              "title": "Source",
+              "type": "string"
+            },
+            "scope": {
+              "title": "Scope",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Path"
+            }
+          },
+          "required": [
+            "source",
+            "scope",
+            "summary"
+          ],
+          "title": "PromptOverrideRecord",
+          "type": "object"
+        },
+        "PromptToolPlanEntry": {
+          "description": "Tool metadata surfaced by prompt compilation.",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "source": {
+              "default": "request",
+              "enum": [
+                "request",
+                "tools_file",
+                "skills_file",
+                "mcp_request",
+                "mcp_tools_file"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "input_schema": {
+              "additionalProperties": true,
+              "title": "Input Schema",
+              "type": "object"
+            },
+            "registered": {
+              "default": false,
+              "title": "Registered",
+              "type": "boolean"
+            },
+            "execution_mode": {
+              "default": "prompt_only",
+              "enum": [
+                "prompt_only",
+                "local_tool"
+              ],
+              "title": "Execution Mode",
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Version"
+            },
+            "required_authorization": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Required Authorization"
+            },
+            "mcp_server": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mcp Server"
+            },
+            "metadata_trusted": {
+              "default": true,
+              "title": "Metadata Trusted",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "PromptToolPlanEntry",
+          "type": "object"
+        },
         "ReasoningOutput": {
           "description": "Structured reasoning metadata exposed according to policy.",
           "properties": {
@@ -2934,6 +3913,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -2941,6 +3921,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         },
         "ServingProfileApplication": {
           "properties": {
@@ -3310,6 +4328,87 @@
           },
           "title": "TextResponseFormat",
           "type": "object"
+        },
+        "ToolCallParseIssue": {
+          "description": "One explicit reason a tool-call candidate was not accepted.",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_json",
+                "unrecognized_shape",
+                "missing_name",
+                "unknown_tool",
+                "arguments_not_object",
+                "schema_violation"
+              ],
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "candidate_index": {
+              "title": "Candidate Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "candidate_index"
+          ],
+          "title": "ToolCallParseIssue",
+          "type": "object"
+        },
+        "ToolCallParseResult": {
+          "description": "Strict parse outcome for one model output text.",
+          "properties": {
+            "status": {
+              "enum": [
+                "no_tool_calls",
+                "parsed",
+                "partial",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "parser": {
+              "default": "lewlm_strict_tool_parser",
+              "title": "Parser",
+              "type": "string"
+            },
+            "tool_calls": {
+              "items": {
+                "$ref": "#/$defs/ParsedToolCall"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/ToolCallParseIssue"
+              },
+              "title": "Issues",
+              "type": "array"
+            },
+            "remaining_text": {
+              "default": "",
+              "title": "Remaining Text",
+              "type": "string"
+            },
+            "parallel": {
+              "default": false,
+              "title": "Parallel",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "title": "ToolCallParseResult",
+          "type": "object"
         }
       },
       "properties": {
@@ -3345,6 +4444,18 @@
           "title": "Citations",
           "type": "array"
         },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Token accounting. Present on the final chunk only, since it is not knowable before then."
+        },
         "metadata": {
           "anyOf": [
             {
@@ -3366,6 +4477,29 @@
             }
           ],
           "default": null
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallParseResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptCompilationTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Compiled-prompt trace when `include_prompt_trace` was set. Present on the final chunk only, so inspecting the prompt does not cost the caller its stream."
         },
         "serving_profile": {
           "anyOf": [
@@ -3577,13 +4711,22 @@
         "IngestedDocumentSource": {
           "properties": {
             "source_id": {
-              "description": "Stable source identifier derived from the local source path.",
+              "description": "Stable source identifier. Caller-provided for uploaded sources, otherwise derived from the local source path.",
               "title": "Source Id",
               "type": "string"
             },
             "path": {
-              "title": "Path",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Server-local path. Always null for uploaded sources, which never make the caller depend on a shared filesystem mount.",
+              "title": "Path"
             },
             "source_type": {
               "$ref": "#/$defs/DocumentSourceType"
@@ -3619,7 +4762,6 @@
           },
           "required": [
             "source_id",
-            "path",
             "source_type",
             "source_name",
             "source_label"
@@ -3924,6 +5066,13 @@
           "properties": {
             "role": {
               "default": "user",
+              "enum": [
+                "system",
+                "developer",
+                "user",
+                "assistant",
+                "tool"
+              ],
               "title": "Role",
               "type": "string"
             },
@@ -3974,6 +5123,116 @@
           "title": "ResponseInputMessage",
           "type": "object"
         },
+        "SamplingControls": {
+          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently — a caller that asked for a seed needs to know whether it\nactually got determinism.",
+          "properties": {
+            "top_p": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "maximum": 1.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Top P"
+            },
+            "top_k": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Top K"
+            },
+            "min_p": {
+              "anyOf": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Min P"
+            },
+            "repetition_penalty": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Repetition Penalty"
+            },
+            "presence_penalty": {
+              "anyOf": [
+                {
+                  "maximum": 2.0,
+                  "minimum": -2.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Presence Penalty"
+            },
+            "frequency_penalty": {
+              "anyOf": [
+                {
+                  "maximum": 2.0,
+                  "minimum": -2.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Frequency Penalty"
+            },
+            "seed": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Set for reproducible sampling where the backend supports it.",
+              "title": "Seed"
+            },
+            "stop": {
+              "description": "Stop sequences that end generation.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Stop",
+              "type": "array"
+            }
+          },
+          "title": "SamplingControls",
+          "type": "object"
+        },
         "TextResponseFormat": {
           "description": "Explicit plain-text response format.",
           "properties": {
@@ -4013,6 +5272,19 @@
           "default": null,
           "title": "Session Id"
         },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Caller correlation identifier echoed back through metadata and events.",
+          "title": "Correlation Id"
+        },
         "input": {
           "anyOf": [
             {
@@ -4047,6 +5319,18 @@
           "default": 0.7,
           "title": "Temperature",
           "type": "number"
+        },
+        "sampling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SamplingControls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Decode controls beyond temperature. Backends differ in support; `metadata.sampling` reports which were applied and which were not."
         },
         "apply_serving_profile": {
           "default": true,
@@ -4252,9 +5536,85 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
             }
           },
           "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
           "type": "object"
         },
         "ExecutionMetadata": {
@@ -4262,12 +5622,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -4304,6 +5678,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -4708,6 +6102,30 @@
             "schema"
           ],
           "title": "JSONSchemaResponseFormat",
+          "type": "object"
+        },
+        "ParsedToolCall": {
+          "description": "One strictly parsed and schema-validated tool call.",
+          "properties": {
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            }
+          },
+          "required": [
+            "call_id",
+            "name"
+          ],
+          "title": "ParsedToolCall",
           "type": "object"
         },
         "PromptAttachmentPlanEntry": {
@@ -5224,6 +6642,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -5231,6 +6650,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         },
         "ServingProfileApplication": {
           "properties": {
@@ -5600,6 +7057,87 @@
           },
           "title": "TextResponseFormat",
           "type": "object"
+        },
+        "ToolCallParseIssue": {
+          "description": "One explicit reason a tool-call candidate was not accepted.",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_json",
+                "unrecognized_shape",
+                "missing_name",
+                "unknown_tool",
+                "arguments_not_object",
+                "schema_violation"
+              ],
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "candidate_index": {
+              "title": "Candidate Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "candidate_index"
+          ],
+          "title": "ToolCallParseIssue",
+          "type": "object"
+        },
+        "ToolCallParseResult": {
+          "description": "Strict parse outcome for one model output text.",
+          "properties": {
+            "status": {
+              "enum": [
+                "no_tool_calls",
+                "parsed",
+                "partial",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "parser": {
+              "default": "lewlm_strict_tool_parser",
+              "title": "Parser",
+              "type": "string"
+            },
+            "tool_calls": {
+              "items": {
+                "$ref": "#/$defs/ParsedToolCall"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/ToolCallParseIssue"
+              },
+              "title": "Issues",
+              "type": "array"
+            },
+            "remaining_text": {
+              "default": "",
+              "title": "Remaining Text",
+              "type": "string"
+            },
+            "parallel": {
+              "default": false,
+              "title": "Parallel",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "title": "ToolCallParseResult",
+          "type": "object"
         }
       },
       "properties": {
@@ -5668,6 +7206,17 @@
           ],
           "default": null
         },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallParseResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "prompt_trace": {
           "anyOf": [
             {
@@ -5704,17 +7253,128 @@
     },
     "responses.stream": {
       "$defs": {
+        "CompletionUsage": {
+          "properties": {
+            "prompt_tokens": {
+              "default": 0,
+              "title": "Prompt Tokens",
+              "type": "integer"
+            },
+            "completion_tokens": {
+              "default": 0,
+              "title": "Completion Tokens",
+              "type": "integer"
+            },
+            "total_tokens": {
+              "default": 0,
+              "title": "Total Tokens",
+              "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
+            }
+          },
+          "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
+          "type": "object"
+        },
         "ExecutionMetadata": {
           "properties": {
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -5751,6 +7411,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -6157,6 +7837,438 @@
           "title": "JSONSchemaResponseFormat",
           "type": "object"
         },
+        "ParsedToolCall": {
+          "description": "One strictly parsed and schema-validated tool call.",
+          "properties": {
+            "call_id": {
+              "title": "Call Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "arguments": {
+              "additionalProperties": true,
+              "title": "Arguments",
+              "type": "object"
+            }
+          },
+          "required": [
+            "call_id",
+            "name"
+          ],
+          "title": "ParsedToolCall",
+          "type": "object"
+        },
+        "PromptAttachmentPlanEntry": {
+          "description": "Attachment metadata surfaced by prompt compilation.",
+          "properties": {
+            "message_index": {
+              "title": "Message Index",
+              "type": "integer"
+            },
+            "role": {
+              "title": "Role",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "attachment_type": {
+              "title": "Attachment Type",
+              "type": "string"
+            },
+            "media_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Media Type"
+            },
+            "source_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Path"
+            },
+            "extracted_text_characters": {
+              "default": 0,
+              "title": "Extracted Text Characters",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "message_index",
+            "role",
+            "name",
+            "attachment_type"
+          ],
+          "title": "PromptAttachmentPlanEntry",
+          "type": "object"
+        },
+        "PromptCompilationTrace": {
+          "description": "Inspectable trace for a compiled prompt.",
+          "properties": {
+            "selected_template": {
+              "title": "Selected Template",
+              "type": "string"
+            },
+            "requested_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Requested Model Id"
+            },
+            "resolved_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Resolved Model Id"
+            },
+            "model_prompt_template": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PromptModelTemplateSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "serialized_model_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Serialized Model Prompt"
+            },
+            "message_count": {
+              "title": "Message Count",
+              "type": "integer"
+            },
+            "message_roles": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Message Roles",
+              "type": "array"
+            },
+            "attachment_plan": {
+              "items": {
+                "$ref": "#/$defs/PromptAttachmentPlanEntry"
+              },
+              "title": "Attachment Plan",
+              "type": "array"
+            },
+            "tool_plan": {
+              "items": {
+                "$ref": "#/$defs/PromptToolPlanEntry"
+              },
+              "title": "Tool Plan",
+              "type": "array"
+            },
+            "output_contract": {
+              "$ref": "#/$defs/PromptOutputContract"
+            },
+            "overrides": {
+              "items": {
+                "$ref": "#/$defs/PromptOverrideRecord"
+              },
+              "title": "Overrides",
+              "type": "array"
+            }
+          },
+          "required": [
+            "selected_template",
+            "message_count"
+          ],
+          "title": "PromptCompilationTrace",
+          "type": "object"
+        },
+        "PromptModelTemplateSelection": {
+          "description": "Selected model-aware prompt template used for serialization.",
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "string"
+            },
+            "source": {
+              "default": "default",
+              "enum": [
+                "default",
+                "architecture_family",
+                "model_id"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "matched_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Matched On"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ],
+          "title": "PromptModelTemplateSelection",
+          "type": "object"
+        },
+        "PromptOutputContract": {
+          "description": "Declared output contract for a compiled prompt.",
+          "properties": {
+            "format": {
+              "default": "text",
+              "enum": [
+                "text",
+                "json_schema",
+                "grammar"
+              ],
+              "title": "Format",
+              "type": "string"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "strict": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Strict"
+            },
+            "schema": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Schema"
+            },
+            "grammar": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Grammar"
+            },
+            "syntax": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Syntax"
+            }
+          },
+          "title": "PromptOutputContract",
+          "type": "object"
+        },
+        "PromptOverrideRecord": {
+          "description": "Inspectable record of an applied prompt override.",
+          "properties": {
+            "source": {
+              "title": "Source",
+              "type": "string"
+            },
+            "scope": {
+              "title": "Scope",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            },
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Path"
+            }
+          },
+          "required": [
+            "source",
+            "scope",
+            "summary"
+          ],
+          "title": "PromptOverrideRecord",
+          "type": "object"
+        },
+        "PromptToolPlanEntry": {
+          "description": "Tool metadata surfaced by prompt compilation.",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "source": {
+              "default": "request",
+              "enum": [
+                "request",
+                "tools_file",
+                "skills_file",
+                "mcp_request",
+                "mcp_tools_file"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Description"
+            },
+            "input_schema": {
+              "additionalProperties": true,
+              "title": "Input Schema",
+              "type": "object"
+            },
+            "registered": {
+              "default": false,
+              "title": "Registered",
+              "type": "boolean"
+            },
+            "execution_mode": {
+              "default": "prompt_only",
+              "enum": [
+                "prompt_only",
+                "local_tool"
+              ],
+              "title": "Execution Mode",
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Version"
+            },
+            "required_authorization": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Required Authorization"
+            },
+            "mcp_server": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mcp Server"
+            },
+            "metadata_trusted": {
+              "default": true,
+              "title": "Metadata Trusted",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "PromptToolPlanEntry",
+          "type": "object"
+        },
         "ReasoningOutput": {
           "description": "Structured reasoning metadata exposed according to policy.",
           "properties": {
@@ -6233,6 +8345,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -6240,6 +8353,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         },
         "ServingProfileApplication": {
           "properties": {
@@ -6609,6 +8760,87 @@
           },
           "title": "TextResponseFormat",
           "type": "object"
+        },
+        "ToolCallParseIssue": {
+          "description": "One explicit reason a tool-call candidate was not accepted.",
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_json",
+                "unrecognized_shape",
+                "missing_name",
+                "unknown_tool",
+                "arguments_not_object",
+                "schema_violation"
+              ],
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "candidate_index": {
+              "title": "Candidate Index",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "candidate_index"
+          ],
+          "title": "ToolCallParseIssue",
+          "type": "object"
+        },
+        "ToolCallParseResult": {
+          "description": "Strict parse outcome for one model output text.",
+          "properties": {
+            "status": {
+              "enum": [
+                "no_tool_calls",
+                "parsed",
+                "partial",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "parser": {
+              "default": "lewlm_strict_tool_parser",
+              "title": "Parser",
+              "type": "string"
+            },
+            "tool_calls": {
+              "items": {
+                "$ref": "#/$defs/ParsedToolCall"
+              },
+              "title": "Tool Calls",
+              "type": "array"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/ToolCallParseIssue"
+              },
+              "title": "Issues",
+              "type": "array"
+            },
+            "remaining_text": {
+              "default": "",
+              "title": "Remaining Text",
+              "type": "string"
+            },
+            "parallel": {
+              "default": false,
+              "title": "Parallel",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "title": "ToolCallParseResult",
+          "type": "object"
         }
       },
       "properties": {
@@ -6665,6 +8897,18 @@
           "title": "Citations",
           "type": "array"
         },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Token accounting. Present on the final chunk only, since it is not knowable before then."
+        },
         "metadata": {
           "anyOf": [
             {
@@ -6686,6 +8930,29 @@
             }
           ],
           "default": null
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallParseResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptCompilationTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Compiled-prompt trace when `include_prompt_trace` was set. Present on the final chunk only, so inspecting the prompt does not cost the caller its stream."
         },
         "serving_profile": {
           "anyOf": [
@@ -6760,9 +9027,85 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
             }
           },
           "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
           "type": "object"
         },
         "EmbeddingDatum": {
@@ -6797,12 +9140,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -6839,6 +9196,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -7204,6 +9581,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -7219,6 +9597,44 @@
           ],
           "title": "RuntimeSupportPath",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         }
       },
       "properties": {
@@ -7394,13 +9810,22 @@
         "IngestedDocumentSource": {
           "properties": {
             "source_id": {
-              "description": "Stable source identifier derived from the local source path.",
+              "description": "Stable source identifier. Caller-provided for uploaded sources, otherwise derived from the local source path.",
               "title": "Source Id",
               "type": "string"
             },
             "path": {
-              "title": "Path",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Server-local path. Always null for uploaded sources, which never make the caller depend on a shared filesystem mount.",
+              "title": "Path"
             },
             "source_type": {
               "$ref": "#/$defs/DocumentSourceType"
@@ -7436,7 +9861,6 @@
           },
           "required": [
             "source_id",
-            "path",
             "source_type",
             "source_name",
             "source_label"
@@ -7530,9 +9954,85 @@
               "default": 0,
               "title": "Total Tokens",
               "type": "integer"
+            },
+            "measured": {
+              "default": true,
+              "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
+              "title": "Measured",
+              "type": "boolean"
             }
           },
           "title": "CompletionUsage",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
           "type": "object"
         },
         "DocumentChunk": {
@@ -7661,12 +10161,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -7703,6 +10217,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -7966,13 +10500,22 @@
         "IngestedDocumentSource": {
           "properties": {
             "source_id": {
-              "description": "Stable source identifier derived from the local source path.",
+              "description": "Stable source identifier. Caller-provided for uploaded sources, otherwise derived from the local source path.",
               "title": "Source Id",
               "type": "string"
             },
             "path": {
-              "title": "Path",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Server-local path. Always null for uploaded sources, which never make the caller depend on a shared filesystem mount.",
+              "title": "Path"
             },
             "source_type": {
               "$ref": "#/$defs/DocumentSourceType"
@@ -8008,7 +10551,6 @@
           },
           "required": [
             "source_id",
-            "path",
             "source_type",
             "source_name",
             "source_label"
@@ -8081,6 +10623,87 @@
             "chunk"
           ],
           "title": "RetrievalContextItem",
+          "type": "object"
+        },
+        "RetrievalScoringPolicy": {
+          "description": "The named, versioned ranking rules a retrieval response actually used.\n\nLewLM's ranking is rerank-primary with embedding tie-breaking and a stable\noriginal-input-order fallback. That is a reasonable policy, but it is only\nreproducible for a caller if it is named and versioned.",
+          "properties": {
+            "name": {
+              "default": "rerank_primary_embedding_tiebreak",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "default": "1.0.0",
+              "title": "Version",
+              "type": "string"
+            },
+            "primary_signal": {
+              "enum": [
+                "rerank",
+                "embedding",
+                "none"
+              ],
+              "title": "Primary Signal",
+              "type": "string"
+            },
+            "tie_break_signal": {
+              "enum": [
+                "embedding",
+                "original_order"
+              ],
+              "title": "Tie Break Signal",
+              "type": "string"
+            },
+            "final_tie_break": {
+              "const": "original_order",
+              "default": "original_order",
+              "title": "Final Tie Break",
+              "type": "string"
+            },
+            "normalization": {
+              "default": "none",
+              "enum": [
+                "none",
+                "cosine"
+              ],
+              "title": "Normalization",
+              "type": "string"
+            },
+            "missing_score_behaviour": {
+              "default": "rejected",
+              "enum": [
+                "rejected",
+                "ranked_last"
+              ],
+              "title": "Missing Score Behaviour",
+              "type": "string"
+            },
+            "deduplication": {
+              "default": "chunk_id",
+              "enum": [
+                "none",
+                "chunk_id"
+              ],
+              "title": "Deduplication",
+              "type": "string"
+            },
+            "embeddings_used": {
+              "title": "Embeddings Used",
+              "type": "boolean"
+            },
+            "rerank_used": {
+              "title": "Rerank Used",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "primary_signal",
+            "tie_break_signal",
+            "embeddings_used",
+            "rerank_used"
+          ],
+          "title": "RetrievalScoringPolicy",
           "type": "object"
         },
         "RetrievalStageSummary": {
@@ -8220,6 +10843,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -8235,6 +10859,44 @@
           ],
           "title": "RuntimeSupportPath",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         }
       },
       "properties": {
@@ -8281,6 +10943,10 @@
           "title": "Sources",
           "type": "array"
         },
+        "scoring_policy": {
+          "$ref": "#/$defs/RetrievalScoringPolicy",
+          "description": "Named, versioned ranking rules this response applied."
+        },
         "embedding_stage": {
           "anyOf": [
             {
@@ -8315,6 +10981,7 @@
         "candidate_count",
         "returned_count",
         "items",
+        "scoring_policy",
         "metadata"
       ],
       "title": "RetrievalContextResponse",
@@ -8368,17 +11035,101 @@
     },
     "rerank.response": {
       "$defs": {
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
+          "type": "object"
+        },
         "ExecutionMetadata": {
           "properties": {
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -8415,6 +11166,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -8810,6 +11581,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -8825,6 +11597,44 @@
           ],
           "title": "RuntimeSupportPath",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         }
       },
       "properties": {
@@ -8866,12 +11676,78 @@
       "type": "object"
     },
     "documents.ingest.request": {
+      "$defs": {
+        "DocumentUploadSource": {
+          "description": "A document uploaded as bytes, requiring no shared filesystem mount.",
+          "properties": {
+            "source_id": {
+              "description": "Caller-provided opaque identifier echoed back on every result.",
+              "title": "Source Id",
+              "type": "string"
+            },
+            "file_name": {
+              "title": "File Name",
+              "type": "string"
+            },
+            "content_base64": {
+              "title": "Content Base64",
+              "type": "string"
+            },
+            "media_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Media Type"
+            },
+            "expected_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "When set, LewLM refuses the source unless the received bytes match.",
+              "title": "Expected Sha256"
+            },
+            "metadata": {
+              "additionalProperties": true,
+              "title": "Metadata",
+              "type": "object"
+            }
+          },
+          "required": [
+            "source_id",
+            "file_name",
+            "content_base64"
+          ],
+          "title": "DocumentUploadSource",
+          "type": "object"
+        }
+      },
       "properties": {
         "paths": {
+          "description": "Server-local paths. Only usable when the caller shares LewLM's filesystem.",
           "items": {
             "type": "string"
           },
           "title": "Paths",
+          "type": "array"
+        },
+        "sources": {
+          "description": "Uploaded byte sources with caller-owned identity. Preferred for remote callers.",
+          "items": {
+            "$ref": "#/$defs/DocumentUploadSource"
+          },
+          "title": "Sources",
           "type": "array"
         },
         "title": {
@@ -8904,6 +11780,19 @@
           ],
           "default": null,
           "title": "Idempotency Key"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Caller correlation identifier echoed back through metadata and events.",
+          "title": "Correlation Id"
         }
       },
       "title": "DocumentIngestRequest",
@@ -9017,6 +11906,76 @@
             "text"
           ],
           "title": "Citation",
+          "type": "object"
+        },
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
           "type": "object"
         },
         "DocumentChunk": {
@@ -9192,6 +12151,23 @@
           "title": "DocumentIR",
           "type": "object"
         },
+        "DocumentIngestErrorCode": {
+          "description": "Stable, machine-readable reasons a single source failed to ingest.",
+          "enum": [
+            "unsupported_source_type",
+            "corrupt_source",
+            "empty_source",
+            "checksum_mismatch",
+            "source_too_large",
+            "parser_failed",
+            "parser_timeout",
+            "ocr_unavailable",
+            "access_denied",
+            "internal_error"
+          ],
+          "title": "DocumentIngestErrorCode",
+          "type": "string"
+        },
         "DocumentSection": {
           "properties": {
             "heading": {
@@ -9260,6 +12236,138 @@
           "title": "DocumentSection",
           "type": "object"
         },
+        "DocumentSourceIngestOutcome": {
+          "description": "The per-source result of a multi-source ingest request.\n\nMulti-source ingestion previously surfaced only the sources that succeeded,\nleaving a caller to infer which of its inputs went missing and with no way\nto recover the reason. Every requested source now gets exactly one outcome.",
+          "properties": {
+            "source_id": {
+              "description": "Caller-provided ID for uploads, else the LewLM-derived ID.",
+              "title": "Source Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "ingested",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "source_label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Label"
+            },
+            "source_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentSourceType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "media_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Media Type"
+            },
+            "chunk_count": {
+              "default": 0,
+              "title": "Chunk Count",
+              "type": "integer"
+            },
+            "section_count": {
+              "default": 0,
+              "title": "Section Count",
+              "type": "integer"
+            },
+            "content_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "SHA-256 of the bytes LewLM actually parsed.",
+              "title": "Content Sha256"
+            },
+            "error_code": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentIngestErrorCode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "error_message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error Message"
+            },
+            "retryable": {
+              "default": false,
+              "description": "Whether retrying this source unchanged could plausibly succeed.",
+              "title": "Retryable",
+              "type": "boolean"
+            },
+            "provider_reference": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "LewLM-side reference for correlating this source with logs and events.",
+              "title": "Provider Reference"
+            },
+            "components": {
+              "description": "Parser, OCR, and chunker components applied to this source.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            }
+          },
+          "required": [
+            "source_id",
+            "status"
+          ],
+          "title": "DocumentSourceIngestOutcome",
+          "type": "object"
+        },
         "DocumentSourceType": {
           "enum": [
             "text",
@@ -9279,12 +12387,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -9321,6 +12443,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -9738,13 +12880,22 @@
         "IngestedDocumentSource": {
           "properties": {
             "source_id": {
-              "description": "Stable source identifier derived from the local source path.",
+              "description": "Stable source identifier. Caller-provided for uploaded sources, otherwise derived from the local source path.",
               "title": "Source Id",
               "type": "string"
             },
             "path": {
-              "title": "Path",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Server-local path. Always null for uploaded sources, which never make the caller depend on a shared filesystem mount.",
+              "title": "Path"
             },
             "source_type": {
               "$ref": "#/$defs/DocumentSourceType"
@@ -9780,7 +12931,6 @@
           },
           "required": [
             "source_id",
-            "path",
             "source_type",
             "source_name",
             "source_label"
@@ -9880,6 +13030,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -9887,6 +13038,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         },
         "StyleToken": {
           "properties": {
@@ -9993,6 +13182,38 @@
             "$ref": "#/$defs/DocumentChunk"
           },
           "title": "Chunks",
+          "type": "array"
+        },
+        "source_results": {
+          "description": "One outcome per requested source, in request order.",
+          "items": {
+            "$ref": "#/$defs/DocumentSourceIngestOutcome"
+          },
+          "title": "Source Results",
+          "type": "array"
+        },
+        "ingested_count": {
+          "default": 0,
+          "title": "Ingested Count",
+          "type": "integer"
+        },
+        "failed_count": {
+          "default": 0,
+          "title": "Failed Count",
+          "type": "integer"
+        },
+        "partial": {
+          "default": false,
+          "description": "True when at least one requested source failed while others succeeded.",
+          "title": "Partial",
+          "type": "boolean"
+        },
+        "components": {
+          "description": "Distinct components that contributed to this ingest.",
+          "items": {
+            "$ref": "#/$defs/ComponentProvenance"
+          },
+          "title": "Components",
           "type": "array"
         },
         "request_id": {
@@ -10632,6 +13853,19 @@
           ],
           "default": null,
           "title": "Idempotency Key"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Caller correlation identifier echoed back through metadata and events.",
+          "title": "Correlation Id"
         }
       },
       "required": [
@@ -10643,6 +13877,76 @@
     },
     "documents.generate.response": {
       "$defs": {
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
+          "type": "object"
+        },
         "DocumentOutputFormat": {
           "enum": [
             "text",
@@ -10661,12 +13965,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -10703,6 +14021,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -10988,6 +14326,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -10995,6 +14334,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         }
       },
       "properties": {
@@ -11274,6 +14651,19 @@
               "default": null,
               "title": "Idempotency Key"
             },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
+            },
             "skill": {
               "const": "branded_document_template",
               "default": "branded_document_template",
@@ -11351,6 +14741,19 @@
               ],
               "default": null,
               "title": "Idempotency Key"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
             },
             "skill": {
               "const": "contract_text_replacement",
@@ -11437,6 +14840,19 @@
               ],
               "default": null,
               "title": "Idempotency Key"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
             },
             "skill": {
               "const": "document_comparison",
@@ -11529,6 +14945,19 @@
               "default": null,
               "title": "Idempotency Key"
             },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
+            },
             "skill": {
               "const": "file_template",
               "default": "file_template",
@@ -11608,6 +15037,19 @@
               ],
               "default": null,
               "title": "Idempotency Key"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
             },
             "skill": {
               "const": "long_document_memo",
@@ -11698,6 +15140,19 @@
               ],
               "default": null,
               "title": "Idempotency Key"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
             },
             "skill": {
               "const": "meeting_transcript_notes",
@@ -11818,6 +15273,19 @@
               ],
               "default": null,
               "title": "Idempotency Key"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
             },
             "skill": {
               "const": "ocr_assisted_extraction",
@@ -11969,6 +15437,19 @@
               "default": null,
               "title": "Idempotency Key"
             },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
+            },
             "skill": {
               "const": "receipt_extraction",
               "default": "receipt_extraction",
@@ -12094,6 +15575,19 @@
               "default": null,
               "title": "Idempotency Key"
             },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller correlation identifier echoed back through metadata and events.",
+              "title": "Correlation Id"
+            },
             "skill": {
               "const": "speech_transcript_cleanup",
               "default": "speech_transcript_cleanup",
@@ -12173,6 +15667,76 @@
     },
     "documents.transform.response": {
       "$defs": {
+        "ComponentKind": {
+          "description": "The role a component played in producing a result.",
+          "enum": [
+            "parser",
+            "renderer",
+            "chunker",
+            "ocr",
+            "scoring_policy",
+            "tokenizer"
+          ],
+          "title": "ComponentKind",
+          "type": "string"
+        },
+        "ComponentProvenance": {
+          "description": "One named, versioned component that contributed to a result.",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ComponentKind"
+            },
+            "name": {
+              "description": "Stable LewLM-owned component name, not a package name.",
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version of the LewLM-owned component behaviour.",
+              "title": "Version",
+              "type": "string"
+            },
+            "implementation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Third-party distribution that performs the work, when one does.",
+              "title": "Implementation"
+            },
+            "implementation_version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Installed version of `implementation`, or null when it cannot be determined.",
+              "title": "Implementation Version"
+            },
+            "deterministic": {
+              "default": true,
+              "description": "Whether the same input reproduces the same output on this component.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
+          "title": "ComponentProvenance",
+          "type": "object"
+        },
         "DocumentOutputFormat": {
           "enum": [
             "text",
@@ -12191,12 +15755,26 @@
             "version": {
               "const": "v1",
               "default": "v1",
+              "description": "Envelope schema version. This does NOT identify the components that ran; see `components`.",
               "title": "Version",
               "type": "string"
             },
             "request_id": {
               "title": "Request Id",
               "type": "string"
+            },
+            "correlation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Caller-supplied correlation identifier echoed back on every result that carries it.",
+              "title": "Correlation Id"
             },
             "created": {
               "title": "Created",
@@ -12233,6 +15811,26 @@
                 }
               ],
               "default": null
+            },
+            "components": {
+              "description": "Named, versioned components that produced this result.",
+              "items": {
+                "$ref": "#/$defs/ComponentProvenance"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "sampling": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SamplingControlReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Which requested sampling controls the backend applied, and which it could not."
             },
             "idempotency_key": {
               "anyOf": [
@@ -12518,6 +16116,7 @@
             "mlx_vision",
             "mlx_audio",
             "llamacpp",
+            "onnx_genai",
             "external_accelerator",
             "conversion",
             "experimental",
@@ -12525,6 +16124,44 @@
           ],
           "title": "RuntimeAffinity",
           "type": "string"
+        },
+        "SamplingControlReport": {
+          "description": "What a runtime did with the requested sampling controls.",
+          "properties": {
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "requested": {
+              "additionalProperties": true,
+              "title": "Requested",
+              "type": "object"
+            },
+            "applied": {
+              "additionalProperties": true,
+              "title": "Applied",
+              "type": "object"
+            },
+            "unsupported": {
+              "description": "Controls the caller requested that this backend cannot honor.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported",
+              "type": "array"
+            },
+            "deterministic": {
+              "default": false,
+              "description": "True only when a seed was requested and the backend actually applied it.",
+              "title": "Deterministic",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "runtime"
+          ],
+          "title": "SamplingControlReport",
+          "type": "object"
         }
       },
       "properties": {
@@ -12613,8 +16250,19 @@
             "model.scan.started",
             "model.scan.completed",
             "model.scan.failed",
+            "model.load.requested",
+            "model.load.joined",
             "model.loading",
             "model.loaded",
+            "model.load.failed",
+            "model.usage.acquired",
+            "model.usage.released",
+            "model.drain.requested",
+            "model.draining",
+            "model.unload.blocked",
+            "model.unloading",
+            "model.unloaded",
+            "model.unload.failed",
             "audio.chunk",
             "audio.transcription.started",
             "audio.transcription.completed",
@@ -12686,6 +16334,19 @@
           ],
           "default": null,
           "title": "Request Id"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Caller correlation identifier for the request that produced this event.",
+          "title": "Correlation Id"
         },
         "model_id": {
           "anyOf": [
@@ -13521,6 +17182,18 @@
             },
             "idempotency_key": null,
             "idempotent_replay": false
+          },
+          "scoring_policy": {
+            "name": "rerank_primary_embedding_tiebreak",
+            "version": "1.0.0",
+            "primary_signal": "rerank",
+            "tie_break_signal": "embedding",
+            "final_tie_break": "original_order",
+            "normalization": "cosine",
+            "missing_score_behaviour": "rejected",
+            "deduplication": "chunk_id",
+            "embeddings_used": true,
+            "rerank_used": true
           }
         }
       }
@@ -13897,6 +17570,242 @@
           }
         }
       }
+    }
+  ],
+  "errors": [
+    {
+      "code": "authentication_error",
+      "http_status": 401,
+      "retryable": false,
+      "description": "Raised when an API request is missing or has invalid credentials."
+    },
+    {
+      "code": "authentication_required",
+      "http_status": 401,
+      "retryable": false,
+      "description": "The endpoint requires an API key and none was accepted."
+    },
+    {
+      "code": "backend_contract_violation",
+      "http_status": 502,
+      "retryable": false,
+      "description": "Raised when a backend returns a result LewLM cannot safely trust."
+    },
+    {
+      "code": "backpressure_error",
+      "http_status": 503,
+      "retryable": true,
+      "description": "Raised when runtime request admission control rejects or times out a request."
+    },
+    {
+      "code": "configuration_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when application settings are invalid."
+    },
+    {
+      "code": "conversion_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when a model conversion job fails."
+    },
+    {
+      "code": "document_generation_error",
+      "http_status": 500,
+      "retryable": false,
+      "description": "Raised when an output document artifact cannot be rendered."
+    },
+    {
+      "code": "document_validation_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when a document IR payload is invalid or incomplete."
+    },
+    {
+      "code": "file_access_error",
+      "http_status": 403,
+      "retryable": false,
+      "description": "Raised when a file path falls outside the allowed local scope."
+    },
+    {
+      "code": "forbidden",
+      "http_status": 403,
+      "retryable": false,
+      "description": "The credential is valid but not authorized for this endpoint."
+    },
+    {
+      "code": "http_error",
+      "http_status": 500,
+      "retryable": false,
+      "description": "A framework-level HTTP failure with no more specific LewLM code."
+    },
+    {
+      "code": "idempotency_conflict",
+      "http_status": 409,
+      "retryable": false,
+      "description": "Raised when an idempotency key is reused for a different request payload."
+    },
+    {
+      "code": "internal_error",
+      "http_status": 500,
+      "retryable": false,
+      "description": "Raised when an unexpected failure would otherwise escape as a bare 500."
+    },
+    {
+      "code": "invalid_request",
+      "http_status": 422,
+      "retryable": false,
+      "description": "Raised when a request body or parameter fails validation."
+    },
+    {
+      "code": "job_not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "Raised when a background job cannot be found."
+    },
+    {
+      "code": "lewlm_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Base class for structured LewLM errors."
+    },
+    {
+      "code": "method_not_allowed",
+      "http_status": 405,
+      "retryable": false,
+      "description": "The route exists but does not accept this HTTP method."
+    },
+    {
+      "code": "model_lifecycle_conflict",
+      "http_status": 409,
+      "retryable": true,
+      "description": "Raised when a model lifecycle action would interrupt active use."
+    },
+    {
+      "code": "model_load_failed",
+      "http_status": 503,
+      "retryable": false,
+      "description": "Raised when a backend cannot load a model on the current host."
+    },
+    {
+      "code": "model_not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "Raised when a referenced model is not present in the registry."
+    },
+    {
+      "code": "model_scan_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when model discovery cannot complete."
+    },
+    {
+      "code": "not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "No route or resource matched the request path."
+    },
+    {
+      "code": "not_implemented",
+      "http_status": 501,
+      "retryable": false,
+      "description": "Raised when a CLI or API feature exists but is not yet implemented."
+    },
+    {
+      "code": "pack_unavailable",
+      "http_status": 503,
+      "retryable": false,
+      "description": "Raised when a disabled or missing pack blocks a requested surface."
+    },
+    {
+      "code": "privacy_mode_enabled",
+      "http_status": 403,
+      "retryable": false,
+      "description": "Raised when a persistent feature is blocked by privacy mode."
+    },
+    {
+      "code": "rate_limit_error",
+      "http_status": 429,
+      "retryable": true,
+      "description": "Raised when a client exceeds the configured request rate."
+    },
+    {
+      "code": "rate_limited",
+      "http_status": 429,
+      "retryable": true,
+      "description": "The configured request rate for this client was exceeded."
+    },
+    {
+      "code": "request_too_large",
+      "http_status": 413,
+      "retryable": false,
+      "description": "Raised when a request body exceeds configured limits."
+    },
+    {
+      "code": "response_too_large",
+      "http_status": 507,
+      "retryable": false,
+      "description": "A response exceeded the client's configured size limit and was refused rather than buffered."
+    },
+    {
+      "code": "routing_error",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when the router cannot choose a suitable model/runtime pair."
+    },
+    {
+      "code": "runtime_unavailable",
+      "http_status": 503,
+      "retryable": true,
+      "description": "Raised when a runtime backend is unavailable on the current system."
+    },
+    {
+      "code": "sandbox_execution_error",
+      "http_status": 500,
+      "retryable": false,
+      "description": "Raised when a sandboxed worker fails or times out."
+    },
+    {
+      "code": "session_not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "Raised when a requested session does not exist."
+    },
+    {
+      "code": "skill_not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "Raised when a requested built-in skill does not exist."
+    },
+    {
+      "code": "storage_error",
+      "http_status": 500,
+      "retryable": true,
+      "description": "Raised when persistence or metadata access fails."
+    },
+    {
+      "code": "tool_authorization_error",
+      "http_status": 403,
+      "retryable": false,
+      "description": "Raised when an operation is not explicitly authorized."
+    },
+    {
+      "code": "tool_not_found",
+      "http_status": 404,
+      "retryable": false,
+      "description": "Raised when a requested local tool does not exist."
+    },
+    {
+      "code": "unsupported_capability",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when the selected model or runtime lacks a requested capability."
+    },
+    {
+      "code": "unsupported_media_type",
+      "http_status": 415,
+      "retryable": false,
+      "description": "Raised when a request or file payload uses an unsupported media type."
     }
   ]
 }

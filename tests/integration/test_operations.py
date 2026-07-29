@@ -17,6 +17,7 @@ from conftest import (
     FakeMLXConversionBackend,
     FakeMLXSemanticRuntime,
     UnavailableMLXTextRuntime,
+    UnavailableMLXVisionRuntime,
     set_host_platform,
 )
 from lewlm.api.app import create_app
@@ -24,6 +25,7 @@ from lewlm.conversion.models import ConversionJobRequest, JobStatus
 from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.contracts import CapabilityName, GenerateMessage, GenerateRequest, GenerateResponse, ModelFormat, ModelManifest, RuntimeAffinity
 from lewlm.core.errors import BackpressureError
+from lewlm.runtime.request_context import reset_application_context, set_application_context
 from lewlm.security.persistence import ENCRYPTED_FILE_MAGIC
 
 
@@ -1510,19 +1512,33 @@ async def test_multimodal_orchestrator_batches_distinct_concurrent_embedding_req
             if manifest.display_name == "e5-small-embed-mlx"
         )
 
-        first_embedding = asyncio.create_task(
-            services.multimodal_orchestrator.embed(
-                model_id=embedding_model_id,
-                inputs=["alpha request"],
-            ),
+        first_tokens = set_application_context(
+            application_id="embedding-application-a",
+            client_instance_id="embedding-a-1",
         )
+        try:
+            first_embedding = asyncio.create_task(
+                services.multimodal_orchestrator.embed(
+                    model_id=embedding_model_id,
+                    inputs=["alpha request"],
+                ),
+            )
+        finally:
+            reset_application_context(first_tokens)
         await asyncio.sleep(0.002)
-        second_embedding = asyncio.create_task(
-            services.multimodal_orchestrator.embed(
-                model_id=embedding_model_id,
-                inputs=["beta request"],
-            ),
+        second_tokens = set_application_context(
+            application_id="embedding-application-b",
+            client_instance_id="embedding-b-1",
         )
+        try:
+            second_embedding = asyncio.create_task(
+                services.multimodal_orchestrator.embed(
+                    model_id=embedding_model_id,
+                    inputs=["beta request"],
+                ),
+            )
+        finally:
+            reset_application_context(second_tokens)
         embedding_a, embedding_b = await asyncio.gather(first_embedding, second_embedding)
 
         assert runtime.embedding_calls == 1
@@ -1536,8 +1552,17 @@ async def test_multimodal_orchestrator_batches_distinct_concurrent_embedding_req
             item["capability"]: item
             for item in services.runtime_metrics_recorder.snapshot()["capabilities"]
         }
+        application_metrics = {
+            item["application_id"]: item
+            for item in services.runtime_metrics_recorder.snapshot()["applications"]
+        }
         assert capability_metrics["embeddings"]["metric_totals"]["batched_requests"] == 2
         assert capability_metrics["embeddings"]["metric_totals"]["cache_misses"] == 2
+        for application_id in ("embedding-application-a", "embedding-application-b"):
+            assert application_metrics[application_id]["request_count"] == 1
+            assert application_metrics[application_id]["success_count"] == 1
+            assert application_metrics[application_id]["lease_acquisition_count"] == 1
+            assert application_metrics[application_id]["active_lease_count"] == 0
     finally:
         await services.aclose()
 
@@ -1674,34 +1699,44 @@ async def test_chat_orchestrator_batches_chat_requests_with_backend_native_batch
         temp_settings.with_updates(
             continuous_batch_window_milliseconds=25,
             continuous_batch_max_batch_size=2,
+            backend_feature_probes_enabled=True,
         ),
-        runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
+        runtime_overrides={
+            RuntimeAffinity.LLAMACPP: runtime,
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
+            RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
+        },
     )
     try:
         manifests = services.model_registry.scan().manifests
         gguf_model_id = next(manifest.model_id for manifest in manifests if manifest.format_type.value == "gguf")
-        first_task = asyncio.create_task(
-            services.chat_orchestrator.complete(
-                model_id=gguf_model_id,
-                messages=[GenerateMessage(role="user", content="first batched request")],
-                max_tokens=64,
-                temperature=0.0,
-            ),
-        )
-        second_task = asyncio.create_task(
-            services.chat_orchestrator.complete(
-                model_id=gguf_model_id,
-                messages=[GenerateMessage(role="user", content="second batched request")],
-                max_tokens=64,
-                temperature=0.0,
-            ),
-        )
+        def create_request(application_id: str, content: str):
+            tokens = set_application_context(application_id=application_id, client_instance_id=f"{application_id}-1")
+            try:
+                return asyncio.create_task(
+                    services.chat_orchestrator.complete(
+                        model_id=gguf_model_id,
+                        messages=[GenerateMessage(role="user", content=content)],
+                        max_tokens=64,
+                        temperature=0.0,
+                    ),
+                )
+            finally:
+                reset_application_context(tokens)
+
+        first_task = create_request("batch-application-a", "first batched request")
+        second_task = create_request("batch-application-b", "second batched request")
         first_result, second_result = await asyncio.gather(first_task, second_task)
         request_snapshot = services.runtime_request_scheduler.snapshot()
         runtime_stats = await services.telemetry_service.runtime_stats()
         continuous_batching = next(
             feature for feature in runtime_stats.performance_features if feature.feature.value == "continuous_batching"
         )
+        applications = {
+            item["application_id"]: item
+            for item in services.runtime_metrics_recorder.snapshot()["applications"]
+        }
 
         assert "first batched request" in first_result.response.output_text
         assert "second batched request" in second_result.response.output_text
@@ -1725,6 +1760,11 @@ async def test_chat_orchestrator_batches_chat_requests_with_backend_native_batch
         assert continuous_batching.metrics["native_average_batch_utilization"] == 1.0
         assert continuous_batching.metrics["frontier_total_batches"] == 1
         assert continuous_batching.metrics["frontier_average_batch_utilization"] == 1.0
+        for application_id in ("batch-application-a", "batch-application-b"):
+            assert applications[application_id]["request_count"] == 1
+            assert applications[application_id]["success_count"] == 1
+            assert applications[application_id]["lease_acquisition_count"] == 1
+            assert applications[application_id]["active_lease_count"] == 0
     finally:
         await services.aclose()
 

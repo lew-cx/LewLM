@@ -9,13 +9,16 @@ import json
 import math
 import time
 from collections import deque
+from contextlib import suppress
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Literal
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.runtime.sampling import attach_sampling_report, resolve_sampling_controls
 from lewlm.core.contracts import (
     CapabilityName,
     EmbeddingRequest,
@@ -233,6 +236,15 @@ class _MLXTextGenerateController:
             self._active.clear()
             raise
         finally:
+            for queued_request in self._pending:
+                if not queued_request.future.done():
+                    queued_request.future.cancel()
+            self._pending.clear()
+            for active_request in self._active.values():
+                if not active_request.queued.future.done():
+                    active_request.queued.future.cancel()
+                self.runtime._paged_kv_manager.release(active_request.kv_reservation)
+            self._active.clear()
             if generator is not None:
                 close = getattr(generator, "close", None)
                 if callable(close):
@@ -367,6 +379,7 @@ class _MLXTextStreamController:
                 if self._closed:
                     return
                 self._insert_pending(generator=generator)
+                self._cancel_active_requests(generator=generator)
                 if not self._active:
                     continue
                 responses = list(generator.next_generated() or [])
@@ -417,6 +430,17 @@ class _MLXTextStreamController:
             self._active.clear()
             raise
         finally:
+            for queued_request in self._pending:
+                queued_request.cancelled = True
+                if not queued_request.completion.done():
+                    queued_request.completion.cancel()
+            self._pending.clear()
+            for active_request in self._active.values():
+                active_request.queued.cancelled = True
+                if not active_request.queued.completion.done():
+                    active_request.queued.completion.cancel()
+                self.runtime._paged_kv_manager.release(active_request.kv_reservation)
+            self._active.clear()
             if generator is not None:
                 close = getattr(generator, "close", None)
                 if callable(close):
@@ -435,6 +459,8 @@ class _MLXTextStreamController:
         while self._pending and len(queued_requests) < capacity:
             queued_request = self._pending.popleft()
             if queued_request.cancelled:
+                if not queued_request.completion.done():
+                    queued_request.completion.cancel()
                 continue
             queued_requests.append(queued_request)
         if not queued_requests:
@@ -489,6 +515,31 @@ class _MLXTextStreamController:
                 kv_reservation=kv_reservation,
                 generated_tokens=[],
             )
+
+    def _cancel_active_requests(self, *, generator: Any) -> None:
+        cancel = next(
+            (
+                candidate
+                for name in ("remove", "cancel", "remove_request", "cancel_request")
+                if callable(candidate := getattr(generator, name, None))
+            ),
+            None,
+        )
+        if cancel is None:
+            return
+        for uid, active_request in list(self._active.items()):
+            if not active_request.queued.cancelled:
+                continue
+            try:
+                cancel(uid)
+            except Exception:
+                # A backend without reliable per-request cancellation must be
+                # allowed to finish this member without disrupting its batch.
+                continue
+            self._active.pop(uid, None)
+            if not active_request.queued.completion.done():
+                active_request.queued.completion.cancel()
+            self.runtime._paged_kv_manager.release(active_request.kv_reservation)
 
 
 class MLXTextRuntime(ManagedTextRuntime):
@@ -568,6 +619,15 @@ class MLXTextRuntime(ManagedTextRuntime):
     def supports_manifest(self, manifest: ModelManifest) -> bool:
         if not super().supports_manifest(manifest):
             return False
+        # Keep lightweight inventory checks safe for headless callers while
+        # still rejecting model families that this installed mlx-lm package
+        # cannot possibly load.  Importing mlx_lm initializes mlx.core and can
+        # abort a process that has no Metal device, so inspect the package's
+        # model modules before taking the no-probe shortcut.
+        if not _mlx_lm_statically_supports_manifest(manifest.source_path):
+            return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
+            return True
         cache_key = manifest.source_path
         if cache_key in self._manifest_support_cache:
             return self._manifest_support_cache[cache_key]
@@ -576,9 +636,19 @@ class MLXTextRuntime(ManagedTextRuntime):
         return supported
 
     def _check_environment(self) -> tuple[bool, str | None]:
+        if self.loaded_model_ids:
+            return True, None
+        if self.settings.backend_feature_probes_enabled:
+            try:
+                import_module("mlx_lm")
+            except ImportError:
+                return False, "mlx-lm is not installed"
+            return True, None
         try:
-            import_module("mlx_lm")
-        except ImportError:
+            spec = find_spec("mlx_lm")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
             return False, "mlx-lm is not installed"
         return True, None
 
@@ -962,6 +1032,8 @@ class MLXTextRuntime(ManagedTextRuntime):
     def supports_capability(self, capability: CapabilityName) -> bool:
         if not self.is_available():
             return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
+            return super().supports_capability(capability)
         module = import_module("mlx_lm")
         if capability == CapabilityName.CHAT:
             return resolve_backend_callable(module, ("generate", "chat", "generate_text"), required=False) is not None
@@ -976,6 +1048,8 @@ class MLXTextRuntime(ManagedTextRuntime):
     def supports_continuous_batching(self, capability: CapabilityName) -> bool:
         if not self.is_available():
             return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
+            return False
         module = import_module("mlx_lm")
         if capability == CapabilityName.CHAT:
             return _resolve_mlx_batch_generator_class(module) is not None or _resolve_mlx_batch_generate(module) is not None
@@ -985,6 +1059,8 @@ class MLXTextRuntime(ManagedTextRuntime):
 
     def continuous_batching_ownership(self, capability: CapabilityName) -> str:
         if not self.is_available():
+            return "unsupported"
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
             return "unsupported"
         module = import_module("mlx_lm")
         batch_generator_class = _resolve_mlx_batch_generator_class(module)
@@ -997,6 +1073,8 @@ class MLXTextRuntime(ManagedTextRuntime):
 
     def supports_chunked_prefill(self, capability: CapabilityName) -> bool:
         if capability not in {CapabilityName.CHAT, CapabilityName.STREAMING} or not self.is_available():
+            return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
             return False
         module = import_module("mlx_lm")
         generate = resolve_backend_callable(module, ("generate", "chat", "generate_text"), required=False)
@@ -1044,6 +1122,25 @@ class MLXTextRuntime(ManagedTextRuntime):
         self._frontier_execution.unregister_model(model_id)
         self._paged_kv_manager.unregister_model(model_id)
 
+    def _sampling_options(self, request: GenerateRequest) -> dict[str, Any]:
+        """Map requested sampling controls onto this mlx_lm build."""
+
+        available: set[str] | None = None
+        with suppress(Exception):
+            sample_utils = import_module("mlx_lm.sample_utils")
+            make_sampler = getattr(sample_utils, "make_sampler", None)
+            if callable(make_sampler):
+                # `seed` and `repetition_penalty` are applied outside the sampler.
+                available = _callable_parameter_names(make_sampler) | {"seed", "repetition_penalty"}
+        options, report = resolve_sampling_controls(
+            request.sampling,
+            runtime_name=self.name,
+            family="mlx_text",
+            available_parameters=available,
+        )
+        attach_sampling_report(request.metadata, report)
+        return options
+
     async def _generate(self, request: GenerateRequest) -> GenerateResponse:
         self._record_frontier_execution(request)
         self._record_structured_output_runtime(request)
@@ -1065,7 +1162,8 @@ class MLXTextRuntime(ManagedTextRuntime):
                 request=request,
                 prompt_tokens=prompt_tokens,
             )
-            generation_options = _mlx_text_generation_options(request.temperature)
+            sampling_options = self._sampling_options(request)
+            generation_options = _mlx_text_generation_options(request.temperature, sampling_options)
             performance_options, feature_usage, generation_controls = self._generation_performance_options(
                 generate,
                 prompt_tokens=prompt_tokens,
@@ -1109,6 +1207,9 @@ class MLXTextRuntime(ManagedTextRuntime):
             finally:
                 if not queued_request.completion.done():
                     queued_request.cancelled = True
+                    queued_request.completion.cancel()
+                    controller = self._stream_controller(request=request)
+                    controller._wake_event.set()
             return
         if request.speculation is not None:
             async for chunk in self._stream_generate_with_speculation(request):
@@ -1128,7 +1229,8 @@ class MLXTextRuntime(ManagedTextRuntime):
                 request=request,
                 prompt_tokens=prompt_tokens,
             )
-            generation_options = _mlx_text_generation_options(request.temperature)
+            sampling_options = self._sampling_options(request)
+            generation_options = _mlx_text_generation_options(request.temperature, sampling_options)
             performance_options, feature_usage, generation_controls = self._generation_performance_options(
                 generate_stream,
                 prompt_tokens=prompt_tokens,
@@ -2841,17 +2943,42 @@ def _resolve_semantic_callable(module: Any, capability: CapabilityName):
     return None
 
 
-def _mlx_text_generation_options(temperature: float) -> dict[str, Any]:
-    if temperature <= 0:
+def _mlx_text_generation_options(
+    temperature: float,
+    sampling: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build mlx_lm generation options, folding sampling controls into the sampler."""
+
+    sampling = dict(sampling or {})
+    seed = sampling.pop("seed", None)
+    if seed is not None:
+        # mlx seeds a global RNG rather than taking a per-call seed.
+        with suppress(Exception):
+            import_module("mlx.core").random.seed(int(seed))
+    if temperature <= 0 and not sampling:
         return {}
     try:
         sample_utils = import_module("mlx_lm.sample_utils")
     except ImportError:
         return {"temperature": temperature, "temp": temperature}
     make_sampler = getattr(sample_utils, "make_sampler", None)
-    if callable(make_sampler):
-        return {"sampler": make_sampler(temp=temperature)}
-    return {"temperature": temperature, "temp": temperature}
+    if not callable(make_sampler):
+        return {"temperature": temperature, "temp": temperature}
+
+    sampler_arguments: dict[str, Any] = {"temp": temperature}
+    accepted = _callable_parameter_names(make_sampler)
+    for name, value in sampling.items():
+        if name in accepted:
+            sampler_arguments[name] = value
+    options: dict[str, Any] = {"sampler": make_sampler(**sampler_arguments)}
+
+    penalty = sampling.get("repetition_penalty")
+    if penalty is not None:
+        make_processors = getattr(sample_utils, "make_logits_processors", None)
+        if callable(make_processors):
+            with suppress(Exception):
+                options["logits_processors"] = make_processors(repetition_penalty=float(penalty))
+    return options
 
 
 def _mlx_lm_supports_manifest(source_path: str) -> bool:
@@ -2870,6 +2997,26 @@ def _mlx_lm_supports_manifest(source_path: str) -> bool:
     except (ImportError, KeyError, TypeError, ValueError):
         return False
     return True
+
+
+def _mlx_lm_statically_supports_manifest(source_path: str) -> bool:
+    """Reject known model types absent from mlx-lm without importing Metal."""
+
+    config = _load_manifest_config(source_path)
+    model_type = str(config.get("model_type") or "").casefold().replace("-", "_")
+    if model_type != "gemma4":
+        return True
+    try:
+        package_spec = find_spec("mlx_lm")
+    except (ImportError, ValueError):
+        return False
+    if package_spec is None or not package_spec.submodule_search_locations:
+        return False
+    return any(
+        (Path(location) / "models" / f"{model_type}.py").is_file()
+        or (Path(location) / "models" / model_type / "__init__.py").is_file()
+        for location in package_spec.submodule_search_locations
+    )
 
 
 def _load_manifest_config(source_path: str) -> dict[str, Any]:

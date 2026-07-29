@@ -7,6 +7,8 @@ import pytest
 from conftest import FakeLlamaCppRuntime
 from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.contracts import CapabilityName, GenerateMessage, RuntimeAffinity
+from lewlm.runtime.operations import LifecycleOperationStatus
+from lewlm.runtime.residency import ModelResidencyState
 
 
 class TrackingFakeLlamaCppRuntime(FakeLlamaCppRuntime):
@@ -141,6 +143,91 @@ async def test_aggressive_unload_waits_for_overlapping_streams_before_unloading(
 
 
 @pytest.mark.asyncio
+async def test_stream_consumer_close_releases_residency_without_leaking_usage(
+    temp_settings,
+    sample_models_root,
+) -> None:
+    runtime = SlowStreamingFakeLlamaCppRuntime()
+    services = bootstrap_services(
+        temp_settings.with_updates(runtime_policy="aggressive_unload"),
+        runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
+    )
+    try:
+        manifests = services.model_registry.scan().manifests
+        model_id = next(manifest.model_id for manifest in manifests if manifest.format_type.value == "gguf")
+        session = await services.chat_orchestrator.stream(
+            model_id=model_id,
+            messages=[GenerateMessage(role="user", content="close this stream early")],
+            max_tokens=32,
+            temperature=0.0,
+        )
+
+        iterator = session.stream.__aiter__()
+        assert await anext(iterator) == "slow "
+        await session.stream.aclose()
+        for _ in range(100):
+            residency = await services.model_residency_manager.get_residency(model_id)
+            if residency is None:
+                break
+            await asyncio.sleep(0.01)
+
+        assert await services.model_residency_manager.get_residency(model_id) is None
+        assert runtime.unload_calls == [model_id]
+    finally:
+        await services.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_drain_cancellation_restores_ready_residency(
+    temp_settings,
+    sample_models_root,
+) -> None:
+    runtime = SlowStreamingFakeLlamaCppRuntime()
+    services = bootstrap_services(
+        temp_settings.with_updates(runtime_policy="keep_warm"),
+        runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
+    )
+    try:
+        manifests = services.model_registry.scan().manifests
+        model_id = next(manifest.model_id for manifest in manifests if manifest.format_type.value == "gguf")
+        manifest, selected_runtime, _ = services.model_router.route_lifecycle(model_id)
+        lease = services.model_residency_manager.acquire(
+            selected_runtime,
+            manifest,
+            application_id="application-a",
+            capability="chat",
+        )
+        await lease.__aenter__()
+
+        operation = await services.lifecycle_operation_manager.submit_drain(
+            model_id,
+            timeout_seconds=5,
+            application_id="runtime-operator",
+            client_instance_id="operator-1",
+            idempotency_key="cancel-this-drain",
+        )
+        for _ in range(100):
+            current = await services.lifecycle_operation_manager.get(operation.operation_id)
+            if current.status == LifecycleOperationStatus.RUNNING:
+                break
+            await asyncio.sleep(0)
+        cancelled = await services.lifecycle_operation_manager.cancel(operation.operation_id)
+
+        assert cancelled.status == LifecycleOperationStatus.CANCELLED
+        residency = await services.model_residency_manager.get_residency(model_id)
+        assert residency is not None
+        assert residency.state == ModelResidencyState.READY
+        assert residency.active_usage_count == 1
+
+        await lease.__aexit__(None, None, None)
+        result = await services.model_residency_manager.unload(selected_runtime, manifest)
+        assert result.backend_operation_performed is True
+        assert await services.model_residency_manager.get_residency(model_id) is None
+    finally:
+        await services.aclose()
+
+
+@pytest.mark.asyncio
 async def test_balanced_policy_unloads_other_models_after_switching(
     temp_settings,
     sample_models_root,
@@ -150,7 +237,7 @@ async def test_balanced_policy_unloads_other_models_after_switching(
 
     runtime = TrackingFakeLlamaCppRuntime()
     services = bootstrap_services(
-        temp_settings.with_updates(runtime_policy="balanced"),
+        temp_settings.with_updates(runtime_policy="balanced", disabled_runtime_packs=("mlx",)),
         runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
     )
     try:
@@ -190,7 +277,7 @@ async def test_runtime_stats_surface_residency_and_switch_telemetry_for_balanced
 
     runtime = TrackingFakeLlamaCppRuntime()
     services = bootstrap_services(
-        temp_settings.with_updates(runtime_policy="balanced"),
+        temp_settings.with_updates(runtime_policy="balanced", disabled_runtime_packs=("mlx",)),
         runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
     )
     try:
@@ -256,7 +343,7 @@ async def test_benchmark_suite_stress_tracks_mixed_model_residency_by_policy(
 
     runtime = TrackingFakeLlamaCppRuntime()
     services = bootstrap_services(
-        temp_settings.with_updates(runtime_policy=policy),
+        temp_settings.with_updates(runtime_policy=policy, disabled_runtime_packs=("mlx",)),
         runtime_overrides={RuntimeAffinity.LLAMACPP: runtime},
     )
     try:

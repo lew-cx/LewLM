@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 import platform
@@ -32,7 +33,13 @@ from lewlm.core.contracts import (
     runtime_support_path_for_affinity,
     utc_now,
 )
-from lewlm.core.errors import NotImplementedLewLMError, RuntimeUnavailableError, UnsupportedCapabilityError
+from lewlm.core.errors import (
+    LewLMError,
+    ModelLoadError,
+    NotImplementedLewLMError,
+    RuntimeUnavailableError,
+    UnsupportedCapabilityError,
+)
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 
@@ -120,7 +127,30 @@ class ManagedRuntime(ABC):
             return
         if self._loaded_manifests:
             self._total_model_switch_count += 1
-        await self._load_model(manifest)
+        try:
+            await self._load_model(manifest)
+        except LewLMError:
+            # Backends that already classify their own load failures keep the
+            # more specific error they raised.
+            raise
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:
+            # A raw backend exception would otherwise reach the API as an
+            # untyped 500 with no envelope, which is the most common failure a
+            # host application has to explain to a user.
+            raise ModelLoadError(
+                f"Runtime `{self.name}` could not load model `{manifest.model_id}`: {exc}",
+                details={
+                    "runtime": self.name,
+                    "runtime_affinity": self.affinity.value,
+                    "model_id": manifest.model_id,
+                    "architecture_family": manifest.architecture_family,
+                    "format_type": manifest.format_type.value,
+                    "cause_type": type(exc).__name__,
+                    "cause": str(exc),
+                },
+            ) from exc
         loaded_at = utc_now()
         self._loaded_manifests[manifest.model_id] = manifest
         self._loaded_at[manifest.model_id] = loaded_at
@@ -243,7 +273,15 @@ class ManagedRuntime(ABC):
         }
 
     async def health_check(self) -> dict[str, Any]:
-        performance_features = self.performance_feature_snapshot()
+        return await self._health_check(include_performance_features=True)
+
+    async def lightweight_health_check(self) -> dict[str, Any]:
+        """Report health without optional backend feature introspection."""
+
+        return await self._health_check(include_performance_features=False)
+
+    async def _health_check(self, *, include_performance_features: bool) -> dict[str, Any]:
+        performance_features = self.performance_feature_snapshot() if include_performance_features else {}
         return {
             "name": self.name,
             "affinity": self.affinity.value,
@@ -266,8 +304,11 @@ class ManagedRuntime(ABC):
             "loaded_models": self._loaded_model_snapshot(),
             "supported_capabilities": sorted(
                 capability.value
-                for capability in CapabilityName
-                if self.supports_capability(capability)
+                for capability in (
+                    (item for item in CapabilityName if self.supports_capability(item))
+                    if include_performance_features
+                    else (self.supported_capabilities if self.is_available() else ())
+                )
             ),
             "performance_features": performance_features,
             "performance_core_evidence": [

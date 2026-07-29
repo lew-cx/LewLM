@@ -731,6 +731,8 @@ def _infer_architecture(path: Path, config_data: dict[str, Any]) -> str:
 
 def _infer_architecture_from_name(name: str) -> str:
     normalized = re.sub(r"[-_]+", " ", name.casefold())
+    if re.search(r"\bgemma\s*4\b", normalized):
+        return "gemma4"
     for token in ("qwen", "llama", "mistral", "phi", "gemma", "deepseek", "mixtral", "whisper", "mamba", "jamba"):
         if token in normalized:
             return token

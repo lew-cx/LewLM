@@ -32,14 +32,55 @@ class BackendFeatureProbe(BaseModel):
     detail: str
 
 
-def probe_backend_features() -> list[BackendFeatureProbe]:
+def probe_backend_features(
+    *,
+    disabled_runtime_packs: tuple[str, ...] = (),
+    enabled: bool = True,
+) -> list[BackendFeatureProbe]:
     """Probe installed backends for the inference feature surfaces LewLM maps."""
 
+    disabled = {name.casefold() for name in disabled_runtime_packs}
+    if not enabled:
+        disabled.update({"llamacpp", "mlx", "onnx_genai"})
     probes: list[BackendFeatureProbe] = []
-    probes.extend(_llamacpp_feature_probes())
-    probes.extend(_mlx_feature_probes())
-    probes.extend(_onnx_genai_feature_probes())
+    probes.extend(
+        _disabled_probes(
+            "gguf_fallback_backend",
+            "llama_cpp",
+            (
+                "ngram_draft_speculation",
+                "kv_quantization_controls",
+                "kv_offload_controls",
+                "decode_time_grammar_enforcement",
+            ),
+        )
+        if "llamacpp" in disabled
+        else _llamacpp_feature_probes()
+    )
+    probes.extend(
+        _disabled_probes("mlx_local_backend", "mlx_lm", ("draft_model_speculation", "batched_generation"))
+        if "mlx" in disabled
+        else _mlx_feature_probes()
+    )
+    probes.extend(
+        _disabled_probes("onnx_genai_backend", "onnxruntime_genai", ("generation_api", "multimodal_processor"))
+        if "onnx_genai" in disabled
+        else _onnx_genai_feature_probes()
+    )
     return probes
+
+
+def _disabled_probes(profile: str, backend: str, features: tuple[str, ...]) -> list[BackendFeatureProbe]:
+    return [
+        BackendFeatureProbe(
+            profile=profile,
+            backend=backend,
+            feature=feature,
+            present=None,
+            detail="The matching runtime pack is disabled; LewLM did not import or probe this backend.",
+        )
+        for feature in features
+    ]
 
 
 def _not_importable(profile: str, backend: str, features: tuple[str, ...]) -> list[BackendFeatureProbe]:

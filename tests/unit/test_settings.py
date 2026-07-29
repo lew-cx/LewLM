@@ -24,7 +24,11 @@ def test_redacted_snapshot_omits_api_key_values(temp_settings: LewLMSettings) ->
     assert snapshot["default_data_dir"] == str(Path.home().resolve(strict=False) / ".lewlm")
     assert snapshot["default_models_dir"] == str(Path.home().resolve(strict=False) / ".lewlm" / "models")
     assert snapshot["api_key_count"] == 1
+    assert snapshot["lifecycle_operator_api_key_count"] == 0
+    assert snapshot["lifecycle_administrator_api_key_count"] == 0
     assert snapshot["api_key_required"] is False
+    assert snapshot["backend_feature_probes_enabled"] is False
+    assert snapshot["max_application_metric_entries"] == 64
     assert snapshot["runtime_policy"] == "balanced"
     assert snapshot["rate_limit_requests"] == 120
     assert snapshot["rate_limit_window_seconds"] == 60
@@ -48,7 +52,7 @@ def test_redacted_snapshot_omits_api_key_values(temp_settings: LewLMSettings) ->
     assert snapshot["llamacpp_quantize_path"] is None
     assert snapshot["kv_cache_page_size"] == 256
     assert snapshot["kv_cache_max_pages"] == 64
-    assert snapshot["kv_cache_quantization_bits"] == 8
+    assert snapshot["kv_cache_quantization_bits"] is None
     assert snapshot["prefill_token_batch_size"] == 512
     assert snapshot["file_access_roots"] == [str(temp_settings.data_dir)]
     assert snapshot["validation_manifest_paths"] == []

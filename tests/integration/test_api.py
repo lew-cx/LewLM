@@ -1153,26 +1153,29 @@ def test_audio_transcription_endpoint_emits_lifecycle_events(
             )
             assert response.status_code == 200
             request_id = response.json()["request_id"]
-            events = [websocket.receive_json() for _ in range(8)]
+            events = [websocket.receive_json() for _ in range(11)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "audio.transcription.started",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "audio.transcription.completed",
         "request.completed",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events)
     assert all(event["request_id"] == request_id for event in events)
     assert all(event["capability"] == "audio_transcription" for event in events)
     assert events[0]["operation"] == "audio.transcription"
     assert events[0]["status"] == "accepted"
-    assert events[-1]["status"] == "completed"
+    assert events[-2]["status"] == "completed"
     assert events[2]["payload"]["operation"] == "audio.transcription"
-    assert events[5]["payload"]["segment_count"] == 1
+    assert events[7]["payload"]["segment_count"] == 1
 
 
 def test_audio_transcription_endpoint_emits_chunk_events_for_long_audio(
@@ -1197,13 +1200,15 @@ def test_audio_transcription_endpoint_emits_chunk_events_for_long_audio(
             )
             assert response.status_code == 200
             request_id = response.json()["request_id"]
-            events = [websocket.receive_json() for _ in range(14)]
+            events = [websocket.receive_json() for _ in range(17)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "audio.transcription.started",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "audio.chunk",
@@ -1214,21 +1219,23 @@ def test_audio_transcription_endpoint_emits_chunk_events_for_long_audio(
         "operation.progress",
         "audio.transcription.completed",
         "request.completed",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events)
     assert events[1]["payload"]["chunk_count"] == 2
     assert events[2]["payload"]["stage"] == "chunks_planned"
     assert events[2]["payload"]["chunk_count"] == 2
-    assert events[5]["payload"]["stage"] == "chunk_started"
-    assert events[6]["payload"]["chunk_index"] == 1
-    assert events[7]["payload"]["stage"] == "chunk_processed"
-    assert events[8]["payload"]["stage"] == "chunk_started"
-    assert events[9]["payload"]["chunk_index"] == 2
-    assert events[10]["payload"]["stage"] == "chunk_processed"
-    assert events[11]["payload"]["stage"] == "segments_ready"
-    assert events[11]["payload"]["segment_count"] == 2
-    assert events[-2]["type"] == "audio.transcription.completed"
-    assert events[-1]["type"] == "request.completed"
+    assert events[7]["payload"]["stage"] == "chunk_started"
+    assert events[8]["payload"]["chunk_index"] == 1
+    assert events[9]["payload"]["stage"] == "chunk_processed"
+    assert events[10]["payload"]["stage"] == "chunk_started"
+    assert events[11]["payload"]["chunk_index"] == 2
+    assert events[12]["payload"]["stage"] == "chunk_processed"
+    assert events[13]["payload"]["stage"] == "segments_ready"
+    assert events[13]["payload"]["segment_count"] == 2
+    assert events[-3]["type"] == "audio.transcription.completed"
+    assert events[-2]["type"] == "request.completed"
+    assert events[-1]["type"] == "model.usage.released"
 
 
 def test_audio_speech_endpoint_emits_lifecycle_events(
@@ -1248,21 +1255,24 @@ def test_audio_speech_endpoint_emits_lifecycle_events(
             )
             assert response.status_code == 200
             request_id = response.json()["request_id"]
-            events = [websocket.receive_json() for _ in range(8)]
+            events = [websocket.receive_json() for _ in range(11)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "audio.speech.started",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "audio.speech.completed",
         "request.completed",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events)
     assert events[2]["payload"]["operation"] == "audio.speech"
-    assert events[5]["payload"]["audio_output_bytes"] > 0
+    assert events[7]["payload"]["audio_output_bytes"] > 0
 
 
 def test_chat_completion_endpoint_emits_reasoning_safe_progress_events(
@@ -1285,32 +1295,35 @@ def test_chat_completion_endpoint_emits_reasoning_safe_progress_events(
             )
             assert response.status_code == 200
             request_id = response.json()["id"]
-            events = [websocket.receive_json() for _ in range(9)]
+            events = [websocket.receive_json() for _ in range(12)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "prefill.started",
         "operation.progress",
         "operation.progress",
         "request.completed",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events if "payload" in event)
-    assert [events[1]["payload"]["stage"], events[4]["payload"]["stage"], events[6]["payload"]["stage"], events[7]["payload"]["stage"]] == [
+    assert [events[1]["payload"]["stage"], events[6]["payload"]["stage"], events[8]["payload"]["stage"], events[9]["payload"]["stage"]] == [
         "prompt_compiled",
         "model_ready",
         "response_generating",
         "response_ready",
     ]
-    assert all(events[index]["payload"]["reasoning_exposed"] is False for index in (1, 4, 6, 7))
-    assert all(events[index]["payload"]["reasoning_visibility"] == "hidden" for index in (1, 4, 6, 7))
+    assert all(events[index]["payload"]["reasoning_exposed"] is False for index in (1, 6, 8, 9))
+    assert all(events[index]["payload"]["reasoning_visibility"] == "hidden" for index in (1, 6, 8, 9))
     assert events[0]["payload"]["serving"]["phase"] == "admitted"
-    assert events[5]["payload"]["serving"]["phase"] == "prefill"
-    assert events[-1]["payload"]["serving"]["phase"] == "completed"
-    assert events[-1]["payload"]["serving"]["runtime_adapter"]["kind"] in {
+    assert events[5]["payload"]["serving"]["phase"] == "model_loading"
+    assert events[-2]["payload"]["serving"]["phase"] == "completed"
+    assert events[-2]["payload"]["serving"]["runtime_adapter"]["kind"] in {
         "backend_native_batch",
         "request_scoped",
     }
@@ -1427,7 +1440,7 @@ def test_chat_completion_endpoint_emits_speculation_summary_events(
                 )
                 assert response.status_code == 200
                 request_id = response.json()["id"]
-                events = [websocket.receive_json() for _ in range(11)]
+                events = [websocket.receive_json() for _ in range(17)]
     finally:
         services.close()
 
@@ -1435,6 +1448,10 @@ def test_chat_completion_endpoint_emits_speculation_summary_events(
         "request.accepted",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "prefill.started",
@@ -1443,13 +1460,15 @@ def test_chat_completion_endpoint_emits_speculation_summary_events(
         "operation.progress",
         "speculation.accepted",
         "request.completed",
+        "model.usage.released",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events if "payload" in event)
-    assert events[6]["payload"]["mode"] == "draft_model"
-    assert events[6]["payload"]["execution_path"] == "pending"
-    assert events[9]["payload"]["execution_path"] == "lewlm_controller"
-    assert events[9]["payload"]["accepted_tokens"] == 2
-    assert events[9]["payload"]["fallback_count"] == 0
+    assert events[10]["payload"]["mode"] == "draft_model"
+    assert events[10]["payload"]["execution_path"] == "pending"
+    assert events[13]["payload"]["execution_path"] == "lewlm_controller"
+    assert events[13]["payload"]["accepted_tokens"] == 2
+    assert events[13]["payload"]["fallback_count"] == 0
 
 
 def test_responses_endpoint_emits_reasoning_safe_progress_events(
@@ -1469,23 +1488,26 @@ def test_responses_endpoint_emits_reasoning_safe_progress_events(
             )
             assert response.status_code == 200
             request_id = response.json()["id"]
-            events = [websocket.receive_json() for _ in range(9)]
+            events = [websocket.receive_json() for _ in range(12)]
 
     assert [event["type"] for event in events] == [
         "request.accepted",
         "operation.progress",
         "model.loading",
+        "model.load.requested",
+        "model.usage.acquired",
         "model.loaded",
         "operation.progress",
         "prefill.started",
         "operation.progress",
         "operation.progress",
         "request.completed",
+        "model.usage.released",
     ]
     assert all(event["payload"]["request_id"] == request_id for event in events if "payload" in event)
     assert events[1]["payload"]["operation"] == "text.generation"
-    assert events[7]["payload"]["stage"] == "response_ready"
-    assert all(events[index]["payload"]["reasoning_visibility"] == "hidden" for index in (1, 4, 6, 7))
+    assert events[9]["payload"]["stage"] == "response_ready"
+    assert all(events[index]["payload"]["reasoning_visibility"] == "hidden" for index in (1, 6, 8, 9))
 
 
 def test_chat_completion_reasoning_visibility_exposes_model_emitted_reasoning(

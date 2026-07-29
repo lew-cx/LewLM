@@ -29,6 +29,18 @@ Serving behavior combines:
 - block and multimodal encoder cache surfaces
 - serving-profile materialization for request-specific settings
 
+## Process identity and live residency
+
+Each `LewLMServices` container creates one stable runtime instance ID. `GET /v1/runtime`, health, and runtime stats expose it so independent clients can verify they reached the same model-owning process.
+
+The manifest registry describes models on disk. The service-owned residency manager separately describes live process state with `(runtime name, model ID)` keys and `loading`, `ready`, `draining`, `unloading`, or `failed` states. Same-key callers join one load task while the existing load scheduler bounds aggregate concurrency. Capability execution holds a usage lease; unload cannot interrupt an active lease.
+
+`keep_warm` leaves models resident, `balanced` opportunistically unloads inactive alternatives, and `aggressive_unload` unloads after the active request releases its lease. Candidate serving-profile containers have distinct runtime IDs and intentionally isolated residency state.
+
+Lifecycle credentials have two scopes. Operators can inspect residency, warm models, and initiate drains. Administrators can also unload immediately and run diagnostics such as autotuning that may load alternate candidates. A bounded application-usage table reports request outcomes, lease counts, residency wait, model use, and joined-load contention; request IDs and client-instance IDs are not metric labels.
+
+Native batch streaming treats each consumer independently. Closing one stream marks only that batch member cancelled and lets other members finish. Closing every consumer closes the runtime iterator, releases batch resources, and allows drain/unload to converge.
+
 ## Capability reporting
 
 LewLM's capability reports are more than a boolean matrix. They include:

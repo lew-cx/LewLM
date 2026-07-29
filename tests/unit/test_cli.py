@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from conftest import FakeLlamaCppRuntime, FakeMLXSemanticRuntime
+from conftest import FakeExternalSemanticRuntime, FakeLlamaCppRuntime, FakeMLXSemanticRuntime
 from lewlm.conversion.models import CONVERSION_OUTPUT_METADATA_FILENAME, ConversionArtifactRecord, ConversionPolicy
 from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.errors import ConfigurationError
@@ -18,6 +18,7 @@ from lewlm.cli.main import (
     _persist_external_adapter_runtime_preference,
     _print_benchmark_table,
     _print_benchmark_scenario_highlights,
+    _run_external_adapter_benchmark,
     main,
 )
 from lewlm.core.contracts import (
@@ -52,6 +53,28 @@ class PromptGuidedLlamaRuntime(FakeLlamaCppRuntime):
             finish_reason="stop",
             usage={"prompt_tokens": len(request.messages), "completion_tokens": 2, "total_tokens": len(request.messages) + 2},
         )
+
+
+def test_cli_drain_uses_safe_residency_lifecycle(
+    capsys,
+    temp_settings,
+    services_with_fake_runtime,
+) -> None:
+    manifests = services_with_fake_runtime.model_registry.scan().manifests
+    model_id = next(manifest.model_id for manifest in manifests if manifest.format_type == ModelFormat.GGUF)
+    asyncio.run(services_with_fake_runtime.model_router.warm_model(model_id))
+
+    exit_code = main(
+        ["drain", model_id, "--timeout-seconds", "1", "--json"],
+        settings=temp_settings,
+        services=services_with_fake_runtime,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "drained"
+    assert payload["model_id"] == model_id
+    assert payload["backend_operation_performed"] is True
 
 
 def test_cli_scan_emits_json_summary(temp_settings, sample_models_root: Path, capsys) -> None:
@@ -966,6 +989,50 @@ def test_cli_benchmark_compare_external_adapter_prints_human_summary(
     assert "routing preference: Persisted benchmark evidence, but LewLM keeps" in output
     assert "first-class local runtime default" in output
     assert "artifact: /tmp/external-adapter-benchmark.json" in output
+
+
+def test_external_adapter_benchmark_uses_isolated_runtime_objects(
+    temp_settings,
+    sample_models_root: Path,
+) -> None:
+    native_runtime = FakeMLXSemanticRuntime(settings=temp_settings)
+    external_runtime = FakeExternalSemanticRuntime(settings=temp_settings)
+    services = bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.MLX_TEXT: native_runtime,
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: external_runtime,
+        },
+    )
+    try:
+        manifests = services.model_registry.scan().manifests
+        selected_manifest = next(
+            manifest
+            for manifest in manifests
+            if manifest.format_type == ModelFormat.MLX and manifest.display_name == "qwen2.5-1.5b-instruct-mlx"
+        )
+        model_id = selected_manifest.model_id
+        asyncio.run(services.model_residency_manager.ensure_loaded(native_runtime, selected_manifest))
+        payload = _run_external_adapter_benchmark(
+            argparse.Namespace(
+                model=model_id,
+                prompt="compare isolated runtimes",
+                warmup_runs=0,
+                compare_metric="warm_total_seconds",
+            ),
+            temp_settings,
+            services,
+        )
+
+        assert payload["runtime_isolation"]["isolated"] is True
+        assert payload["runtime_isolation"]["primary_runtime_instance_id"] == services.runtime_instance.runtime_instance_id
+        assert payload["runtime_isolation"]["runtime_instance_id"] != services.runtime_instance.runtime_instance_id
+        assert asyncio.run(native_runtime.health_check())["total_load_count"] == 1
+        assert asyncio.run(external_runtime.health_check())["total_load_count"] == 0
+        assert native_runtime.loaded_model_ids == (model_id,)
+        assert external_runtime.loaded_model_ids == ()
+    finally:
+        services.close()
 
 
 def test_cli_benchmark_compare_external_adapter_accepts_non_apple_profile(

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from io import BytesIO
 import math
+from math import isfinite
 import time
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 from uuid import uuid4
 import wave
 
@@ -23,24 +24,32 @@ from lewlm.core.contracts import (
     ModelManifest,
     RerankRequest,
     RerankResponse,
+    RerankResult,
     RoutingDecision,
     RuntimeContract,
     utc_now,
 )
-from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import BackendContractError, ConfigurationError
 from lewlm.core.execution_metadata import (
     ExecutionMetadata,
     ExecutionTimingMetadata,
     build_routed_execution_metadata,
     milliseconds_from_seconds,
 )
+from lewlm.core.provenance import (
+    RetrievalScoringPolicy,
+    chunker_provenance,
+    retrieval_scoring_provenance,
+)
 from lewlm.documents.ingest.models import DocumentChunk, IngestedDocumentSource
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.routing.service import ModelRouter
 from lewlm.runtime.request_coalescer import InFlightRequestCoalescer
+from lewlm.runtime.request_context import application_id_var, client_instance_id_var
 from lewlm.runtime.response_cache import RuntimeResponseCache
 from lewlm.runtime.scheduler import RuntimeRequestAdmission, RuntimeRequestScheduler
+from lewlm.runtime.residency import ModelResidencyManager
 from lewlm.telemetry.runtime_metrics import RuntimeMetricsRecorder
 
 
@@ -121,6 +130,7 @@ class RetrievalContextExecution:
     items: list[RetrievalContextItem]
     sources: list[IngestedDocumentSource]
     metadata: ExecutionMetadata
+    scoring_policy: RetrievalScoringPolicy
     embedding_stage: RetrievalStageExecution | None = None
     rerank_stage: RetrievalStageExecution | None = None
 
@@ -206,6 +216,7 @@ class MultimodalOrchestrator:
         runtime_metrics_recorder: RuntimeMetricsRecorder,
         runtime_response_cache: RuntimeResponseCache,
         runtime_request_coalescer: InFlightRequestCoalescer[object],
+        model_residency_manager: ModelResidencyManager | None = None,
     ) -> None:
         self.model_router = model_router
         self.event_bus = event_bus
@@ -214,12 +225,15 @@ class MultimodalOrchestrator:
         self.runtime_metrics_recorder = runtime_metrics_recorder
         self.runtime_response_cache = runtime_response_cache
         self.runtime_request_coalescer = runtime_request_coalescer
+        self.model_residency_manager = model_residency_manager
+        self._request_identities: dict[str, tuple[str | None, str | None]] = {}
         self._pending_embedding_batches: dict[str, list[_PendingEmbeddingBatchItem]] = {}
         self._embedding_batch_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def embed(self, *, model_id: str | None, inputs: list[str]) -> EmbeddingExecution:
         manifest, runtime, routing = self.model_router.route_embeddings(model_id, inputs=inputs)
         request_id = str(uuid4())
+        self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
         cache_key = self.runtime_response_cache.embedding_cache_key(model_id=manifest.model_id, inputs=inputs)
         is_owner, shared_future = self.runtime_request_coalescer.claim(cache_key)
@@ -402,6 +416,7 @@ class MultimodalOrchestrator:
             documents=documents,
         )
         request_id = str(uuid4())
+        self._capture_request_identity(request_id)
         cache_key = self.runtime_response_cache.rerank_cache_key(
             model_id=manifest.model_id,
             query=query,
@@ -554,6 +569,7 @@ class MultimodalOrchestrator:
                 "Retrieval requests must enable embeddings, rerank, or both.",
                 details={"use_embeddings": use_embeddings, "use_rerank": use_rerank},
             )
+        _validate_candidate_identity(candidate_chunks, candidate_sources)
 
         request_id = str(uuid4())
         created_at = int(utc_now().timestamp())
@@ -575,6 +591,9 @@ class MultimodalOrchestrator:
                     f"for {len(candidate_chunks)} candidates."
                 )
             query_embedding = embedding_execution.response.data[0].embedding
+            _validate_finite_vector(query_embedding, origin="query embedding")
+            for index, datum in enumerate(embedding_execution.response.data[1:]):
+                _validate_finite_vector(datum.embedding, origin=f"candidate embedding {index}")
             embedding_scores = {
                 index: _cosine_similarity(query_embedding, datum.embedding)
                 for index, datum in enumerate(embedding_execution.response.data[1:])
@@ -595,10 +614,10 @@ class MultimodalOrchestrator:
                 documents=documents,
                 top_n=None,
             )
-            rerank_scores = {
-                item.index: item.relevance_score
-                for item in rerank_execution.response.results
-            }
+            rerank_scores = _validated_rerank_scores(
+                rerank_execution.response.results,
+                candidate_count=len(candidate_chunks),
+            )
             rerank_stage = RetrievalStageExecution(
                 request_id=rerank_execution.request_id,
                 created_at=rerank_execution.created_at,
@@ -631,6 +650,9 @@ class MultimodalOrchestrator:
             embedding_stage=embedding_stage,
             rerank_stage=rerank_stage,
         )
+        metadata = metadata.model_copy(
+            update={"components": [retrieval_scoring_provenance(), chunker_provenance()]},
+        )
         return RetrievalContextExecution(
             request_id=request_id,
             created_at=created_at,
@@ -642,6 +664,10 @@ class MultimodalOrchestrator:
             items=items,
             sources=_matched_retrieval_sources(items),
             metadata=metadata,
+            scoring_policy=_retrieval_scoring_policy(
+                use_embeddings=use_embeddings,
+                use_rerank=use_rerank,
+            ),
             embedding_stage=embedding_stage,
             rerank_stage=rerank_stage,
         )
@@ -729,13 +755,8 @@ class MultimodalOrchestrator:
                     },
                 )
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission_for_batch(
-                manifest=manifest,
-                runtime=runtime,
-                items=items,
-                capability="embeddings",
-                batch_payload=batch_payload,
-            )
+            load_admission = None
+            residency_leases = []
             for item in items:
                 await self._publish(
                     EventType.MODEL_LOADING,
@@ -747,7 +768,27 @@ class MultimodalOrchestrator:
                         **batch_payload,
                     },
                 )
-            await runtime.load_model(manifest)
+            if self.model_residency_manager is not None:
+                for item in items:
+                    application_id, _ = self._request_identities.get(item.request_id, (None, None))
+                    residency_lease = self.model_residency_manager.acquire(
+                        runtime,
+                        manifest,
+                        request_id=item.request_id,
+                        application_id=application_id,
+                        capability="embeddings",
+                    )
+                    await residency_lease.__aenter__()
+                    residency_leases.append(residency_lease)
+            else:
+                load_admission = await self._acquire_model_load_admission_for_batch(
+                    manifest=manifest,
+                    runtime=runtime,
+                    items=items,
+                    capability="embeddings",
+                    batch_payload=batch_payload,
+                )
+                await runtime.load_model(manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 manifest,
                 runtime,
@@ -807,6 +848,8 @@ class MultimodalOrchestrator:
                 for item in items:
                     self.runtime_request_coalescer.reject(item.cache_key, failure)
         finally:
+            for residency_lease in reversed(residency_leases):
+                await residency_lease.__aexit__(None, None, None)
             await self.model_router.runtime_catalog.finalize_runtime_for_request(
                 manifest,
                 runtime,
@@ -990,6 +1033,7 @@ class MultimodalOrchestrator:
     ) -> AudioTranscriptionExecution:
         manifest, runtime, routing = self.model_router.route_audio_transcription(model_id)
         request_id = str(uuid4())
+        self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
         chunk_plan = _plan_audio_transcription_chunks(audio_bytes)
         total_progress_steps = (chunk_plan.chunk_count * 2) + 2 if chunk_plan.is_chunked else 2
@@ -1292,6 +1336,7 @@ class MultimodalOrchestrator:
     ) -> AudioSpeechExecution:
         manifest, runtime, routing = self.model_router.route_audio_speech(model_id)
         request_id = str(uuid4())
+        self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
         cache_key = self.runtime_response_cache.audio_speech_cache_key(
             model_id=manifest.model_id,
@@ -1646,15 +1691,10 @@ class MultimodalOrchestrator:
         if on_accepted is not None:
             await on_accepted(resolved_request_id)
         load_admission: RuntimeRequestAdmission | None = None
+        residency_lease = None
+        residency_lease_entered = False
         try:
             load_started_at = time.perf_counter()
-            load_admission = await self._acquire_model_load_admission(
-                request_id=resolved_request_id,
-                requested_model_id=requested_model_id,
-                manifest=manifest,
-                runtime=runtime,
-                capability=capability,
-            )
             await self._publish(
                 EventType.MODEL_LOADING,
                 {
@@ -1664,7 +1704,26 @@ class MultimodalOrchestrator:
                     "capability": capability,
                 },
             )
-            await runtime.load_model(manifest)
+            if self.model_residency_manager is not None:
+                application_id, _ = self._request_identities.get(resolved_request_id, (None, None))
+                residency_lease = self.model_residency_manager.acquire(
+                    runtime,
+                    manifest,
+                    request_id=resolved_request_id,
+                    application_id=application_id,
+                    capability=capability,
+                )
+                await residency_lease.__aenter__()
+                residency_lease_entered = True
+            else:
+                load_admission = await self._acquire_model_load_admission(
+                    request_id=resolved_request_id,
+                    requested_model_id=requested_model_id,
+                    manifest=manifest,
+                    runtime=runtime,
+                    capability=capability,
+                )
+                await runtime.load_model(manifest)
             await self.model_router.runtime_catalog.prepare_runtime_for_request(
                 manifest,
                 runtime,
@@ -1748,6 +1807,8 @@ class MultimodalOrchestrator:
             )
             raise
         finally:
+            if residency_lease is not None and residency_lease_entered:
+                await residency_lease.__aexit__(None, None, None)
             await self.model_router.runtime_catalog.finalize_runtime_for_request(
                 manifest,
                 runtime,
@@ -1813,8 +1874,34 @@ class MultimodalOrchestrator:
                 )
         return admission
 
+    def _capture_request_identity(self, request_id: str) -> None:
+        self._request_identities[request_id] = (
+            application_id_var.get(),
+            client_instance_id_var.get(),
+        )
+
     async def _publish(self, event_type: EventType, payload: dict[str, object]) -> None:
         normalized_payload = dict(payload)
+        if self.model_residency_manager is not None:
+            normalized_payload.setdefault(
+                "runtime_instance_id",
+                self.model_residency_manager.runtime_instance_id,
+            )
+        request_id = normalized_payload.get("request_id")
+        identity = None
+        if isinstance(request_id, str) and request_id:
+            identity = self._request_identities.get(request_id)
+            if identity is None:
+                identity = (application_id_var.get(), client_instance_id_var.get())
+                self._request_identities[request_id] = identity
+        application_id, client_instance_id = identity or (
+            application_id_var.get(),
+            client_instance_id_var.get(),
+        )
+        if application_id:
+            normalized_payload.setdefault("application_id", application_id)
+        if client_instance_id:
+            normalized_payload.setdefault("client_instance_id", client_instance_id)
         capability = normalized_payload.get("capability")
         if not isinstance(capability, str):
             if event_type in {
@@ -1833,7 +1920,16 @@ class MultimodalOrchestrator:
         if isinstance(capability, str):
             normalized_payload.setdefault("capability", capability)
             normalized_payload.setdefault("operation", _operation_for_capability(capability))
+        if event_type == EventType.REQUEST_ACCEPTED:
+            self.runtime_metrics_recorder.record_application_request(application_id=application_id)
+        elif event_type in {EventType.REQUEST_COMPLETED, EventType.REQUEST_FAILED}:
+            self.runtime_metrics_recorder.record_application_result(
+                application_id=application_id,
+                failed=event_type == EventType.REQUEST_FAILED,
+            )
         await self.event_bus.publish(StreamEvent(type=event_type, scope=EventScope.REQUEST, payload=normalized_payload))
+        if isinstance(request_id, str) and event_type in {EventType.REQUEST_COMPLETED, EventType.REQUEST_FAILED}:
+            self._request_identities.pop(request_id, None)
 
     async def _publish_progress(
         self,
@@ -2070,6 +2166,117 @@ def _build_retrieval_metadata(
                 total_milliseconds=queue_milliseconds + load_milliseconds + execute_milliseconds,
             ),
         },
+    )
+
+
+def _validate_candidate_identity(
+    candidate_chunks: list[DocumentChunk],
+    candidate_sources: list[IngestedDocumentSource] | None,
+) -> None:
+    """Reject ambiguous candidate identity before any model work happens.
+
+    Duplicate chunk identities make a ranked result impossible to attribute, and
+    duplicate source identities make citation packaging ambiguous.
+    """
+
+    seen_chunks: set[str] = set()
+    for position, chunk in enumerate(candidate_chunks):
+        if chunk.chunk_id in seen_chunks:
+            raise ConfigurationError(
+                "Retrieval candidates must have unique chunk identities.",
+                details={"chunk_id": chunk.chunk_id, "position": position},
+            )
+        seen_chunks.add(chunk.chunk_id)
+
+    seen_sources: set[str] = set()
+    for position, source in enumerate(candidate_sources or ()):
+        if source.source_id in seen_sources:
+            raise ConfigurationError(
+                "Retrieval candidate sources must have unique source identities.",
+                details={"source_id": source.source_id, "position": position},
+            )
+        seen_sources.add(source.source_id)
+
+
+def _validate_finite_vector(vector: Sequence[float], *, origin: str) -> None:
+    """Reject non-finite embedding components.
+
+    A single NaN propagates through cosine similarity and silently poisons the
+    whole ranking, so it must fail loudly rather than rank arbitrarily.
+    """
+
+    for position, value in enumerate(vector):
+        if not isfinite(value):
+            raise BackendContractError(
+                f"Embedding backend returned a non-finite value in the {origin}.",
+                details={"origin": origin, "position": position, "value": str(value)},
+            )
+
+
+def _validated_rerank_scores(
+    results: Sequence[RerankResult],
+    *,
+    candidate_count: int,
+) -> dict[int, float]:
+    """Validate a rerank response against the candidates that were sent.
+
+    A rerank backend can be an external bridge LewLM does not control. Collapsing
+    its results into a dictionary would let duplicate indices silently overwrite
+    each other, and a missing index would rank its candidate last rather than
+    falling back to its embedding score. Both are corrections the caller can
+    never see, so they are rejected instead.
+    """
+
+    scores: dict[int, float] = {}
+    for position, item in enumerate(results):
+        if item.index < 0 or item.index >= candidate_count:
+            raise BackendContractError(
+                "Rerank backend returned an index outside the candidate range.",
+                details={"index": item.index, "candidate_count": candidate_count, "position": position},
+            )
+        if item.index in scores:
+            raise BackendContractError(
+                "Rerank backend returned a duplicate candidate index.",
+                details={"index": item.index, "position": position},
+            )
+        if not isfinite(item.relevance_score):
+            raise BackendContractError(
+                "Rerank backend returned a non-finite relevance score.",
+                details={"index": item.index, "relevance_score": str(item.relevance_score)},
+            )
+        scores[item.index] = item.relevance_score
+
+    if len(scores) != candidate_count:
+        missing = sorted(set(range(candidate_count)) - set(scores))
+        raise BackendContractError(
+            "Rerank backend did not score every retrieval candidate.",
+            details={
+                "candidate_count": candidate_count,
+                "scored_count": len(scores),
+                "missing_indices": missing[:16],
+            },
+        )
+    return scores
+
+
+def _retrieval_scoring_policy(*, use_embeddings: bool, use_rerank: bool) -> RetrievalScoringPolicy:
+    """Describe the ranking rules this response actually applied."""
+
+    if use_rerank:
+        primary: Literal["rerank", "embedding", "none"] = "rerank"
+        tie_break: Literal["embedding", "original_order"] = "embedding" if use_embeddings else "original_order"
+    elif use_embeddings:
+        primary = "embedding"
+        tie_break = "original_order"
+    else:  # pragma: no cover - guarded by request validation
+        primary = "none"
+        tie_break = "original_order"
+    return RetrievalScoringPolicy(
+        primary_signal=primary,
+        tie_break_signal=tie_break,
+        normalization="cosine" if use_embeddings else "none",
+        embeddings_used=use_embeddings,
+        rerank_used=use_rerank,
     )
 
 

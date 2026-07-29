@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from lewlm.core.contracts import utc_now
+from lewlm.runtime.request_context import current_correlation_id
 
 
 class EventScope(str, Enum):
@@ -28,8 +29,19 @@ class EventType(str, Enum):
     MODEL_SCAN_STARTED = "model.scan.started"
     MODEL_SCAN_COMPLETED = "model.scan.completed"
     MODEL_SCAN_FAILED = "model.scan.failed"
+    MODEL_LOAD_REQUESTED = "model.load.requested"
+    MODEL_LOAD_JOINED = "model.load.joined"
     MODEL_LOADING = "model.loading"
     MODEL_LOADED = "model.loaded"
+    MODEL_LOAD_FAILED = "model.load.failed"
+    MODEL_USAGE_ACQUIRED = "model.usage.acquired"
+    MODEL_USAGE_RELEASED = "model.usage.released"
+    MODEL_DRAIN_REQUESTED = "model.drain.requested"
+    MODEL_DRAINING = "model.draining"
+    MODEL_UNLOAD_BLOCKED = "model.unload.blocked"
+    MODEL_UNLOADING = "model.unloading"
+    MODEL_UNLOADED = "model.unloaded"
+    MODEL_UNLOAD_FAILED = "model.unload.failed"
     AUDIO_CHUNK = "audio.chunk"
     AUDIO_TRANSCRIPTION_STARTED = "audio.transcription.started"
     AUDIO_TRANSCRIPTION_COMPLETED = "audio.transcription.completed"
@@ -73,6 +85,10 @@ class StreamEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     payload: dict[str, object] = Field(default_factory=dict)
     request_id: str | None = None
+    correlation_id: str | None = Field(
+        default=None,
+        description="Caller correlation identifier for the request that produced this event.",
+    )
     model_id: str | None = None
     runtime: str | None = None
     capability: str | None = None
@@ -85,6 +101,14 @@ class StreamEvent(BaseModel):
         payload = dict(self.payload)
 
         request_id = self.request_id or _payload_string(payload, "request_id")
+        # An event may be built inside the request that owns the correlation ID,
+        # so fall back to the ambient value rather than requiring every producer
+        # to pass it explicitly.
+        correlation_id = (
+            self.correlation_id
+            or _payload_string(payload, "correlation_id")
+            or current_correlation_id()
+        )
         model_id = self.model_id or _payload_string(payload, "model_id")
         runtime = self.runtime or _payload_string(payload, "runtime")
         capability = (
@@ -102,6 +126,8 @@ class StreamEvent(BaseModel):
 
         if request_id is not None:
             payload.setdefault("request_id", request_id)
+        if correlation_id is not None:
+            payload.setdefault("correlation_id", correlation_id)
         if model_id is not None:
             payload.setdefault("model_id", model_id)
         if runtime is not None:
@@ -117,6 +143,7 @@ class StreamEvent(BaseModel):
 
         self.payload = payload
         self.request_id = request_id
+        self.correlation_id = correlation_id
         self.model_id = model_id
         self.runtime = runtime
         self.capability = capability
@@ -249,6 +276,22 @@ def _infer_event_status(event_type: EventType) -> str | None:
         return "failed"
     if event_type == EventType.REQUEST_COMPLETED:
         return "completed"
+    if event_type in {EventType.MODEL_LOAD_REQUESTED, EventType.MODEL_DRAIN_REQUESTED}:
+        return "requested"
+    if event_type == EventType.MODEL_LOAD_JOINED:
+        return "joined"
+    if event_type == EventType.MODEL_USAGE_ACQUIRED:
+        return "acquired"
+    if event_type == EventType.MODEL_USAGE_RELEASED:
+        return "released"
+    if event_type == EventType.MODEL_DRAINING:
+        return "draining"
+    if event_type == EventType.MODEL_UNLOAD_BLOCKED:
+        return "blocked"
+    if event_type == EventType.MODEL_UNLOADING:
+        return "started"
+    if event_type == EventType.MODEL_UNLOADED:
+        return "completed"
     if event_type == EventType.PREFILL_STARTED:
         return "prefill_started"
     if event_type == EventType.SPECULATION_STARTED:
@@ -271,6 +314,8 @@ def _infer_event_status(event_type: EventType) -> str | None:
         return "completed"
     if event_type in {
         EventType.MODEL_SCAN_FAILED,
+        EventType.MODEL_LOAD_FAILED,
+        EventType.MODEL_UNLOAD_FAILED,
         EventType.AUDIO_TRANSCRIPTION_FAILED,
         EventType.AUDIO_SPEECH_FAILED,
         EventType.DOCUMENT_PARSE_FAILED,

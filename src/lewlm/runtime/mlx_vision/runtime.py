@@ -8,6 +8,7 @@ from functools import partial
 import inspect
 import hashlib
 from importlib import import_module
+from importlib.util import find_spec
 import json
 from pathlib import Path
 from typing import Any, get_args, get_origin
@@ -293,16 +294,55 @@ class MLXVisionRuntime(ManagedTextRuntime):
         self._stock_single_request_fallback_batches = 0
         self._stock_single_request_fallback_requests = 0
 
-    def _check_environment(self) -> tuple[bool, str | None]:
+    def supports_manifest(self, manifest: ModelManifest) -> bool:
+        if not super().supports_manifest(manifest):
+            return False
+        config_path = Path(manifest.source_path).expanduser().resolve(strict=False) / "config.json"
         try:
-            import_module("mlx_vlm")
-        except ImportError:
+            config = _read_json_file(config_path) if config_path.is_file() else {}
+        except (OSError, ValueError):
+            config = {}
+        model_type = str(config.get("model_type") or "").casefold().replace("-", "_")
+        if model_type != "gemma4":
+            return True
+        # Like the mlx-lm check, this must not import mlx_vlm during inventory
+        # annotation because importing it initializes Metal. Gemma 4 support is
+        # represented by a dedicated model package in mlx-vlm releases that
+        # can load this architecture.
+        try:
+            package_spec = find_spec("mlx_vlm")
+        except (ImportError, ValueError):
+            return False
+        if package_spec is None or not package_spec.submodule_search_locations:
+            return False
+        return any(
+            (Path(location) / "models" / "gemma4" / "__init__.py").is_file()
+            or (Path(location) / "models" / "gemma4" / "gemma4.py").is_file()
+            for location in package_spec.submodule_search_locations
+        )
+
+    def _check_environment(self) -> tuple[bool, str | None]:
+        if self.loaded_model_ids:
+            return True, None
+        if self.settings.backend_feature_probes_enabled:
+            try:
+                import_module("mlx_vlm")
+            except ImportError:
+                return False, "mlx-vlm is not installed"
+            return True, None
+        try:
+            spec = find_spec("mlx_vlm")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
             return False, "mlx-vlm is not installed"
         return True, None
 
     def supports_capability(self, capability: CapabilityName) -> bool:
         if not super().supports_capability(capability):
             return False
+        if not self.settings.backend_feature_probes_enabled and not self.loaded_model_ids:
+            return self.is_available()
         module = import_module("mlx_vlm")
         if capability in {CapabilityName.CHAT, CapabilityName.VISION}:
             return resolve_backend_callable(module, ("generate", "chat", "generate_text"), required=False) is not None
@@ -639,13 +679,18 @@ class MLXVisionRuntime(ManagedTextRuntime):
                 "prefill_step_size",
             ),
         )
-        for item in result:
-            request_index, raw_chunk = _batch_stream_item(item)
-            if request_index is None or request_index < 0 or request_index >= len(requests):
-                continue
-            text = _chunk_to_text(raw_chunk)
-            if text:
-                yield request_index, text
+        try:
+            for item in result:
+                request_index, raw_chunk = _batch_stream_item(item)
+                if request_index is None or request_index < 0 or request_index >= len(requests):
+                    continue
+                text = _chunk_to_text(raw_chunk)
+                if text:
+                    yield request_index, text
+        finally:
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
 
     def _tokenize(self, text: str) -> list[int]:
         return list(text.encode("utf-8"))

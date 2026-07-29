@@ -18,6 +18,7 @@ from lewlm.core.bootstrap import LewLMServices, bootstrap_services
 from lewlm.core.chat import ChatExecution, ChatStreamSession
 from lewlm.core.citations import CitationContextPackage
 from lewlm.core.contracts import (
+    SamplingControls,
     GenerateMessage,
     ModelCapabilityReport,
     ModelInventory,
@@ -31,6 +32,7 @@ from lewlm.core.contracts import (
     utc_now,
 )
 from lewlm.core.multimodal import AudioSpeechExecution, AudioTranscriptionExecution
+from lewlm.runtime.operations import LifecycleOperationRecord
 from lewlm.documents.ingest.models import DocumentIngestResult
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
 from lewlm.documents.render.service import GeneratedDocumentArtifact
@@ -109,10 +111,22 @@ class LewLM:
         model_registry = getattr(self.services, "model_registry", None)
         model_count = model_registry.inventory().count if model_registry is not None else storage["model_count"]
         pack_registry = getattr(self.services, "pack_registry", None) or PackRegistry.from_settings(self.settings)
+        runtime_instance = getattr(self.services, "runtime_instance", None)
+        runtime_identity = (
+            {
+                "runtime_instance_id": runtime_instance.runtime_instance_id,
+                "started_at": runtime_instance.started_at,
+                "process_id": runtime_instance.process_id,
+                "hostname": runtime_instance.hostname,
+            }
+            if runtime_instance is not None
+            else {}
+        )
         return {
             "status": "ok",
             "service": self.settings.app_name,
             "version": self.settings.version,
+            **runtime_identity,
             "time": utc_now(),
             "install_profiles": summarize_install_profiles(self.settings).model_dump(mode="json"),
             "readiness": self.services.model_router.capability_readiness_summary().model_dump(mode="json"),
@@ -146,9 +160,9 @@ class LewLM:
         return self.services.model_registry.scan(roots=_normalize_optional_paths(roots))
 
     def inventory(self) -> ModelInventory:
-        """Return the full model inventory."""
+        """Return the full model inventory annotated with serving readiness."""
 
-        return self.services.model_registry.inventory()
+        return self.services.model_router.annotate_inventory(self.services.model_registry.inventory())
 
     def list_models(self) -> list[ModelManifest]:
         """Return discovered model manifests."""
@@ -318,6 +332,7 @@ class LewLM:
         model_id: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.7,
+        sampling: SamplingControls | None = None,
         reasoning_visibility: ReasoningVisibility | None = None,
         apply_serving_profile: bool = True,
         citation_context: CitationContextPackage | None = None,
@@ -332,6 +347,7 @@ class LewLM:
             citation_context=citation_context,
             max_tokens=max_tokens,
             temperature=temperature,
+            sampling=sampling,
             reasoning_visibility=reasoning_visibility or self.settings.reasoning_visibility,
             apply_serving_profile=apply_serving_profile,
             prompt_request=prompt_request,
@@ -346,6 +362,7 @@ class LewLM:
         model_id: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.7,
+        sampling: SamplingControls | None = None,
         reasoning_visibility: ReasoningVisibility | None = None,
         apply_serving_profile: bool = True,
         citation_context: CitationContextPackage | None = None,
@@ -361,6 +378,7 @@ class LewLM:
                 model_id=model_id,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                sampling=sampling,
                 reasoning_visibility=reasoning_visibility,
                 apply_serving_profile=apply_serving_profile,
                 citation_context=citation_context,
@@ -379,6 +397,7 @@ class LewLM:
         model_id: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.7,
+        sampling: SamplingControls | None = None,
         reasoning_visibility: ReasoningVisibility | None = None,
         apply_serving_profile: bool = True,
         citation_context: CitationContextPackage | None = None,
@@ -393,6 +412,7 @@ class LewLM:
             citation_context=citation_context,
             max_tokens=max_tokens,
             temperature=temperature,
+            sampling=sampling,
             reasoning_visibility=reasoning_visibility or self.settings.reasoning_visibility,
             apply_serving_profile=apply_serving_profile,
             prompt_request=prompt_request,
@@ -506,6 +526,65 @@ class LewLM:
             helper_name="LewLM.unload_model_sync",
             async_name="LewLM.unload_model",
         )
+
+    async def drain_model(self, model_id: str, *, timeout_seconds: float | None = None) -> RoutingDecision:
+        """Stop new leases, wait for current use, and unload one model."""
+
+        resolved_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else float(self.settings.model_drain_timeout_seconds)
+        )
+        if resolved_timeout <= 0:
+            raise ValueError("timeout_seconds must be greater than zero.")
+        decision, _ = await self.services.model_router.unload_model_lifecycle(
+            model_id,
+            drain=True,
+            timeout_seconds=resolved_timeout,
+        )
+        return decision
+
+    def drain_model_sync(self, model_id: str, *, timeout_seconds: float | None = None) -> RoutingDecision:
+        """Drain one model from synchronous code."""
+
+        return _run_sync(
+            lambda: self.drain_model(model_id, timeout_seconds=timeout_seconds),
+            helper_name="LewLM.drain_model_sync",
+            async_name="LewLM.drain_model",
+        )
+
+    async def create_drain_operation(
+        self,
+        model_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        application_id: str | None = None,
+        client_instance_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> LifecycleOperationRecord:
+        """Start a pollable drain on the caller's long-lived event loop."""
+
+        return await self.services.lifecycle_operation_manager.submit_drain(
+            model_id,
+            timeout_seconds=(
+                timeout_seconds
+                if timeout_seconds is not None
+                else float(self.settings.model_drain_timeout_seconds)
+            ),
+            application_id=application_id,
+            client_instance_id=client_instance_id,
+            idempotency_key=idempotency_key,
+        )
+
+    async def get_lifecycle_operation(self, operation_id: str) -> LifecycleOperationRecord:
+        """Return one asynchronous lifecycle operation."""
+
+        return await self.services.lifecycle_operation_manager.get(operation_id)
+
+    async def cancel_lifecycle_operation(self, operation_id: str) -> LifecycleOperationRecord:
+        """Cancel one asynchronous lifecycle operation if it is still active."""
+
+        return await self.services.lifecycle_operation_manager.cancel(operation_id)
 
     def generate_document(
         self,

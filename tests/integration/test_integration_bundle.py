@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from fastapi.testclient import TestClient
+
 from lewlm.api.app import create_app
 from lewlm.api.schemas.chat import (
     ChatCompletionChunk,
@@ -29,6 +31,7 @@ from lewlm.api.schemas.multimodal import (
     RerankCreateRequest,
     RerankCreateResponse,
 )
+from lewlm.core.errors import FRAMEWORK_ERROR_CODES, LewLMError, error_code_catalog, error_from_dict
 from lewlm.documents.skills.models import DocumentTransformRequest
 from lewlm.events.schema import StreamEvent
 
@@ -176,3 +179,107 @@ def test_openapi_exposes_bundle_facing_request_and_stream_metadata() -> None:
 
     events = openapi["paths"]["/v1/events"]["get"]
     assert "text/event-stream" in events["responses"]["200"]["content"]
+
+
+def test_integration_bundle_publishes_the_error_code_catalog() -> None:
+    """G12: host apps were regex-scraping `core/errors.py` to build this."""
+
+    bundle = _load_bundle()
+    catalog = bundle["errors"]
+
+    assert catalog == error_code_catalog()
+    assert all({"code", "http_status", "retryable", "description"} == set(entry) for entry in catalog)
+    by_code = {entry["code"]: entry for entry in catalog}
+    assert by_code["rate_limit_error"] == {
+        "code": "rate_limit_error",
+        "http_status": 429,
+        "retryable": True,
+        "description": "Raised when a client exceeds the configured request rate.",
+    }
+    assert by_code["invalid_request"]["http_status"] == 422
+    assert by_code["invalid_request"]["retryable"] is False
+
+
+def test_error_catalog_covers_every_code_the_api_can_emit() -> None:
+    published = {entry["code"] for entry in error_code_catalog()}
+
+    assert set(FRAMEWORK_ERROR_CODES.values()) <= published
+    # Rehydrating a published code must produce its own class, not the base one.
+    for code in published - {"lewlm_error", "http_error", "response_too_large", *FRAMEWORK_ERROR_CODES.values()}:
+        rehydrated = error_from_dict({"code": code, "message": "x"})
+        assert rehydrated.code == code
+        assert type(rehydrated) is not LewLMError, code
+
+
+def test_error_catalog_statuses_match_what_the_api_actually_returns(app_with_fake_runtime) -> None:
+    by_code = {entry["code"]: entry for entry in error_code_catalog()}
+
+    with TestClient(app_with_fake_runtime, raise_server_exceptions=False) as client:
+        observed = [
+            client.post("/v1/chat/completions", json={}),
+            client.get("/v1/models/no-such-model"),
+            client.get("/v1/no-such-route"),
+            client.delete("/v1/health"),
+        ]
+
+    for response in observed:
+        code = response.json()["error"]["code"]
+        assert code in by_code, code
+        assert by_code[code]["http_status"] == response.status_code, code
+
+
+def test_openapi_names_the_streaming_and_request_schemas(app_with_fake_runtime) -> None:
+    """G15: FastAPI only registers what it binds, so these were inline-only."""
+
+    openapi = create_app().openapi()
+    components = openapi["components"]["schemas"]
+
+    for name in (
+        "ChatCompletionRequest",
+        "ChatCompletionChunk",
+        "ResponseCreateRequest",
+        "ResponseChunk",
+        "StreamEvent",
+        "EventType",
+    ):
+        assert name in components, name
+
+    # The hand-declared request bodies now reference the named type rather than
+    # repeating it inline, so a generator emits one type instead of two shapes.
+    chat_body = openapi["paths"]["/v1/chat/completions"]["post"]["requestBody"]
+    assert chat_body["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ChatCompletionRequest",
+    }
+    responses_body = openapi["paths"]["/v1/responses"]["post"]["requestBody"]
+    assert responses_body["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ResponseCreateRequest",
+    }
+
+    # An SSE frame is a string on the wire; its payload type is named alongside.
+    chat_stream = openapi["paths"]["/v1/chat/completions"]["post"]["responses"]["200"]
+    assert chat_stream["content"]["text/event-stream"]["schema"]["x-lewlm-frame-schema"] == {
+        "$ref": "#/components/schemas/ChatCompletionChunk",
+    }
+
+
+def test_every_openapi_reference_resolves_inside_the_published_document() -> None:
+    openapi = create_app().openapi()
+    components = openapi["components"]["schemas"]
+    unresolved: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if isinstance(reference, str) and (
+                not reference.startswith("#/components/schemas/")
+                or reference.rsplit("/", 1)[1] not in components
+            ):
+                unresolved.append(reference)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(openapi)
+    assert unresolved == []

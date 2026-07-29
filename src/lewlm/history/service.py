@@ -7,8 +7,8 @@ from typing import Any
 from uuid import uuid4
 
 from lewlm.config.settings import LewLMSettings
-from lewlm.core.contracts import GenerateMessage
-from lewlm.core.errors import PrivacyModeError, SessionNotFoundError
+from lewlm.core.contracts import GenerateMessage, utc_now
+from lewlm.core.errors import ConfigurationError, PrivacyModeError, SessionNotFoundError
 from lewlm.history.models import (
     SessionContextPolicy,
     SessionDetail,
@@ -109,6 +109,44 @@ class SessionHistoryService:
         )
         self.metadata_store.append_session_turn(turn)
         return self.get_session_detail(session_id)
+
+    def update_session(
+        self,
+        session_id: str,
+        *,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        context_policy: SessionContextPolicy | None = None,
+        merge_metadata: bool = True,
+    ) -> SessionRecord:
+        """Rename a session or adjust its metadata and context policy.
+
+        Only the fields supplied are changed, so a caller renaming a session
+        cannot accidentally clear its metadata. Turn history is never touched.
+        """
+
+        self._require_persistence_enabled()
+        session = self._require_session(session_id)
+        if title is None and metadata is None and context_policy is None:
+            raise ConfigurationError(
+                "Session updates require at least one of `title`, `metadata`, or `context_policy`.",
+                details={"session_id": session_id},
+            )
+
+        resolved_metadata = session.metadata
+        if metadata is not None:
+            resolved_metadata = {**session.metadata, **metadata} if merge_metadata else dict(metadata)
+
+        updated = session.model_copy(
+            update={
+                "title": title if title is not None else session.title,
+                "metadata": resolved_metadata,
+                "context_policy": context_policy or session.context_policy,
+                "updated_at": utc_now(),
+            },
+        )
+        self.metadata_store.upsert_session(updated)
+        return updated
 
     def delete_session(self, session_id: str) -> SessionRecord:
         self._require_persistence_enabled()

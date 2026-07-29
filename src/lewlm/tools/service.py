@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import time
@@ -15,7 +16,8 @@ from uuid import uuid4
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import IdempotentOperationRecord, utc_now
 from lewlm.core.errors import IdempotencyConflictError, SandboxExecutionError, error_from_dict
-from lewlm.documents.ingest.service import DocumentIngestService
+from lewlm.core.errors import DocumentValidationError
+from lewlm.documents.ingest.service import DocumentIngestService, UploadedDocumentSource
 from lewlm.documents.service import DocumentGenerationService
 from lewlm.documents.skills.service import DocumentTransformService
 from lewlm.events.bus import EventBus
@@ -34,6 +36,31 @@ from lewlm.tools.models import (
     ToolExecutionRequest,
     ToolExecutionTrace,
 )
+
+
+def _uploaded_sources(sources: Sequence[Any]) -> list[UploadedDocumentSource]:
+    """Decode uploaded byte sources, failing the request on malformed base64."""
+
+    decoded: list[UploadedDocumentSource] = []
+    for item in sources:
+        try:
+            content = base64.b64decode(item.content_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise DocumentValidationError(
+                "Uploaded source content is not valid base64.",
+                details={"source_id": item.source_id},
+            ) from exc
+        decoded.append(
+            UploadedDocumentSource(
+                source_id=item.source_id,
+                file_name=item.file_name,
+                content=content,
+                media_type=item.media_type,
+                expected_sha256=item.expected_sha256,
+                metadata=dict(item.metadata or {}),
+            ),
+        )
+    return decoded
 
 
 @dataclass(slots=True)
@@ -87,15 +114,19 @@ def _execute_tool_request(
     if isinstance(request, DocumentIngestToolRequest):
         result = document_ingest_service.ingest(
             request.input.paths,
+            sources=_uploaded_sources(request.input.sources),
             title=request.input.title,
             allowed_file_roots=allowed_file_roots,
             base_dir=base_dir,
             request_id=request_id,
         )
+        summary = f"Ingested {len(result.sources)} source(s) into DocumentIR."
+        if result.failed_count:
+            summary = f"{summary} {result.failed_count} source(s) failed."
         return (
             result.model_dump(mode="json"),
-            f"Ingested {len(result.sources)} source(s) into DocumentIR.",
-            {"source_count": len(result.sources)},
+            summary,
+            {"source_count": len(result.sources), "failed_source_count": result.failed_count},
         )
     artifact = document_transform_service.transform(
         request.input,

@@ -271,11 +271,30 @@ class ModelManifest(BaseModel):
     discovered_at: datetime = Field(default_factory=utc_now)
 
 
+class ModelCapabilityAvailability(BaseModel):
+    """Compact per-model serving readiness for the current host.
+
+    Lets a caller pick a usable model straight from the inventory instead of
+    issuing one capability request per discovered model.
+    """
+
+    model_id: str
+    servable: bool = False
+    chat_ready: bool = False
+    ready_capabilities: list["CapabilityName"] = Field(default_factory=list)
+    blocked_capabilities: list["CapabilityName"] = Field(default_factory=list)
+    reason: str
+
+
 class ModelInventory(BaseModel):
     """API response envelope for listing discovered models."""
 
     count: int
     items: list[ModelManifest]
+    # Parallel to `items` by `model_id`; empty when readiness was not resolved.
+    capability_availability: list[ModelCapabilityAvailability] = Field(default_factory=list)
+    servable_count: int = 0
+    chat_ready_count: int = 0
 
 
 class ModelScanSummary(BaseModel):
@@ -1381,6 +1400,23 @@ class ModelTargetPlatformReport(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ModelStructuredOutputSupport(BaseModel):
+    """What a `response_format` request will get, before spending a generation.
+
+    `StructuredOutputResult.enforcement` only arrives after the run, so without
+    this a caller cannot warn that a contract will fall back to `prompt_guided`
+    until it has already paid for the answer. The per-mode entries are the same
+    `StructuredOutputRuntimeStatus` the response reports, so the prediction and
+    the outcome are directly comparable.
+    """
+
+    runtime_name: str | None = None
+    json_schema: StructuredOutputRuntimeStatus | None = None
+    grammar: StructuredOutputRuntimeStatus | None = None
+    decode_time_modes: list[Literal["json_schema", "grammar"]] = Field(default_factory=list)
+    reason: str
+
+
 class ModelCapabilityReport(BaseModel):
     """Per-model capability summary for the current host platform."""
 
@@ -1397,6 +1433,7 @@ class ModelCapabilityReport(BaseModel):
     runtime_candidates: list[RuntimeCandidateReport] = Field(default_factory=list)
     target_platforms: list[ModelTargetPlatformReport] = Field(default_factory=list)
     capabilities: list[ModelCapabilityStatus] = Field(default_factory=list)
+    structured_output: ModelStructuredOutputSupport | None = None
     capability_evidence: list[CapabilityEvidence] = Field(default_factory=list)
     measured_capabilities: list[MeasuredCapabilitySummary] = Field(default_factory=list)
     standards_acceptance_contract: StandardsAcceptanceContract = Field(
@@ -1459,6 +1496,53 @@ class GenerateSpeculation(BaseModel):
     auto_selected: bool = False
 
 
+class SamplingControls(BaseModel):
+    """Caller-requested decode controls beyond temperature.
+
+    Backends differ in which of these they expose, so LewLM passes through what
+    a runtime supports and reports the rest as unsupported rather than dropping
+    them silently — a caller that asked for a seed needs to know whether it
+    actually got determinism.
+    """
+
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    seed: int | None = Field(default=None, description="Set for reproducible sampling where the backend supports it.")
+    stop: list[str] = Field(default_factory=list, description="Stop sequences that end generation.")
+
+    def requested(self) -> dict[str, Any]:
+        """The controls the caller actually set, by name."""
+
+        payload = self.model_dump(exclude_none=True)
+        if not payload.get("stop"):
+            payload.pop("stop", None)
+        return payload
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.requested()
+
+
+class SamplingControlReport(BaseModel):
+    """What a runtime did with the requested sampling controls."""
+
+    runtime: str
+    requested: dict[str, Any] = Field(default_factory=dict)
+    applied: dict[str, Any] = Field(default_factory=dict)
+    unsupported: list[str] = Field(
+        default_factory=list,
+        description="Controls the caller requested that this backend cannot honor.",
+    )
+    deterministic: bool = Field(
+        default=False,
+        description="True only when a seed was requested and the backend actually applied it.",
+    )
+
+
 class GenerateRequest(BaseModel):
     """Runtime-agnostic generation request."""
 
@@ -1466,6 +1550,7 @@ class GenerateRequest(BaseModel):
     messages: list[GenerateMessage]
     max_tokens: int = 512
     temperature: float = 0.7
+    sampling: SamplingControls | None = None
     reasoning_visibility: ReasoningVisibility = ReasoningVisibility.HIDDEN
     speculation: GenerateSpeculation | None = None
     structured_output: StructuredOutputRequest | None = None

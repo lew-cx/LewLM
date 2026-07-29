@@ -12,6 +12,7 @@ from lewlm.conversion.backend import ConversionBackend
 from lewlm.conversion.service import ConversionService
 from lewlm.core.chat import ChatOrchestrator
 from lewlm.core.multimodal import MultimodalOrchestrator
+from lewlm.core.tokenization import TokenizationService
 from lewlm.documents.ingest.service import DocumentIngestService
 from lewlm.documents.service import DocumentGenerationService
 from lewlm.documents.skills.catalog import DocumentSkillCatalogService
@@ -28,6 +29,9 @@ from lewlm.runtime.catalog import RuntimeCatalog, build_default_runtime_catalog
 from lewlm.runtime.experimental import DistributedClusterService
 from lewlm.runtime.request_coalescer import InFlightRequestCoalescer
 from lewlm.runtime.response_cache import RuntimeResponseCache
+from lewlm.runtime.identity import RuntimeInstanceMetadata
+from lewlm.runtime.operations import LifecycleOperationManager
+from lewlm.runtime.residency import ModelResidencyManager
 from lewlm.runtime.scheduler import RuntimeRequestScheduler
 from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache, MultimodalFeatureCache
 from lewlm.telemetry.stats import TelemetryService
@@ -43,6 +47,7 @@ class LewLMServices:
     """Application service container."""
 
     settings: LewLMSettings
+    runtime_instance: RuntimeInstanceMetadata
     pack_registry: PackRegistry
     audit_logger: AuditLogger
     tool_authorizer: ToolAuthorizer
@@ -56,6 +61,8 @@ class LewLMServices:
     tool_catalog_service: ToolCatalogService
     runtime_request_scheduler: RuntimeRequestScheduler
     model_load_scheduler: RuntimeRequestScheduler
+    model_residency_manager: ModelResidencyManager
+    lifecycle_operation_manager: LifecycleOperationManager
     runtime_metrics_recorder: RuntimeMetricsRecorder
     block_disk_cache: BlockDiskCache
     multimodal_encoder_cache: MultimodalEncoderCache
@@ -64,6 +71,7 @@ class LewLMServices:
     runtime_request_coalescer: InFlightRequestCoalescer[object]
     chat_orchestrator: ChatOrchestrator
     multimodal_orchestrator: MultimodalOrchestrator
+    tokenization_service: TokenizationService
     session_history_service: SessionHistoryService
     document_generation_service: DocumentGenerationService
     document_ingest_service: DocumentIngestService
@@ -76,6 +84,10 @@ class LewLMServices:
     async def aclose(self) -> None:
         """Release long-lived resources owned by the service container."""
 
+        await self.lifecycle_operation_manager.shutdown()
+        await self.model_residency_manager.shutdown()
+        # Backends loaded through explicit benchmark/probe paths may not have a
+        # residency record. Preserve the existing best-effort shutdown sweep.
         await self.runtime_catalog.unload_all_models()
         self.conversion_service.close()
 
@@ -235,7 +247,9 @@ def _build_performance_core_services(
         runtime_request_coalescer=InFlightRequestCoalescer(),
         runtime_request_scheduler=runtime_request_scheduler,
         model_load_scheduler=model_load_scheduler,
-        runtime_metrics_recorder=RuntimeMetricsRecorder(),
+        runtime_metrics_recorder=RuntimeMetricsRecorder(
+            max_application_entries=settings.max_application_metric_entries,
+        ),
     )
 
 
@@ -266,6 +280,7 @@ def _build_runtime_core_services(
     cluster_service: DistributedClusterService,
     pack_registry: PackRegistry,
     runtime_overrides: Mapping[RuntimeAffinity, RuntimeContract] | None,
+    model_residency_manager: ModelResidencyManager,
 ) -> _RuntimeCoreServices:
     """Build the runtime catalog and router that sit at LewLM's core."""
 
@@ -276,10 +291,12 @@ def _build_runtime_core_services(
         pack_registry=pack_registry,
         runtime_overrides=runtime_overrides,
     )
+    runtime_catalog.model_residency_manager = model_residency_manager
     model_router = ModelRouter(
         model_registry=model_registry,
         runtime_catalog=runtime_catalog,
         settings=settings,
+        model_residency_manager=model_residency_manager,
     )
     return _RuntimeCoreServices(
         runtime_catalog=runtime_catalog,
@@ -368,6 +385,13 @@ def bootstrap_services(
         resolved_settings,
         metadata_store=core_foundation.metadata_store,
     )
+    runtime_instance = RuntimeInstanceMetadata.create(version=resolved_settings.version)
+    model_residency_manager = ModelResidencyManager(
+        runtime_instance_id=runtime_instance.runtime_instance_id,
+        model_load_scheduler=performance_core.model_load_scheduler,
+        event_bus=core_foundation.event_bus,
+        runtime_metrics_recorder=performance_core.runtime_metrics_recorder,
+    )
     experimental_services = _build_experimental_services(
         resolved_settings,
         metadata_store=core_foundation.metadata_store,
@@ -381,6 +405,13 @@ def bootstrap_services(
         cluster_service=experimental_services.cluster_service,
         pack_registry=pack_registry,
         runtime_overrides=scoped_runtime_overrides,
+        model_residency_manager=model_residency_manager,
+    )
+    lifecycle_operation_manager = LifecycleOperationManager(
+        runtime_instance_id=runtime_instance.runtime_instance_id,
+        model_router=runtime_core.model_router,
+        event_bus=core_foundation.event_bus,
+        audit_logger=core_foundation.audit_logger,
     )
     optional_modules = _build_optional_module_services(
         resolved_settings,
@@ -415,6 +446,7 @@ def bootstrap_services(
         runtime_metrics_recorder=performance_core.runtime_metrics_recorder,
         metadata_store=core_foundation.metadata_store,
         service_factory=service_factory,
+        model_residency_manager=model_residency_manager,
     )
     multimodal_orchestrator = MultimodalOrchestrator(
         model_router=runtime_core.model_router,
@@ -424,6 +456,11 @@ def bootstrap_services(
         runtime_metrics_recorder=performance_core.runtime_metrics_recorder,
         runtime_response_cache=performance_core.runtime_response_cache,
         runtime_request_coalescer=performance_core.runtime_request_coalescer,
+        model_residency_manager=model_residency_manager,
+    )
+    tokenization_service = TokenizationService(
+        model_router=runtime_core.model_router,
+        model_residency_manager=model_residency_manager,
     )
     session_history_service = SessionHistoryService(
         metadata_store=core_foundation.metadata_store,
@@ -453,9 +490,12 @@ def bootstrap_services(
         multimodal_orchestrator=multimodal_orchestrator,
         cluster_service=experimental_services.cluster_service,
         service_factory=service_factory,
+        runtime_instance=runtime_instance,
+        model_residency_manager=model_residency_manager,
     )
     return LewLMServices(
         settings=resolved_settings,
+        runtime_instance=runtime_instance,
         pack_registry=pack_registry,
         audit_logger=core_foundation.audit_logger,
         tool_authorizer=core_foundation.tool_authorizer,
@@ -469,6 +509,8 @@ def bootstrap_services(
         tool_catalog_service=optional_modules.tool_catalog_service,
         runtime_request_scheduler=performance_core.runtime_request_scheduler,
         model_load_scheduler=performance_core.model_load_scheduler,
+        model_residency_manager=model_residency_manager,
+        lifecycle_operation_manager=lifecycle_operation_manager,
         runtime_metrics_recorder=performance_core.runtime_metrics_recorder,
         block_disk_cache=performance_core.block_disk_cache,
         multimodal_encoder_cache=performance_core.multimodal_encoder_cache,
@@ -477,6 +519,7 @@ def bootstrap_services(
         runtime_request_coalescer=performance_core.runtime_request_coalescer,
         chat_orchestrator=chat_orchestrator,
         multimodal_orchestrator=multimodal_orchestrator,
+        tokenization_service=tokenization_service,
         session_history_service=session_history_service,
         document_generation_service=optional_modules.document_generation_service,
         document_ingest_service=optional_modules.document_ingest_service,

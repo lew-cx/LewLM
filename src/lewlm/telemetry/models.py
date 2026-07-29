@@ -21,6 +21,7 @@ from lewlm.core.contracts import (
 from lewlm.core.serving_core import ServingCoreSnapshot
 from lewlm.pack_registry import PackReport
 from lewlm.serving_profiles import ServingProfileApplication
+from lewlm.runtime.residency import ModelResidencySnapshot
 
 
 class PerformanceFeatureName(str, Enum):
@@ -132,6 +133,23 @@ class CapabilityRuntimeMetrics(BaseModel):
     metric_averages: dict[str, int | float] = Field(default_factory=dict)
 
 
+class ApplicationRuntimeMetrics(BaseModel):
+    application_id: str
+    request_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    lease_acquisition_count: int = 0
+    active_lease_count: int = 0
+    peak_active_lease_count: int = 0
+    load_contention_count: int = 0
+    total_residency_wait_seconds: float = 0.0
+    average_residency_wait_seconds: float = 0.0
+    model_usage_counts: dict[str, int] = Field(default_factory=dict)
+    capability_counts: dict[str, int] = Field(default_factory=dict)
+    last_request_at: datetime | None = None
+    last_failure_at: datetime | None = None
+
+
 class RuntimeRequestMetrics(BaseModel):
     total_requests: int = 0
     success_count: int = 0
@@ -144,6 +162,7 @@ class RuntimeRequestMetrics(BaseModel):
     average_completion_tokens_per_second: float | None = None
     models: list[ModelRuntimeMetrics] = Field(default_factory=list)
     capabilities: list[CapabilityRuntimeMetrics] = Field(default_factory=list)
+    applications: list[ApplicationRuntimeMetrics] = Field(default_factory=list)
 
 
 class RuntimeSchedulerStats(BaseModel):
@@ -425,6 +444,10 @@ class RuntimeSupportStrategy(BaseModel):
 
 
 class RuntimeStats(BaseModel):
+    runtime_instance_id: str = "legacy"
+    started_at: datetime | None = None
+    process_id: int = 0
+    hostname: str = "unknown"
     platform: HostPlatformSnapshot
     readiness: ServiceReadinessSummary
     runtime_policy: str
@@ -434,6 +457,7 @@ class RuntimeStats(BaseModel):
     queue_depth: int
     active_jobs: int
     current_loaded_models: list[str] = Field(default_factory=list)
+    residencies: list[ModelResidencySnapshot] = Field(default_factory=list)
     runtime_packs: list[PackReport] = Field(default_factory=list)
     feature_packs: list[PackReport] = Field(default_factory=list)
     runtimes: list[dict[str, Any]] = Field(default_factory=list)

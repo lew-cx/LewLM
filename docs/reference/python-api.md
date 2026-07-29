@@ -69,7 +69,9 @@ The facade also supports async context-manager usage and `create_app()` for bind
 | `chat()` / `chat_sync()` | non-streaming text generation |
 | `stream_chat()` | streaming generation |
 | `warm_model()` / `warm_model_sync()` | warm a model |
+| `drain_model()` / `drain_model_sync()` | stop new leases, wait, and unload a model |
 | `unload_model()` / `unload_model_sync()` | unload a model |
+| `create_drain_operation()` / `get_lifecycle_operation()` / `cancel_lifecycle_operation()` | manage pollable drains on a long-lived async runtime |
 
 `chat()` and `chat_sync()` return a `ChatExecution` object. Alongside `.response`, it exposes `.metadata`, which mirrors the HTTP execution metadata envelope with request identity, resolved model/runtime details, routing summary, queue/load/execute timing, and the final chat serving-core summary. The returned `.request_metadata` also includes a `serving` block with the runtime adapter shape, queue residency entries, and phase history for that request.
 
@@ -112,6 +114,9 @@ Helper methods:
 | `execute_tool()` | local-tool execution with the shared API envelope |
 | `health()` | typed health response |
 | `runtime_stats()` | typed runtime diagnostics, including first-class performance-feature metrics, the measured capability registry summary, and the first-class non-Apple runtime-strategy summary for the current host |
+| `runtime_info()` / `list_model_residencies()` / `get_model_residency()` | shared-runtime identity and residency inspection |
+| `warm_model()` / `drain_model()` / `unload_model()` | synchronous lifecycle helpers |
+| `create_drain_operation()` / `get_lifecycle_operation()` / `cancel_lifecycle_operation()` | non-blocking for HTTP-backed clients; embedded synchronous clients return the terminal recorded operation |
 | `chat_completion()` | chat-completions request/response helper |
 | `responses()` | responses-style request/response helper |
 | `embeddings()` | embeddings helper |
@@ -133,6 +138,8 @@ For host-app adoption, two details matter in particular:
 - `ingest_documents()` returns the same `sources[]` and `chunks[]` packages as the HTTP API, including `source_id`, `chunk_id`, `section_id`, `source_label`, and `section_label` fields that are useful for citation packaging.
 - `retrieve_context()` consumes those same caller-provided `sources[]` and `chunks[]` packages and returns ranked context items plus stage metadata for embedding and rerank passes.
 - `LewLMAppClient.from_http()` raises `LewLMAppClientHTTPError` for non-success responses, and that exception keeps the HTTP `error.code`, `error.message`, `error.details`, and `status_code` fields available to the caller.
+- `LewLMAppClient.from_http()` and `LewLMAsyncClient` accept `max_response_bytes_by_operation` alongside the client-wide `max_response_bytes`. Keys are the client's own method names, listed in `APP_CLIENT_OPERATIONS` and `ASYNC_CLIENT_OPERATIONS`; an unrecognized key raises rather than being accepted and never applied. `LewLMAppClientResponseTooLargeError.operation` names the operation whose limit was hit.
+- `validate_value_against_json_schema()` resolves `$ref` / `$defs` against the submitted schema and evaluates `allOf` / `anyOf` / `oneOf` / `not`, so a schema produced by `BaseModel.model_json_schema()` validates without being pre-flattened. A reference it cannot resolve is reported as an `unresolvable_ref` issue rather than passing silently.
 
 ## Example
 

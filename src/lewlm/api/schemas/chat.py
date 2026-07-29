@@ -7,11 +7,12 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from lewlm.core.citations import CitationContextPackage, GeneratedCitationReference
-from lewlm.core.contracts import ReasoningOutput, ReasoningVisibility
+from lewlm.core.contracts import ReasoningOutput, ReasoningVisibility, SamplingControls
 from lewlm.core.execution_metadata import ExecutionMetadata
 from lewlm.prompting import PromptCompilationTrace, PromptMCPToolDefinition, PromptToolDefinition
 from lewlm.serving_profiles import ServingProfileApplication
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputResult
+from lewlm.tool_calls import ToolCallParseResult
 
 
 class InputTextPart(BaseModel):
@@ -64,8 +65,14 @@ MessageContentPart = Annotated[
 ]
 
 
+#: The roles LewLM's prompt templates know how to render. Leaving this open
+#: meant an unrecognized role reached the template and was serialized as a
+#: literal tag the model had never seen, with nothing raised to say so.
+MessageRole = Literal["system", "developer", "user", "assistant", "tool"]
+
+
 class ChatMessage(BaseModel):
-    role: str
+    role: MessageRole = "user"
     content: str | list[MessageContentPart]
 
 
@@ -73,15 +80,33 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    measured: bool = Field(
+        default=True,
+        description=(
+            "True when counts came from the model's own tokenizer. False when the "
+            "backend exposed no tokenizer and LewLM had to estimate."
+        ),
+    )
 
 
 class ChatCompletionRequest(BaseModel):
     model: str | None = None
     session_id: str | None = None
+    correlation_id: str | None = Field(
+        default=None,
+        description="Caller correlation identifier echoed back through metadata and events.",
+    )
     messages: list[ChatMessage]
     citation_context: CitationContextPackage | None = None
     max_tokens: int = 512
     temperature: float = 0.7
+    sampling: SamplingControls | None = Field(
+        default=None,
+        description=(
+            "Decode controls beyond temperature. Backends differ in support; "
+            "`metadata.sampling` reports which were applied and which were not."
+        ),
+    )
     apply_serving_profile: bool = True
     stream: bool = False
     reasoning_visibility: ReasoningVisibility | None = None
@@ -136,6 +161,7 @@ class ChatCompletionResponse(BaseModel):
     metadata: ExecutionMetadata
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
     prompt_trace: PromptCompilationTrace | None = None
     serving_profile: ServingProfileApplication | None = None
 
@@ -159,23 +185,46 @@ class ChatCompletionChunk(BaseModel):
     model: str
     choices: list[ChatCompletionChunkChoice]
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
+    usage: CompletionUsage | None = Field(
+        default=None,
+        description="Token accounting. Present on the final chunk only, since it is not knowable before then.",
+    )
     metadata: ExecutionMetadata | None = None
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
+    prompt_trace: PromptCompilationTrace | None = Field(
+        default=None,
+        description=(
+            "Compiled-prompt trace when `include_prompt_trace` was set. Present on the final chunk "
+            "only, so inspecting the prompt does not cost the caller its stream."
+        ),
+    )
     serving_profile: ServingProfileApplication | None = None
 
 
 class ResponseInputMessage(BaseModel):
-    role: str = "user"
+    role: MessageRole = "user"
     content: str | list[MessageContentPart]
 
 
 class ResponseCreateRequest(BaseModel):
     model: str | None = None
     session_id: str | None = None
+    correlation_id: str | None = Field(
+        default=None,
+        description="Caller correlation identifier echoed back through metadata and events.",
+    )
     input: str | list[ResponseInputMessage]
     citation_context: CitationContextPackage | None = None
     max_output_tokens: int = 512
     temperature: float = 0.7
+    sampling: SamplingControls | None = Field(
+        default=None,
+        description=(
+            "Decode controls beyond temperature. Backends differ in support; "
+            "`metadata.sampling` reports which were applied and which were not."
+        ),
+    )
     apply_serving_profile: bool = True
     stream: bool = False
     reasoning_visibility: ReasoningVisibility | None = None
@@ -225,6 +274,7 @@ class ResponseCreateResponse(BaseModel):
     metadata: ExecutionMetadata
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
     prompt_trace: PromptCompilationTrace | None = None
     serving_profile: ServingProfileApplication | None = None
 
@@ -238,6 +288,18 @@ class ResponseChunk(BaseModel):
     reasoning: ReasoningOutput | None = None
     done: bool = False
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
+    usage: CompletionUsage | None = Field(
+        default=None,
+        description="Token accounting. Present on the final chunk only, since it is not knowable before then.",
+    )
     metadata: ExecutionMetadata | None = None
     structured_output: StructuredOutputResult | None = None
+    tool_calls: ToolCallParseResult | None = None
+    prompt_trace: PromptCompilationTrace | None = Field(
+        default=None,
+        description=(
+            "Compiled-prompt trace when `include_prompt_trace` was set. Present on the final chunk "
+            "only, so inspecting the prompt does not cost the caller its stream."
+        ),
+    )
     serving_profile: ServingProfileApplication | None = None

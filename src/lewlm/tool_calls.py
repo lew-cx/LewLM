@@ -16,6 +16,10 @@ entire output text):
 
 ``"input"`` is accepted as an alias for ``"arguments"`` because prompt tool
 declarations advertise ``input_schema``.
+
+The accepted keys live in :mod:`lewlm.tool_call_contract`, which the prompt
+compiler also uses to tell the model what to emit, so the two halves cannot
+drift apart.
 """
 
 from __future__ import annotations
@@ -29,11 +33,21 @@ from pydantic import BaseModel, Field
 
 from lewlm.prompting import PromptToolDefinition
 from lewlm.structured_output import validate_value_against_json_schema
+from lewlm.tool_call_contract import (
+    ARGUMENT_KEYS,
+    TOOL_CALL_BATCH_KEY,
+    TOOL_CALL_MARKER_KEYS,
+    TOOL_CALL_NAME_KEY,
+    TOOL_CALL_SINGLE_KEY,
+    UNRECOGNIZED_SHAPE_MESSAGE,
+    tool_call_invocation_instructions,
+)
 
 STRICT_TOOL_PARSER_NAME = "lewlm_strict_tool_parser"
 
 _JSON_FENCE_PATTERN = re.compile(r"```(?P<language>[A-Za-z0-9_-]*)[ \t]*\r?\n(?P<body>.*?)```", re.DOTALL)
-_ARGUMENT_KEYS = ("arguments", "input")
+
+_ARGUMENT_KEYS = ARGUMENT_KEYS
 
 
 class ParsedToolCall(BaseModel):
@@ -163,7 +177,7 @@ def _extract_candidates(output_text: str) -> tuple[list[str], str]:
 def _looks_like_tool_call_json(text: str) -> bool:
     if not (text.startswith("{") and text.endswith("}")):
         return False
-    return any(marker in text for marker in ('"tool_call"', '"tool_calls"', '"name"'))
+    return any(f'"{marker}"' in text for marker in TOOL_CALL_MARKER_KEYS)
 
 
 def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
@@ -180,23 +194,23 @@ def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
 
 def _normalize_candidate_shape(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
     if not isinstance(payload, dict):
-        return [], "Candidate JSON must be an object with a `tool_call`, `tool_calls`, or `name` shape."
-    if "tool_calls" in payload:
-        calls = payload["tool_calls"]
+        return [], UNRECOGNIZED_SHAPE_MESSAGE
+    if TOOL_CALL_BATCH_KEY in payload:
+        calls = payload[TOOL_CALL_BATCH_KEY]
         if not isinstance(calls, list) or not calls:
-            return [], "`tool_calls` must be a non-empty array of tool-call objects."
+            return [], f"`{TOOL_CALL_BATCH_KEY}` must be a non-empty array of tool-call objects."
         non_objects = [item for item in calls if not isinstance(item, dict)]
         if non_objects:
-            return [], "`tool_calls` entries must all be objects."
+            return [], f"`{TOOL_CALL_BATCH_KEY}` entries must all be objects."
         return list(calls), None
-    if "tool_call" in payload:
-        call = payload["tool_call"]
+    if TOOL_CALL_SINGLE_KEY in payload:
+        call = payload[TOOL_CALL_SINGLE_KEY]
         if not isinstance(call, dict):
-            return [], "`tool_call` must be an object."
+            return [], f"`{TOOL_CALL_SINGLE_KEY}` must be an object."
         return [call], None
-    if "name" in payload:
+    if TOOL_CALL_NAME_KEY in payload:
         return [payload], None
-    return [], "Candidate JSON must be an object with a `tool_call`, `tool_calls`, or `name` shape."
+    return [], UNRECOGNIZED_SHAPE_MESSAGE
 
 
 def _validate_call_payload(
@@ -206,11 +220,11 @@ def _validate_call_payload(
     candidate_index: int,
     call_number: int,
 ) -> tuple[ParsedToolCall | None, ToolCallParseIssue | None]:
-    name = call_payload.get("name")
+    name = call_payload.get(TOOL_CALL_NAME_KEY)
     if not isinstance(name, str) or not name.strip():
         return None, ToolCallParseIssue(
             code="missing_name",
-            message="Tool call is missing a non-empty string `name`.",
+            message=f"Tool call is missing a non-empty string `{TOOL_CALL_NAME_KEY}`.",
             candidate_index=candidate_index,
         )
     tool = tool_index.get(name)

@@ -9,6 +9,10 @@ from lewlm.api.dependencies import get_services
 from lewlm.conversion.models import JobRecord
 from lewlm.core.contracts import CapabilityName
 from lewlm.runtime.experimental import ClusterStatus
+from lewlm.runtime.identity import RuntimeInfo
+from lewlm.runtime.residency import ModelResidencySnapshot
+from lewlm.runtime.operations import LifecycleOperationRecord
+from lewlm.security.authorization import LifecycleCapability, request_api_credential
 from lewlm.telemetry.stats import CacheStats, RuntimeStats, ServingProfileRecommendation
 
 
@@ -20,6 +24,47 @@ class AutotuneRequest(BaseModel):
     prompt: str = Field(default="Benchmark ping")
     capability: str = Field(default=CapabilityName.CHAT.value)
     workload_class: str | None = None
+
+
+@router.get("/v1/runtime", response_model=RuntimeInfo)
+async def runtime_info(request: Request) -> RuntimeInfo:
+    """Return stable identity for this model-owning service container."""
+
+    services = get_services(request)
+    residencies = await services.model_residency_manager.list_residencies()
+    scheduler = services.runtime_request_scheduler.snapshot()
+    return RuntimeInfo(
+        **services.runtime_instance.model_dump(),
+        loaded_model_count=sum(1 for item in residencies if item.state.value == "ready"),
+        active_request_count=int(scheduler["active_requests"]),
+    )
+
+
+@router.get("/v1/runtime/residencies", response_model=list[ModelResidencySnapshot])
+async def runtime_residencies(request: Request) -> list[ModelResidencySnapshot]:
+    """List process-local live model residency state."""
+
+    services = get_services(request)
+    _authorize_lifecycle(request, services, LifecycleCapability.INSPECT_RESIDENCY)
+    return await services.model_residency_manager.list_residencies()
+
+
+@router.get("/v1/model-lifecycle/operations/{operation_id}", response_model=LifecycleOperationRecord)
+async def get_lifecycle_operation(operation_id: str, request: Request) -> LifecycleOperationRecord:
+    """Poll an asynchronous lifecycle operation."""
+
+    services = get_services(request)
+    _authorize_lifecycle(request, services, LifecycleCapability.INSPECT_RESIDENCY)
+    return await services.lifecycle_operation_manager.get(operation_id)
+
+
+@router.delete("/v1/model-lifecycle/operations/{operation_id}", response_model=LifecycleOperationRecord)
+async def cancel_lifecycle_operation(operation_id: str, request: Request) -> LifecycleOperationRecord:
+    """Cancel a pending or running lifecycle operation."""
+
+    services = get_services(request)
+    _authorize_lifecycle(request, services, LifecycleCapability.DRAIN_MODEL)
+    return await services.lifecycle_operation_manager.cancel(operation_id)
 
 
 @router.get("/v1/jobs/{job_id}", response_model=JobRecord)
@@ -59,9 +104,27 @@ async def autotune(payload: AutotuneRequest, request: Request) -> ServingProfile
     """Benchmark serving-profile candidates and persist the recommended profile."""
 
     services = get_services(request)
+    _authorize_lifecycle(request, services, LifecycleCapability.RUN_DISRUPTIVE_DIAGNOSTICS)
     return await services.telemetry_service.autotune(
         model_id=payload.model_id,
         prompt=payload.prompt,
         capability=payload.capability,
         workload_class=payload.workload_class,
+    )
+
+
+def _authorize_lifecycle(request: Request, services, capability: LifecycleCapability) -> None:
+    application_id = request.headers.get("x-lewlm-application-id")
+    services.tool_authorizer.require_lifecycle(
+        capability,
+        credential=request_api_credential(request.headers),
+        authorizations=[
+            item.strip()
+            for item in request.headers.get("x-lewlm-authorized-actions", "").split(",")
+            if item.strip()
+        ],
+        actor=application_id or "api",
+        application_id=application_id,
+        client_instance_id=request.headers.get("x-lewlm-client-instance-id"),
+        details={"path": request.url.path},
     )

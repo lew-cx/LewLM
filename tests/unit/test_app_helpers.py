@@ -41,6 +41,7 @@ from lewlm.core.contracts import (
 )
 from lewlm.core.errors import LewLMError, PackUnavailableError
 from lewlm.core.execution_metadata import build_routed_execution_metadata
+from lewlm.core.provenance import RetrievalScoringPolicy
 from lewlm.documents.ingest.models import DocumentChunk, DocumentSourceType, IngestedDocumentSource
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
 from lewlm.install_profiles import InstallProfileStatus, InstallProfileSummary
@@ -186,6 +187,7 @@ class _StubChatOrchestrator:
             ),
             request_metadata={"source": "unit-test"},
             structured_output=None,
+            tool_calls=None,
             serving_profile=None,
         )
 
@@ -286,6 +288,13 @@ class _StubMultimodalOrchestrator:
                 ),
             ],
             sources=[selected_source] if selected_source is not None else [],
+            scoring_policy=RetrievalScoringPolicy(
+                primary_signal="rerank",
+                tie_break_signal="embedding",
+                normalization="cosine",
+                embeddings_used=True,
+                rerank_used=True,
+            ),
             embedding_stage=SimpleNamespace(
                 request_id="embed-stage-1",
                 created_at=234,
@@ -1040,6 +1049,13 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
                         },
                     ],
                     "sources": [payload["candidate_sources"][0]],
+                    "scoring_policy": RetrievalScoringPolicy(
+                        primary_signal="rerank",
+                        tie_break_signal="embedding",
+                        normalization="cosine",
+                        embeddings_used=True,
+                        rerank_used=True,
+                    ).model_dump(mode="json"),
                     "embedding_stage": {
                         "request_id": "embed-stage-remote-1",
                         "created": 234,

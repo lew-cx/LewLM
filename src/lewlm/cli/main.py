@@ -505,6 +505,17 @@ def build_parser() -> argparse.ArgumentParser:
     warm_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     warm_parser.set_defaults(handler=handle_warm)
 
+    drain_parser = subparsers.add_parser("drain", help="Drain active use and unload a specific model.")
+    drain_parser.add_argument("model", help="Model identifier to drain.")
+    drain_parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="Maximum wait for active model leases (defaults to model_drain_timeout_seconds).",
+    )
+    drain_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    drain_parser.set_defaults(handler=handle_drain)
+
     unload_parser = subparsers.add_parser("unload", help="Unload a specific model from its selected runtime.")
     unload_parser.add_argument("model", help="Model identifier to unload.")
     unload_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
@@ -2017,35 +2028,74 @@ def _run_external_adapter_benchmark(
     manifest = services.model_registry.get_manifest(args.model)
     if manifest.conversion_status != ConversionStatus.RUNNABLE:
         raise ConfigurationError("`--compare-external-adapter` requires a runnable local model.")
-    native_runtime = services.runtime_catalog.select_runtime(manifest, capability=CapabilityName.CHAT)
-    external_runtime = services.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
-    if external_runtime is None:
+    primary_native_runtime = services.runtime_catalog.select_runtime(manifest, capability=CapabilityName.CHAT)
+    if primary_native_runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR:
+        raise ConfigurationError(
+            "The external-adapter comparison requires a distinct native runtime for the selected model.",
+        )
+    primary_external_runtime = services.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    if primary_external_runtime is None:
         raise ConfigurationError("No external accelerator runtime is registered in the current catalog.")
-    external_candidate_report = getattr(external_runtime, "candidate_report", None)
-    if callable(external_candidate_report):
-        candidate_report = external_candidate_report(manifest)
-        if not candidate_report.available or not candidate_report.supports_manifest:
-            raise ConfigurationError(
-                candidate_report.availability_reason
-                or "The configured external accelerator is not ready for the selected model."
-            )
-    elif not external_runtime.supports_manifest(manifest):
-        raise ConfigurationError("The configured external accelerator is not compatible with the selected model.")
+    isolated_services = bootstrap_services(
+        settings,
+        runtime_overrides={
+            primary_native_runtime.affinity: _clone_runtime_for_isolated_benchmark(
+                primary_native_runtime,
+                settings=settings,
+            ),
+            RuntimeAffinity.EXTERNAL_ACCELERATOR: _clone_runtime_for_isolated_benchmark(
+                primary_external_runtime,
+                settings=settings,
+            ),
+        },
+    )
+    isolated_runtime_instance_id = isolated_services.runtime_instance.runtime_instance_id
+    try:
+        isolated_services.model_registry.scan()
+        isolated_manifest = isolated_services.model_registry.get_manifest(args.model)
+        native_runtime = isolated_services.runtime_catalog.get_runtime(primary_native_runtime.affinity)
+        if native_runtime is None or not native_runtime.supports_manifest(isolated_manifest):
+            raise ConfigurationError("The isolated native runtime is not compatible with the selected model.")
+        external_runtime = isolated_services.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+        if external_runtime is None:
+            raise ConfigurationError("No external accelerator runtime is registered in the isolated benchmark catalog.")
+        _require_distinct_benchmark_runtime(
+            primary_services=services,
+            isolated_runtime=native_runtime,
+        )
+        _require_distinct_benchmark_runtime(
+            primary_services=services,
+            isolated_runtime=external_runtime,
+        )
+        external_candidate_report = getattr(external_runtime, "candidate_report", None)
+        if callable(external_candidate_report):
+            candidate_report = external_candidate_report(isolated_manifest)
+            if not candidate_report.available or not candidate_report.supports_manifest:
+                raise ConfigurationError(
+                    candidate_report.availability_reason
+                    or "The configured external accelerator is not ready for the selected model."
+                )
+        elif not external_runtime.supports_manifest(isolated_manifest):
+            raise ConfigurationError("The configured external accelerator is not compatible with the selected model.")
 
-    native_payload = _safe_runtime_benchmark(
-        runtime=native_runtime,
-        manifest=manifest,
-        prompt=args.prompt,
-        max_tokens=_CLI_CHAT_BENCHMARK_MAX_TOKENS,
-        warmup_run_count=args.warmup_runs,
-    )
-    external_payload = _safe_runtime_benchmark(
-        runtime=external_runtime,
-        manifest=manifest,
-        prompt=args.prompt,
-        max_tokens=_CLI_CHAT_BENCHMARK_MAX_TOKENS,
-        warmup_run_count=args.warmup_runs,
-    )
+        native_payload = _safe_runtime_benchmark(
+            runtime=native_runtime,
+            manifest=isolated_manifest,
+            prompt=args.prompt,
+            max_tokens=_CLI_CHAT_BENCHMARK_MAX_TOKENS,
+            warmup_run_count=args.warmup_runs,
+        )
+        external_payload = _safe_runtime_benchmark(
+            runtime=external_runtime,
+            manifest=isolated_manifest,
+            prompt=args.prompt,
+            max_tokens=_CLI_CHAT_BENCHMARK_MAX_TOKENS,
+            warmup_run_count=args.warmup_runs,
+        )
+    finally:
+        isolated_services.close()
+    native_payload["runtime_instance_id"] = isolated_runtime_instance_id
+    external_payload["runtime_instance_id"] = isolated_runtime_instance_id
     comparison = _external_adapter_comparison_summary(
         native_payload=native_payload,
         external_payload=external_payload,
@@ -2087,6 +2137,11 @@ def _run_external_adapter_benchmark(
             "adapter_profile": settings.external_accelerator_profile,
             "adapter_base_url": settings.external_accelerator_base_url,
         },
+        "runtime_isolation": {
+            "isolated": True,
+            "runtime_instance_id": isolated_runtime_instance_id,
+            "primary_runtime_instance_id": services.runtime_instance.runtime_instance_id,
+        },
         "native": native_payload,
         "external_adapter": external_payload,
         "comparison": comparison,
@@ -2096,6 +2151,39 @@ def _run_external_adapter_benchmark(
     artifact_path = _write_external_adapter_benchmark_artifact(settings=settings, payload=payload)
     payload["artifact"] = {"artifact_path": str(artifact_path)}
     return payload
+
+
+def _require_distinct_benchmark_runtime(
+    *,
+    primary_services: LewLMServices,
+    isolated_runtime: Any,
+) -> None:
+    """Reject candidate factories that reused a primary in-memory runtime object."""
+
+    primary_runtime = primary_services.runtime_catalog.get_runtime(isolated_runtime.affinity)
+    if primary_runtime is isolated_runtime:
+        raise ConfigurationError(
+            "The external-adapter comparison could not create an isolated runtime instance; "
+            "benchmarking the shared primary runtime is refused.",
+        )
+
+
+def _clone_runtime_for_isolated_benchmark(runtime: Any, *, settings: LewLMSettings) -> Any:
+    """Create a strict runtime clone or refuse to benchmark shared live state."""
+
+    runtime_type = type(runtime)
+    try:
+        accepts_settings = "settings" in inspect.signature(runtime_type).parameters
+        cloned = runtime_type(settings=settings) if accepts_settings else runtime_type()
+    except Exception as exc:
+        raise ConfigurationError(
+            f"Runtime `{runtime.name}` cannot be safely cloned for an isolated external-adapter benchmark.",
+        ) from exc
+    if cloned is runtime:
+        raise ConfigurationError(
+            f"Runtime `{runtime.name}` returned its shared primary instance instead of an isolated clone.",
+        )
+    return cloned
 
 
 def _safe_runtime_benchmark(
@@ -4450,6 +4538,35 @@ def handle_unload(args: argparse.Namespace, settings: LewLMSettings, services: L
         print(json.dumps(payload, indent=2))
     else:
         print(f"unloaded {payload['model_id']} via {payload['runtime']}")
+    return ExitCode.OK
+
+
+def handle_drain(args: argparse.Namespace, settings: LewLMSettings, services: LewLMServices | None = None) -> ExitCode:
+    resolved_services = services or bootstrap_services(settings)
+    timeout_seconds = (
+        args.timeout_seconds
+        if args.timeout_seconds is not None
+        else float(settings.model_drain_timeout_seconds)
+    )
+    if timeout_seconds <= 0:
+        raise ConfigurationError("`--timeout-seconds` must be greater than zero.")
+    decision, lifecycle = asyncio.run(
+        resolved_services.model_router.unload_model_lifecycle(
+            args.model,
+            drain=True,
+            timeout_seconds=timeout_seconds,
+        ),
+    )
+    payload = {
+        "status": "drained",
+        "model_id": decision.model_id,
+        "runtime": decision.runtime_name,
+        **lifecycle.model_dump(mode="json", exclude={"model_id", "runtime"}),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"drained {payload['model_id']} via {payload['runtime']}")
     return ExitCode.OK
 
 

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from threading import Lock
+from typing import Protocol
 import time
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.errors import AuthenticationError, RateLimitError, RequestTooLargeError, UnsupportedMediaTypeError
+
+
+#: Browsers cannot set headers on a WebSocket handshake, so the key may also
+#: ride the subprotocol list, which is the one field the API does expose.
+WEBSOCKET_API_KEY_SUBPROTOCOL_PREFIX = "lewlm.api-key."
 
 
 EXEMPT_API_KEY_PATHS = {
@@ -45,6 +51,23 @@ ALLOWED_BODY_MEDIA_TYPES = {
 }
 
 
+class _GuardedConnection(Protocol):
+    """The subset of a connection the API-key and rate-limit guards read.
+
+    Both `Request` and `WebSocket` satisfy it, which is what lets one guard
+    cover both transports instead of leaving the WebSocket route unprotected.
+    """
+
+    @property
+    def headers(self): ...
+
+    @property
+    def url(self): ...
+
+    @property
+    def client(self): ...
+
+
 class RequestRateLimiter:
     """Simple in-memory sliding-window rate limiter."""
 
@@ -54,7 +77,7 @@ class RequestRateLimiter:
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
 
-    def enforce(self, request: Request) -> None:
+    def enforce(self, request: _GuardedConnection) -> None:
         if self.max_requests <= 0 or request.url.path in EXEMPT_RATE_LIMIT_PATHS:
             return
         key = _rate_limit_key(request)
@@ -93,6 +116,34 @@ class RequestGuard:
         _enforce_content_type(request)
         self.rate_limiter.enforce(request)
         _enforce_api_key(request, self.settings)
+
+    def enforce_websocket(self, websocket: WebSocket) -> None:
+        """Apply the credential and rate-limit guards to a WebSocket handshake.
+
+        `@app.middleware("http")` never runs for a WebSocket route, so without
+        this the endpoint would serve every event to an unauthenticated client.
+        """
+
+        self.rate_limiter.enforce(websocket)
+        _enforce_api_key(websocket, self.settings, credential=_websocket_credential(websocket))
+
+
+def _websocket_credential(websocket: WebSocket) -> str | None:
+    """Read the API key from headers, falling back to the subprotocol list.
+
+    A selected subprotocol is never echoed on accept: that would put the key in
+    the response headers as well as the request, and a client that offered one
+    is not required to receive one back.
+    """
+
+    credential = _header_credential(websocket)
+    if credential is not None:
+        return credential
+    requested = websocket.headers.get("sec-websocket-protocol", "")
+    for entry in (item.strip() for item in requested.split(",")):
+        if entry.startswith(WEBSOCKET_API_KEY_SUBPROTOCOL_PREFIX):
+            return entry[len(WEBSOCKET_API_KEY_SUBPROTOCOL_PREFIX) :]
+    return None
 
 
 async def _enforce_request_size(request: Request, settings: LewLMSettings) -> None:
@@ -133,23 +184,41 @@ def _enforce_content_type(request: Request) -> None:
         )
 
 
-def _enforce_api_key(request: Request, settings: LewLMSettings) -> None:
+def _enforce_api_key(
+    request: _GuardedConnection,
+    settings: LewLMSettings,
+    *,
+    credential: str | None = None,
+) -> None:
     if not settings.api_key_required or request.url.path in EXEMPT_API_KEY_PATHS:
         return
-    provided_key = request.headers.get("x-api-key")
-    authorization = request.headers.get("authorization", "")
-    if provided_key is None and authorization.lower().startswith("bearer "):
-        provided_key = authorization[7:].strip()
-    valid_keys = {secret.get_secret_value() for secret in settings.api_keys}
+    provided_key = credential if credential is not None else _header_credential(request)
+    valid_keys = {
+        secret.get_secret_value()
+        for secret in (
+            *settings.api_keys,
+            *settings.lifecycle_operator_api_keys,
+            *settings.lifecycle_administrator_api_keys,
+        )
+    }
     if provided_key not in valid_keys:
         raise AuthenticationError("A valid API key is required for this request.")
 
 
-def _rate_limit_key(request: Request) -> str:
+def _header_credential(request: _GuardedConnection) -> str | None:
+    """Read the API key from `x-api-key` or an `Authorization: Bearer` header."""
+
     provided_key = request.headers.get("x-api-key")
+    if provided_key is not None:
+        return provided_key
     authorization = request.headers.get("authorization", "")
-    if provided_key is None and authorization.lower().startswith("bearer "):
-        provided_key = authorization[7:].strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+def _rate_limit_key(request: _GuardedConnection) -> str:
+    provided_key = _header_credential(request)
     if provided_key:
         return f"api:{provided_key}"
     host = request.client.host if request.client is not None else "anonymous"

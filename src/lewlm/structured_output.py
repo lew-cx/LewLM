@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any, Literal
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+_REF_KEY = "$ref"
+
+#: A `$ref` chain that never consumes any of the value is a self-referential
+#: schema, not a deep one. Bound it rather than recursing until the stack fails.
+_MAX_REF_DEPTH = 64
 
 
 class TextResponseFormat(BaseModel):
@@ -260,25 +269,57 @@ def _validate_json_schema(
     value: Any,
     path: list[str | int] | None = None,
 ) -> list[StructuredOutputIssue]:
-    current_path = list(path or [])
-    issues: list[StructuredOutputIssue] = []
+    """Validate `value` against `schema`, treating `schema` as its own `$ref` root."""
 
-    const = schema.get("const")
-    if "const" in schema and value != const:
+    return _validate_node(
+        schema=schema,
+        value=value,
+        path=list(path or []),
+        root=schema,
+        ref_depth=0,
+    )
+
+
+def _validate_node(
+    *,
+    schema: Any,
+    value: Any,
+    path: list[str | int],
+    root: Any,
+    ref_depth: int,
+) -> list[StructuredOutputIssue]:
+    # JSON Schema permits a bare boolean anywhere a schema is expected.
+    if schema is True:
+        return []
+    if schema is False:
+        return [
+            StructuredOutputIssue(
+                code="schema_forbids_value",
+                message="The schema forbids any value at this location.",
+                path=path,
+            ),
+        ]
+    if not isinstance(schema, dict):
+        return []
+
+    issues: list[StructuredOutputIssue] = []
+    issues.extend(_validate_reference(schema=schema, value=value, path=path, root=root, ref_depth=ref_depth))
+
+    if "const" in schema and not _json_equal(value, schema["const"]):
         issues.append(
             StructuredOutputIssue(
                 code="const_mismatch",
-                message=f"Expected constant value {const!r}.",
-                path=current_path,
+                message=f"Expected constant value {schema['const']!r}.",
+                path=path,
             ),
         )
     enum_values = schema.get("enum")
-    if isinstance(enum_values, list) and value not in enum_values:
+    if isinstance(enum_values, list) and not any(_json_equal(value, candidate) for candidate in enum_values):
         issues.append(
             StructuredOutputIssue(
                 code="enum_mismatch",
                 message=f"Expected one of {enum_values!r}.",
-                path=current_path,
+                path=path,
             ),
         )
 
@@ -288,128 +329,569 @@ def _validate_json_schema(
             StructuredOutputIssue(
                 code="type_mismatch",
                 message=f"Expected {_describe_types(expected_types)}, but received {_json_type_name(value)}.",
-                path=current_path,
+                path=path,
             ),
         )
+        # Keyword checks below are all type-specific, so continuing here would
+        # only pile cascading noise on top of the one issue that matters.
         return issues
 
+    issues.extend(_validate_composition(schema=schema, value=value, path=path, root=root, ref_depth=ref_depth))
+
     if isinstance(value, dict):
-        properties = schema.get("properties")
-        required = schema.get("required")
-        if isinstance(required, list):
-            for key in required:
+        issues.extend(_validate_object(schema=schema, value=value, path=path, root=root))
+    elif isinstance(value, list):
+        issues.extend(_validate_array(schema=schema, value=value, path=path, root=root))
+    elif isinstance(value, str):
+        issues.extend(_validate_string(schema=schema, value=value, path=path))
+    elif _json_type_name(value) in {"integer", "number"}:
+        issues.extend(_validate_number(schema=schema, value=value, path=path))
+    return issues
+
+
+def _validate_reference(
+    *,
+    schema: dict[str, Any],
+    value: Any,
+    path: list[str | int],
+    root: Any,
+    ref_depth: int,
+) -> list[StructuredOutputIssue]:
+    """Validate against a `$ref` target, if the node carries one.
+
+    Sibling keywords still apply — the caller evaluates them — which matches
+    2020-12 and is what Pydantic emits for an annotated model reference.
+    """
+
+    reference = schema.get(_REF_KEY)
+    if not isinstance(reference, str):
+        return []
+    if ref_depth >= _MAX_REF_DEPTH:
+        return [
+            StructuredOutputIssue(
+                code="schema_recursion",
+                message=(
+                    f"Stopped resolving `$ref` after {_MAX_REF_DEPTH} hops without consuming any of the "
+                    "value; the schema references itself unconditionally."
+                ),
+                path=path,
+            ),
+        ]
+    target, resolved = _resolve_reference(reference, root=root)
+    if not resolved:
+        # Silently passing here is how an unvalidatable schema turns into a
+        # false `valid`, which is the failure this validator exists to avoid.
+        return [
+            StructuredOutputIssue(
+                code="unresolvable_ref",
+                message=(
+                    f"Cannot resolve `$ref` `{reference}`; LewLM validates against the submitted schema "
+                    "document only and does not fetch external references."
+                ),
+                path=path,
+            ),
+        ]
+    return _validate_node(schema=target, value=value, path=path, root=root, ref_depth=ref_depth + 1)
+
+
+def _validate_composition(
+    *,
+    schema: dict[str, Any],
+    value: Any,
+    path: list[str | int],
+    root: Any,
+    ref_depth: int,
+) -> list[StructuredOutputIssue]:
+    issues: list[StructuredOutputIssue] = []
+
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        for subschema in all_of:
+            issues.extend(
+                _validate_node(schema=subschema, value=value, path=path, root=root, ref_depth=ref_depth),
+            )
+
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list) and any_of:
+        branch_issues = [
+            _validate_node(schema=subschema, value=value, path=path, root=root, ref_depth=ref_depth)
+            for subschema in any_of
+        ]
+        if all(branch for branch in branch_issues):
+            issues.append(_branch_mismatch("any_of_mismatch", branch_issues, path=path, requirement="at least one"))
+
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list) and one_of:
+        branch_issues = [
+            _validate_node(schema=subschema, value=value, path=path, root=root, ref_depth=ref_depth)
+            for subschema in one_of
+        ]
+        matched = [index for index, branch in enumerate(branch_issues) if not branch]
+        if not matched:
+            issues.append(_branch_mismatch("one_of_mismatch", branch_issues, path=path, requirement="exactly one"))
+        elif len(matched) > 1:
+            issues.append(
+                StructuredOutputIssue(
+                    code="one_of_ambiguous",
+                    message=(
+                        f"Expected exactly one `oneOf` branch to match, but branches "
+                        f"{', '.join(str(index) for index in matched)} all matched."
+                    ),
+                    path=path,
+                ),
+            )
+
+    if "not" in schema:
+        negated = _validate_node(schema=schema["not"], value=value, path=path, root=root, ref_depth=ref_depth)
+        if not negated:
+            issues.append(
+                StructuredOutputIssue(
+                    code="not_mismatch",
+                    message="Value matched a schema declared under `not`.",
+                    path=path,
+                ),
+            )
+    return issues
+
+
+def _branch_mismatch(
+    code: str,
+    branch_issues: list[list[StructuredOutputIssue]],
+    *,
+    path: list[str | int],
+    requirement: str,
+) -> StructuredOutputIssue:
+    """Summarize why every branch of a composition keyword rejected the value."""
+
+    if len(branch_issues) == 1:
+        detail = _describe_branch_issues(branch_issues[0], relative_to=path)
+    else:
+        # The branch that came closest is the one worth reporting in full.
+        closest = min(range(len(branch_issues)), key=lambda index: len(branch_issues[index]))
+        detail = (
+            f"{len(branch_issues)} branches were tried; the closest (branch {closest}) reported: "
+            + _describe_branch_issues(branch_issues[closest], relative_to=path)
+        )
+    return StructuredOutputIssue(
+        code=code,
+        message=f"Expected {requirement} branch to match. {detail}",
+        path=path,
+    )
+
+
+def _describe_branch_issues(
+    issues: list[StructuredOutputIssue],
+    *,
+    relative_to: list[str | int],
+) -> str:
+    """Render branch issues, keeping the sub-path that the summary would lose."""
+
+    rendered: list[str] = []
+    for issue in issues:
+        suffix = issue.path[len(relative_to) :]
+        location = _render_path(suffix)
+        rendered.append(f"{issue.message} (at `{location}`)" if location else issue.message)
+    return "; ".join(rendered)
+
+
+def _render_path(segments: list[str | int]) -> str:
+    parts: list[str] = []
+    for segment in segments:
+        parts.append(f"[{segment}]" if isinstance(segment, int) else f".{segment}")
+    return "".join(parts).lstrip(".")
+
+
+def _validate_object(
+    *,
+    schema: dict[str, Any],
+    value: dict[str, Any],
+    path: list[str | int],
+    root: Any,
+) -> list[StructuredOutputIssue]:
+    issues: list[StructuredOutputIssue] = []
+
+    required = schema.get("required")
+    if isinstance(required, list):
+        for key in required:
+            if isinstance(key, str) and key not in value:
+                issues.append(
+                    StructuredOutputIssue(
+                        code="required_property",
+                        message=f"Missing required property `{key}`.",
+                        path=[*path, key],
+                    ),
+                )
+
+    dependent_required = schema.get("dependentRequired")
+    if isinstance(dependent_required, dict):
+        for trigger, dependents in dependent_required.items():
+            if trigger not in value or not isinstance(dependents, list):
+                continue
+            for key in dependents:
                 if isinstance(key, str) and key not in value:
                     issues.append(
                         StructuredOutputIssue(
-                            code="required_property",
-                            message=f"Missing required property `{key}`.",
-                            path=[*current_path, key],
+                            code="dependent_required_property",
+                            message=f"Property `{key}` is required when `{trigger}` is present.",
+                            path=[*path, key],
                         ),
                     )
-        property_map = properties if isinstance(properties, dict) else {}
-        for key, property_schema in property_map.items():
-            if key in value and isinstance(property_schema, dict):
-                issues.extend(
-                    _validate_json_schema(
-                        schema=property_schema,
-                        value=value[key],
-                        path=[*current_path, key],
-                    ),
-                )
-        additional_properties = schema.get("additionalProperties", True)
-        extra_keys = [key for key in value if key not in property_map]
+
+    min_properties = schema.get("minProperties")
+    if isinstance(min_properties, int) and not isinstance(min_properties, bool) and len(value) < min_properties:
+        issues.append(
+            StructuredOutputIssue(
+                code="min_properties",
+                message=f"Expected at least {min_properties} propert(y/ies).",
+                path=path,
+            ),
+        )
+    max_properties = schema.get("maxProperties")
+    if isinstance(max_properties, int) and not isinstance(max_properties, bool) and len(value) > max_properties:
+        issues.append(
+            StructuredOutputIssue(
+                code="max_properties",
+                message=f"Expected at most {max_properties} propert(y/ies).",
+                path=path,
+            ),
+        )
+
+    property_map = schema.get("properties")
+    property_map = property_map if isinstance(property_map, dict) else {}
+    for key, property_schema in property_map.items():
+        if key in value:
+            issues.extend(
+                _validate_node(
+                    schema=property_schema,
+                    value=value[key],
+                    path=[*path, key],
+                    root=root,
+                    ref_depth=0,
+                ),
+            )
+
+    pattern_properties = schema.get("patternProperties")
+    pattern_properties = pattern_properties if isinstance(pattern_properties, dict) else {}
+    matched_by_pattern: set[str] = set()
+    for pattern, property_schema in pattern_properties.items():
+        compiled = _compile_pattern(pattern)
+        if compiled is None:
+            continue
+        for key in value:
+            if compiled.search(key) is None:
+                continue
+            matched_by_pattern.add(key)
+            issues.extend(
+                _validate_node(
+                    schema=property_schema,
+                    value=value[key],
+                    path=[*path, key],
+                    root=root,
+                    ref_depth=0,
+                ),
+            )
+
+    property_names = schema.get("propertyNames")
+    if property_names is not None:
+        for key in value:
+            issues.extend(
+                _validate_node(
+                    schema=property_names,
+                    value=key,
+                    path=[*path, key],
+                    root=root,
+                    ref_depth=0,
+                ),
+            )
+
+    # `additionalProperties` is scoped to the `properties` and `patternProperties`
+    # declared on this same schema object, per spec — a sibling `allOf` branch
+    # does not widen it.
+    additional_properties = schema.get("additionalProperties", True)
+    if additional_properties is not True:
+        extra_keys = [key for key in value if key not in property_map and key not in matched_by_pattern]
         if additional_properties is False:
             issues.extend(
                 StructuredOutputIssue(
                     code="additional_property",
                     message=f"Unexpected property `{key}`.",
-                    path=[*current_path, key],
+                    path=[*path, key],
                 )
                 for key in extra_keys
             )
-        elif isinstance(additional_properties, dict):
+        else:
             for key in extra_keys:
                 issues.extend(
-                    _validate_json_schema(
+                    _validate_node(
                         schema=additional_properties,
                         value=value[key],
-                        path=[*current_path, key],
+                        path=[*path, key],
+                        root=root,
+                        ref_depth=0,
                     ),
                 )
-        return issues
+    return issues
 
-    if isinstance(value, list):
-        min_items = schema.get("minItems")
-        if isinstance(min_items, int) and len(value) < min_items:
-            issues.append(
-                StructuredOutputIssue(
-                    code="min_items",
-                    message=f"Expected at least {min_items} item(s).",
-                    path=current_path,
-                ),
-            )
-        max_items = schema.get("maxItems")
-        if isinstance(max_items, int) and len(value) > max_items:
-            issues.append(
-                StructuredOutputIssue(
-                    code="max_items",
-                    message=f"Expected at most {max_items} item(s).",
-                    path=current_path,
-                ),
-            )
-        items_schema = schema.get("items")
-        if isinstance(items_schema, dict):
-            for index, item in enumerate(value):
-                issues.extend(
-                    _validate_json_schema(
-                        schema=items_schema,
-                        value=item,
-                        path=[*current_path, index],
+
+def _validate_array(
+    *,
+    schema: dict[str, Any],
+    value: list[Any],
+    path: list[str | int],
+    root: Any,
+) -> list[StructuredOutputIssue]:
+    issues: list[StructuredOutputIssue] = []
+
+    min_items = schema.get("minItems")
+    if isinstance(min_items, int) and not isinstance(min_items, bool) and len(value) < min_items:
+        issues.append(
+            StructuredOutputIssue(
+                code="min_items",
+                message=f"Expected at least {min_items} item(s).",
+                path=path,
+            ),
+        )
+    max_items = schema.get("maxItems")
+    if isinstance(max_items, int) and not isinstance(max_items, bool) and len(value) > max_items:
+        issues.append(
+            StructuredOutputIssue(
+                code="max_items",
+                message=f"Expected at most {max_items} item(s).",
+                path=path,
+            ),
+        )
+    if schema.get("uniqueItems") is True:
+        seen: list[Any] = []
+        for index, item in enumerate(value):
+            if any(_json_equal(item, previous) for previous in seen):
+                issues.append(
+                    StructuredOutputIssue(
+                        code="unique_items",
+                        message="Expected every item to be unique.",
+                        path=[*path, index],
                     ),
                 )
-        return issues
+            else:
+                seen.append(item)
 
-    if isinstance(value, str):
-        min_length = schema.get("minLength")
-        if isinstance(min_length, int) and len(value) < min_length:
-            issues.append(
-                StructuredOutputIssue(
-                    code="min_length",
-                    message=f"Expected string length >= {min_length}.",
-                    path=current_path,
+    prefix_items = schema.get("prefixItems")
+    prefix_count = 0
+    if isinstance(prefix_items, list):
+        prefix_count = len(prefix_items)
+        for index, subschema in enumerate(prefix_items):
+            if index >= len(value):
+                break
+            issues.extend(
+                _validate_node(
+                    schema=subschema,
+                    value=value[index],
+                    path=[*path, index],
+                    root=root,
+                    ref_depth=0,
                 ),
             )
-        max_length = schema.get("maxLength")
-        if isinstance(max_length, int) and len(value) > max_length:
-            issues.append(
-                StructuredOutputIssue(
-                    code="max_length",
-                    message=f"Expected string length <= {max_length}.",
-                    path=current_path,
-                ),
-            )
-        return issues
 
-    if _json_type_name(value) in {"integer", "number"}:
-        minimum = schema.get("minimum")
-        if isinstance(minimum, int | float) and value < minimum:
-            issues.append(
-                StructuredOutputIssue(
-                    code="minimum",
-                    message=f"Expected value >= {minimum}.",
-                    path=current_path,
+    items_schema = schema.get("items")
+    if items_schema is not None:
+        for index in range(prefix_count, len(value)):
+            issues.extend(
+                _validate_node(
+                    schema=items_schema,
+                    value=value[index],
+                    path=[*path, index],
+                    root=root,
+                    ref_depth=0,
                 ),
             )
-        maximum = schema.get("maximum")
-        if isinstance(maximum, int | float) and value > maximum:
+
+    contains = schema.get("contains")
+    if contains is not None:
+        match_count = sum(
+            1
+            for index, item in enumerate(value)
+            if not _validate_node(schema=contains, value=item, path=[*path, index], root=root, ref_depth=0)
+        )
+        min_contains = schema.get("minContains")
+        min_contains = min_contains if isinstance(min_contains, int) and not isinstance(min_contains, bool) else 1
+        if match_count < min_contains:
             issues.append(
                 StructuredOutputIssue(
-                    code="maximum",
-                    message=f"Expected value <= {maximum}.",
-                    path=current_path,
+                    code="contains",
+                    message=f"Expected at least {min_contains} item(s) matching `contains`, found {match_count}.",
+                    path=path,
+                ),
+            )
+        max_contains = schema.get("maxContains")
+        if isinstance(max_contains, int) and not isinstance(max_contains, bool) and match_count > max_contains:
+            issues.append(
+                StructuredOutputIssue(
+                    code="max_contains",
+                    message=f"Expected at most {max_contains} item(s) matching `contains`, found {match_count}.",
+                    path=path,
                 ),
             )
     return issues
+
+
+def _validate_string(
+    *,
+    schema: dict[str, Any],
+    value: str,
+    path: list[str | int],
+) -> list[StructuredOutputIssue]:
+    issues: list[StructuredOutputIssue] = []
+
+    min_length = schema.get("minLength")
+    if isinstance(min_length, int) and not isinstance(min_length, bool) and len(value) < min_length:
+        issues.append(
+            StructuredOutputIssue(
+                code="min_length",
+                message=f"Expected string length >= {min_length}.",
+                path=path,
+            ),
+        )
+    max_length = schema.get("maxLength")
+    if isinstance(max_length, int) and not isinstance(max_length, bool) and len(value) > max_length:
+        issues.append(
+            StructuredOutputIssue(
+                code="max_length",
+                message=f"Expected string length <= {max_length}.",
+                path=path,
+            ),
+        )
+    pattern = schema.get("pattern")
+    if isinstance(pattern, str):
+        compiled = _compile_pattern(pattern)
+        if compiled is not None and compiled.search(value) is None:
+            issues.append(
+                StructuredOutputIssue(
+                    code="pattern_mismatch",
+                    message=f"Expected a string matching `{pattern}`.",
+                    path=path,
+                ),
+            )
+    return issues
+
+
+def _validate_number(
+    *,
+    schema: dict[str, Any],
+    value: int | float,
+    path: list[str | int],
+) -> list[StructuredOutputIssue]:
+    issues: list[StructuredOutputIssue] = []
+
+    minimum = schema.get("minimum")
+    if _is_number(minimum) and value < minimum:
+        issues.append(
+            StructuredOutputIssue(
+                code="minimum",
+                message=f"Expected value >= {minimum}.",
+                path=path,
+            ),
+        )
+    maximum = schema.get("maximum")
+    if _is_number(maximum) and value > maximum:
+        issues.append(
+            StructuredOutputIssue(
+                code="maximum",
+                message=f"Expected value <= {maximum}.",
+                path=path,
+            ),
+        )
+    exclusive_minimum = schema.get("exclusiveMinimum")
+    if _is_number(exclusive_minimum) and value <= exclusive_minimum:
+        issues.append(
+            StructuredOutputIssue(
+                code="exclusive_minimum",
+                message=f"Expected value > {exclusive_minimum}.",
+                path=path,
+            ),
+        )
+    exclusive_maximum = schema.get("exclusiveMaximum")
+    if _is_number(exclusive_maximum) and value >= exclusive_maximum:
+        issues.append(
+            StructuredOutputIssue(
+                code="exclusive_maximum",
+                message=f"Expected value < {exclusive_maximum}.",
+                path=path,
+            ),
+        )
+    multiple_of = schema.get("multipleOf")
+    if _is_number(multiple_of) and multiple_of > 0:
+        quotient = value / multiple_of
+        if abs(quotient - round(quotient)) > 1e-9:
+            issues.append(
+                StructuredOutputIssue(
+                    code="multiple_of",
+                    message=f"Expected a multiple of {multiple_of}.",
+                    path=path,
+                ),
+            )
+    return issues
+
+
+def _resolve_reference(reference: str, *, root: Any) -> tuple[Any, bool]:
+    """Resolve a local JSON pointer against `root`.
+
+    Returns `(target, resolved)`. External and plain-name (`$anchor`) references
+    are reported as unresolved rather than assumed valid.
+    """
+
+    if not reference.startswith("#"):
+        return None, False
+    pointer = reference[1:]
+    if not pointer:
+        return root, True
+    if not pointer.startswith("/"):
+        return None, False
+
+    node = root
+    for raw_token in pointer[1:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        token = unquote(token)
+        if isinstance(node, dict):
+            if token not in node:
+                return None, False
+            node = node[token]
+        elif isinstance(node, list):
+            try:
+                index = int(token)
+            except ValueError:
+                return None, False
+            if index < 0 or index >= len(node):
+                return None, False
+            node = node[index]
+        else:
+            return None, False
+    return node, True
+
+
+def _compile_pattern(pattern: str) -> re.Pattern[str] | None:
+    """Compile a schema pattern, ignoring ECMA-only syntax Python cannot parse."""
+
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare two JSON values without Python's `True == 1` conflation."""
+
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right))
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return False
+    return left == right
 
 
 def _expected_json_types(value: Any) -> list[str]:
@@ -467,7 +949,12 @@ def validate_value_against_json_schema(
     schema: dict[str, Any],
     value: Any,
 ) -> list[StructuredOutputIssue]:
-    """Validate a parsed JSON value against a JSON schema and return issues."""
+    """Validate a parsed JSON value against a JSON schema and return issues.
+
+    `schema` is both the contract and the `$ref` resolution root, so a schema
+    generated by `BaseModel.model_json_schema()` — which references its nested
+    models through `#/$defs/...` — validates without being pre-flattened.
+    """
 
     return _validate_json_schema(schema=schema, value=value)
 

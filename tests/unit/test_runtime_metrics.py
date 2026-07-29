@@ -35,3 +35,36 @@ def test_runtime_metrics_recorder_tracks_capability_measurements() -> None:
     assert capability_metrics["metric_totals"]["vector_count"] == 2
     assert capability_metrics["metric_totals"]["vector_dimensions"] == 384
     assert capability_metrics["metric_averages"]["input_count"] == 1.5
+
+
+def test_runtime_metrics_recorder_bounds_and_attributes_application_usage() -> None:
+    recorder = RuntimeMetricsRecorder(max_application_entries=2)
+
+    recorder.record_application_request(application_id="rag-chat")
+    recorder.record_lease_acquired(
+        application_id="rag-chat",
+        model_id="shared-model",
+        capability="chat",
+        residency_wait_seconds=0.25,
+        contended=True,
+    )
+    recorder.record_lease_released(application_id="rag-chat")
+    recorder.record_application_result(application_id="rag-chat", failed=False)
+    recorder.record_application_request(application_id="document-generator")
+    recorder.record_application_result(application_id="document-generator", failed=True)
+    recorder.record_application_request(application_id="third-application")
+
+    applications = {
+        item["application_id"]: item
+        for item in recorder.snapshot()["applications"]
+    }
+
+    assert set(applications) == {"rag-chat", "document-generator", "__other__"}
+    assert applications["rag-chat"]["request_count"] == 1
+    assert applications["rag-chat"]["success_count"] == 1
+    assert applications["rag-chat"]["lease_acquisition_count"] == 1
+    assert applications["rag-chat"]["active_lease_count"] == 0
+    assert applications["rag-chat"]["load_contention_count"] == 1
+    assert applications["rag-chat"]["model_usage_counts"] == {"shared-model": 1}
+    assert applications["document-generator"]["failure_count"] == 1
+    assert applications["__other__"]["request_count"] == 1

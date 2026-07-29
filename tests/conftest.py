@@ -1250,6 +1250,16 @@ class UnavailableMLXTextRuntime(FakeMLXSemanticRuntime):
         return {}
 
 
+class UnavailableMLXVisionRuntime(FakeMLXVisionRuntime):
+    name = "unavailable_mlx_vision"
+
+    def _check_environment(self) -> tuple[bool, str | None]:
+        return False, "Disabled for deterministic test coverage."
+
+    def performance_feature_snapshot(self) -> dict[str, object]:
+        return {}
+
+
 class FakeExternalSemanticRuntime(FakeMLXSemanticRuntime):
     name = "local_external_adapter"
     affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
@@ -1503,6 +1513,7 @@ def temp_settings(tmp_path: Path) -> LewLMSettings:
         data_dir=data_dir,
         models_dir=(data_dir / "models",),
         privacy_mode=True,
+        backend_feature_probes_enabled=False,
         api_keys=(SecretStr("test-key"),),
     )
 
@@ -1711,6 +1722,8 @@ def services_with_fake_runtime(temp_settings: LewLMSettings, sample_models_root:
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
     )
@@ -1723,7 +1736,8 @@ def services_with_fake_runtime_and_conversion(temp_settings: LewLMSettings, samp
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
-            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
         conversion_backend=FakeMLXConversionBackend(),
@@ -1735,6 +1749,32 @@ def app_with_fake_runtime(temp_settings: LewLMSettings, services_with_fake_runti
     return create_app(temp_settings, services=services_with_fake_runtime)
 
 
+class FailingLoadLlamaCppRuntime(FakeLlamaCppRuntime):
+    """Fake runtime whose backend raises an unclassified model-load failure."""
+
+    async def _load_model(self, manifest: ModelManifest) -> None:
+        raise ValueError("Model type gemma4 not supported.")
+
+
+@pytest.fixture
+def services_with_failing_runtime(temp_settings: LewLMSettings, sample_models_root: Path):
+    return bootstrap_services(
+        temp_settings,
+        runtime_overrides={
+            RuntimeAffinity.EXPERIMENTAL: FailingLoadLlamaCppRuntime(),
+            RuntimeAffinity.LLAMACPP: FailingLoadLlamaCppRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
+            RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
+        },
+    )
+
+
+@pytest.fixture
+def app_with_failing_runtime(temp_settings: LewLMSettings, services_with_failing_runtime):
+    return create_app(temp_settings, services=services_with_failing_runtime)
+
+
 @pytest.fixture
 def services_with_fake_runtime_session_enabled(session_enabled_settings: LewLMSettings, sample_models_root: Path):
     return bootstrap_services(
@@ -1742,6 +1782,8 @@ def services_with_fake_runtime_session_enabled(session_enabled_settings: LewLMSe
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
+            RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=session_enabled_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
     )
@@ -1761,7 +1803,8 @@ def services_with_fake_multimodal_runtime(temp_settings: LewLMSettings, sample_m
         temp_settings,
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
-            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(),
+            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=temp_settings),
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
     )
@@ -1778,7 +1821,7 @@ def services_with_fake_attachment_runtime(temp_settings: LewLMSettings, sample_c
         temp_settings,
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
-            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(),
+            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=temp_settings),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
             RuntimeAffinity.MLX_VISION: FakeMLXVisionRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
@@ -1885,7 +1928,7 @@ def services_with_external_models_runtime_and_conversion(
     return bootstrap_services(
         external_models_multimodal_settings,
         runtime_overrides={
-            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(),
+            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=external_models_multimodal_settings),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
             RuntimeAffinity.MLX_VISION: FakeMLXVisionRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),

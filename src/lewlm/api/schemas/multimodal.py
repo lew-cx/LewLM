@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from lewlm.core.contracts import RoutingDecision
 from lewlm.core.execution_metadata import ExecutionMetadata
+from lewlm.core.provenance import RetrievalScoringPolicy
 from lewlm.documents.ingest.models import DocumentChunk, IngestedDocumentSource
 
 from .chat import CompletionUsage
@@ -103,8 +104,38 @@ class RetrievalContextResponse(BaseModel):
     returned_count: int
     items: list[RetrievalContextItem]
     sources: list[IngestedDocumentSource] = Field(default_factory=list)
+    scoring_policy: RetrievalScoringPolicy = Field(
+        description="Named, versioned ranking rules this response applied.",
+    )
     embedding_stage: RetrievalStageSummary | None = None
     rerank_stage: RetrievalStageSummary | None = None
+    metadata: ExecutionMetadata
+
+
+class TokenCountRequest(BaseModel):
+    model: str | None = None
+    text: str
+    max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description="When set, also return the text truncated at an exact token boundary.",
+    )
+    correlation_id: str | None = None
+
+
+class TokenCountResponse(BaseModel):
+    request_id: str
+    created: int
+    model: str
+    token_count: int = Field(description="Exact token count from the selected model's own tokenizer.")
+    character_count: int
+    truncated: bool = False
+    truncated_text: str | None = Field(
+        default=None,
+        description="Text cut at a deterministic token boundary. Null unless `max_tokens` was set and exceeded.",
+    )
+    truncated_token_count: int | None = None
+    routing: RoutingDecision
     metadata: ExecutionMetadata
 
 

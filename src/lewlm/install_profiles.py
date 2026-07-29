@@ -318,7 +318,10 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         ),
         profiles=profiles,
         backend_inventory=_backend_module_inventory(),
-        backend_feature_probes=probe_backend_features(),
+        backend_feature_probes=probe_backend_features(
+            disabled_runtime_packs=getattr(settings, "disabled_runtime_packs", ()),
+            enabled=getattr(settings, "backend_feature_probes_enabled", False),
+        ),
         llamacpp_build=llamacpp_build,
         notes=summary_notes,
     )

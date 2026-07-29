@@ -7,7 +7,7 @@ LewLM's CLI is grouped around serving, model management, documents, operations, 
 | Group | Commands |
 | --- | --- |
 | Server and config | `serve`, `doctor`, `config`, `cache` |
-| Model registry | `scan`, `list-models`, `models scan`, `models list`, `models import`, `models artifacts`, `capabilities`, `warm`, `unload` |
+| Model registry | `scan`, `list-models`, `models scan`, `models list`, `models import`, `models artifacts`, `capabilities`, `warm`, `drain`, `unload` |
 | Runtime evidence | `runtime probe`, `bridges test` |
 | Conversion and tuning | `convert`, `benchmark`, `bench`, `autotune`, `optimize` |
 | Documents | `generate-doc`, `transform` |
@@ -78,6 +78,10 @@ Shows managed cache stats by default. Use `lewlm cache clear-conversions` to rem
 
 Shows per-model capability reporting, measured routing preference, downgrade notes, fallback guidance, capability evidence, and per-host measured probe summaries for batching, cache reuse, constrained decoding, compile/kernels, speculation, and adapter preservation. Runtime and benchmark payloads now also surface portable performance-core ownership modes such as `lewlm_owned`, `backend_native`, and `partial`.
 
+### `warm`, `drain`, and `unload`
+
+These commands act on the CLI's embedded runtime. `warm` loads a model, `unload` refuses active use, and `drain` stops new leases and waits for existing use up to `--timeout-seconds` (or `model_drain_timeout_seconds`). For a long-lived shared server, prefer the HTTP or typed-client lifecycle surfaces; only the server can keep an asynchronous drain operation alive after the invoking process exits.
+
 ### `runtime probe`
 
 Runs a capability probe and emits LewLM's evidence vocabulary: `discovered`, `requires_install`, `requires_conversion`, `load_passed`, `generate_passed`, `benchmark_passed`, `probe_failed`, or `unsupported`.
@@ -101,7 +105,7 @@ Use `lewlm convert <model-id> --plan` to inspect target options without queueing
 
 ### `benchmark`
 
-Runs benchmark flows and emits artifact-backed summaries, including when measured adapter comparisons are persisted but downgraded instead of adopted. Benchmark feature records preserve ownership-mode evidence so cross-platform paths can report truthful backend-native or partial preservation without claiming universal parity, and external-adapter wins now stay bridge-only when they would otherwise replace a first-class packaged runtime.
+Runs benchmark flows and emits artifact-backed summaries, including when measured adapter comparisons are persisted but downgraded instead of adopted. Benchmark feature records preserve ownership-mode evidence so cross-platform paths can report truthful backend-native or partial preservation without claiming universal parity, and external-adapter wins now stay bridge-only when they would otherwise replace a first-class packaged runtime. External-adapter comparisons use a separate runtime instance and strict runtime clones; LewLM refuses the comparison if it cannot guarantee isolation from shared application models.
 
 `lewlm bench` is a shorter alias for the common managed benchmark path.
 
