@@ -10,6 +10,7 @@ from importlib import import_module
 from importlib.util import find_spec
 import inspect
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -22,13 +23,15 @@ from lewlm.core.contracts import (
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
     AudioTranscriptionSegment,
+    AudioVoice,
+    AudioVoiceSource,
     CapabilityName,
     ModelFormat,
     ModelManifest,
     RuntimeAffinity,
 )
 from lewlm.core.errors import NotImplementedLewLMError
-from lewlm.runtime.base import ManagedAudioRuntime
+from lewlm.runtime.base import ManagedAudioRuntime, collect_voice_files
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
 from lewlm.storage.block_cache import MultimodalEncoderCache
 
@@ -315,6 +318,56 @@ class MLXAudioRuntime(ManagedAudioRuntime):
             duration_seconds=duration_seconds,
         )
 
+    def speech_voices(self, manifest: ModelManifest) -> list[AudioVoice]:
+        """List voice packs this host can resolve for `manifest` without downloading.
+
+        mlx-audio resolves a voice name to `voices/{name}.safetensors` inside
+        the backend's own Hugging Face cache for the bundle's repo, so the same
+        model directory offers different voices on different machines. Both
+        places are read here, and each voice reports where it was found.
+        """
+
+        voices: dict[str, AudioVoice] = {voice.voice_id: voice for voice in super().speech_voices(manifest)}
+        # An MLX bundle stores its weights as `.safetensors`/`.npz`, so a loose
+        # `.pt` beside them is a voice pack rather than part of the model.
+        collect_voice_files(voices, Path(manifest.source_path), source=AudioVoiceSource.BUNDLE, suffixes=(".pt",))
+        for snapshot_path in self._backend_voice_directories(manifest):
+            collect_voice_files(voices, snapshot_path, source=AudioVoiceSource.BACKEND_CACHE)
+        return sorted(voices.values(), key=lambda voice: voice.voice_id)
+
+    def _backend_voice_directories(self, manifest: ModelManifest) -> list[Path]:
+        cache_root = _huggingface_cache_root()
+        if cache_root is None or not cache_root.is_dir():
+            return []
+        repo_ids, repo_names = self._voice_repo_matchers(manifest)
+        directories: list[Path] = []
+        for repo_directory in sorted(cache_root.glob("models--*")):
+            repo_id = repo_directory.name.removeprefix("models--").replace("--", "/").casefold()
+            if repo_id not in repo_ids and repo_id.rpartition("/")[2] not in repo_names:
+                continue
+            directories.extend(
+                path for path in sorted(repo_directory.glob("snapshots/*/voices")) if path.is_dir()
+            )
+        return directories
+
+    def _voice_repo_matchers(self, manifest: ModelManifest) -> tuple[set[str], set[str]]:
+        """Hugging Face repos whose cached voice packs belong to this bundle."""
+
+        repo_ids: set[str] = set()
+        state = self._clients.get(manifest.model_id)
+        client = state.tts_model if state is not None else None
+        for candidate in (
+            getattr(client, "repo_id", None),
+            getattr(type(client), "REPO_ID", None) if client is not None else None,
+            _load_json_file(Path(manifest.source_path) / "config.json").get("repo_id"),
+        ):
+            if isinstance(candidate, str) and candidate:
+                repo_ids.add(candidate.casefold())
+        # A bundle copied out of a repo keeps the repo name as its directory
+        # name, which is enough to find that repo's voices in the cache.
+        repo_names = {Path(manifest.source_path).name.casefold()}
+        return repo_ids, repo_names
+
     def _stt_model_for(self, model_id: str) -> Any:
         state = self._clients[model_id]
         if state.stt_model is None:
@@ -452,6 +505,22 @@ class MLXAudioRuntime(ManagedAudioRuntime):
         self._encoder_cache_request_count += 1
         self._encoder_cache_hits += cache_context.cache_hits
         self._encoder_cache_misses += cache_context.cache_misses
+
+
+def _huggingface_cache_root() -> Path | None:
+    for variable, suffix in (("HF_HUB_CACHE", ""), ("HUGGINGFACE_HUB_CACHE", ""), ("HF_HOME", "hub")):
+        value = os.environ.get(variable)
+        if value:
+            return Path(value).expanduser() / suffix if suffix else Path(value).expanduser()
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _has_audio_transcription_support(module: Any) -> bool:

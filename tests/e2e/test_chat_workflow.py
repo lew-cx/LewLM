@@ -159,6 +159,11 @@ def test_end_to_end_http_multimodal_workflow(
             for manifest in manifests
             if manifest["display_name"] == "whisper-mini-audio"
         )
+        speech_model_id = next(
+            manifest["model_id"]
+            for manifest in manifests
+            if manifest["display_name"] == "kokoro-mini-tts"
+        )
 
         embeddings_response = client.post(
             "/v1/embeddings",
@@ -182,7 +187,7 @@ def test_end_to_end_http_multimodal_workflow(
         )
         speech_response = client.post(
             "/v1/audio/speech",
-            json={"model": audio_model_id, "input": "Milestone seven is underway.", "format": "wav"},
+            json={"model": speech_model_id, "input": "Milestone seven is underway.", "format": "wav"},
         )
 
     assert embeddings_response.status_code == 200

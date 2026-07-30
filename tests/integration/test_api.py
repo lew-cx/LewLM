@@ -262,6 +262,12 @@ def test_health_endpoint_reports_bridge_only_audio_readiness_on_non_apple_hosts(
     audio_dir.mkdir(parents=True)
     (audio_dir / "config.json").write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
     (audio_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+    # Transcription and synthesis need a model each: neither capability is ready
+    # on the strength of an audio model that serves the other side.
+    speech_dir = temp_settings.models_dir[0] / "kokoro-mini-tts"
+    speech_dir.mkdir(parents=True)
+    (speech_dir / "config.json").write_text(json.dumps({"model_type": "kokoro"}), encoding="utf-8")
+    (speech_dir / "kokoro-v1_0.safetensors").write_bytes(b"tts-weights")
     settings = temp_settings.with_updates(
         external_accelerator_enabled=True,
         external_accelerator_base_url="http://127.0.0.1:8000",
@@ -998,6 +1004,13 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
             for manifest in manifests
             if manifest["display_name"] == "whisper-mini-audio"
         )
+        # Transcription and synthesis are separate models on this host, and the
+        # inventory says which is which.
+        speech_model_id = next(
+            manifest["model_id"]
+            for manifest in manifests
+            if manifest["display_name"] == "kokoro-mini-tts"
+        )
 
         embeddings_response = client.post(
             "/v1/embeddings",
@@ -1075,11 +1088,11 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
         )
         speech_response = client.post(
             "/v1/audio/speech",
-            json={"model": audio_model_id, "input": "Hello from LewLM", "voice": "alloy", "format": "wav"},
+            json={"model": speech_model_id, "input": "Hello from LewLM", "voice": "alloy", "format": "wav"},
         )
 
     assert scan_response.status_code == 200
-    assert scan_response.json()["discovered_count"] == 3
+    assert scan_response.json()["discovered_count"] == 4
 
     assert embeddings_response.status_code == 200
     assert embeddings_response.json()["request_id"]
@@ -1123,12 +1136,55 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
     assert speech_response.status_code == 200
     assert speech_response.json()["request_id"]
     assert speech_response.json()["created"] > 0
-    assert speech_response.json()["routing"]["model_id"] == audio_model_id
-    assert speech_response.json()["metadata"]["model"]["resolved_model_id"] == audio_model_id
+    assert speech_response.json()["routing"]["model_id"] == speech_model_id
+    assert speech_response.json()["metadata"]["model"]["resolved_model_id"] == speech_model_id
     assert speech_response.json()["metadata"]["timing"]["total_milliseconds"] >= 0
     assert speech_response.json()["media_type"] == "audio/wav"
     assert speech_response.json()["content_type"] == "audio/wav"
     assert base64.b64decode(speech_response.json()["audio_base64"]).startswith(b"RIFF")
+
+
+def test_audio_capabilities_are_reported_per_model_and_wrong_surfaces_are_refused(
+    app_with_fake_multimodal_runtime,
+) -> None:
+    """Audio readiness names a side, and a mismatched request is a clean refusal."""
+
+    with TestClient(app_with_fake_multimodal_runtime) as client:
+        client.post("/v1/models/scan", json={})
+        inventory = client.get("/v1/models").json()
+        availability = {item["model_id"]: item for item in inventory["capability_availability"]}
+        models_by_name = {manifest["display_name"]: manifest for manifest in inventory["items"]}
+        transcription_model_id = models_by_name["whisper-mini-audio"]["model_id"]
+        speech_model_id = models_by_name["kokoro-mini-tts"]["model_id"]
+        speech_on_transcription_model = client.post(
+            "/v1/audio/speech",
+            json={"model": transcription_model_id, "input": "Hello", "format": "wav"},
+        )
+        report = client.get(f"/v1/models/{speech_model_id}/capabilities").json()
+
+    assert availability[transcription_model_id]["ready_capabilities"] == ["audio_transcription"]
+    assert availability[speech_model_id]["ready_capabilities"] == ["audio_speech"]
+    assert [capability["capability"] for capability in report["capabilities"]] == ["audio_speech"]
+
+    # A 500 from inside the backend would say nothing about the request being
+    # inappropriate for the model.
+    assert speech_on_transcription_model.status_code == 400
+    assert speech_on_transcription_model.json()["error"]["code"] == "routing_error"
+
+
+def test_audio_voices_endpoint_lists_resolvable_voice_packs(
+    app_with_fake_multimodal_runtime,
+) -> None:
+    with TestClient(app_with_fake_multimodal_runtime) as client:
+        client.post("/v1/models/scan", json={})
+        response = client.get("/v1/audio/voices")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_id"].startswith("kokoro-mini-tts")
+    assert [voice["voice_id"] for voice in payload["voices"]] == ["af_heart"]
+    assert payload["voices"][0]["source"] == "bundle"
+    assert payload["enumerable"] is True
 
 
 def test_audio_transcription_endpoint_emits_lifecycle_events(
@@ -1246,7 +1302,7 @@ def test_audio_speech_endpoint_emits_lifecycle_events(
         audio_model_id = next(
             manifest["model_id"]
             for manifest in scan_response.json()["manifests"]
-            if manifest["display_name"] == "whisper-mini-audio"
+            if manifest["display_name"] == "kokoro-mini-tts"
         )
         with client.websocket_connect("/v1/events") as websocket:
             response = client.post(

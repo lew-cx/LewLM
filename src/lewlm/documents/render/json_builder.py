@@ -8,6 +8,12 @@ from lewlm.documents.validators.ir import DocumentIRValidator
 
 
 class JsonDocumentRenderer(DocumentRenderer):
+    """Render JSON.
+
+    JSON echoes the validated IR, so declared style tokens — reserved and
+    lineage alike — appear verbatim without being interpreted.
+    """
+
     output_format = DocumentOutputFormat.JSON
     media_type = "application/json"
     file_extension = ".json"

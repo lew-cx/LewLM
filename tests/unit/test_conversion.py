@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import shutil
 from types import SimpleNamespace
 from pathlib import Path
@@ -978,7 +979,13 @@ def test_conversion_service_plans_executable_gguf_and_install_gated_onnx_targets
     report = service.plan_targets(manifest.model_id)
     targets = {target.target_id: target for target in report.targets}
 
-    assert report.default_target_id == "gguf_llamacpp"
+    # Planning order is Apple-first: on Apple Silicon with a usable MLX
+    # conversion backend the default target is `mlx`, and everywhere else the
+    # packaged llama.cpp target leads. The executable-gguf claim below holds on
+    # every host either way.
+    apple_silicon = platform.system() == "Darwin" and platform.machine().casefold() == "arm64"
+    expected_default = "mlx" if apple_silicon and targets["mlx"].can_convert else "gguf_llamacpp"
+    assert report.default_target_id == expected_default
     assert targets["gguf_llamacpp"].can_convert is True
     assert targets["gguf_llamacpp"].state == "available"
     assert targets["gguf_llamacpp"].runtime_provider.value == "llamacpp"

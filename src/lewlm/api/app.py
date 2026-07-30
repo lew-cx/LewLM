@@ -29,6 +29,10 @@ from lewlm.api.schemas.chat import (
     ResponseCreateRequest,
     ResponseCreateResponse,
 )
+from lewlm.api.schemas.multimodal import (
+    AudioTranscriptionCreateRequest,
+    AudioTranscriptionMultipartRequest,
+)
 from lewlm.events.schema import StreamEvent
 from lewlm.runtime.request_context import (
     current_correlation_id,
@@ -53,10 +57,13 @@ from .routes.tools import router as tools_router
 
 #: Models the document must name even though no route binds them as a body or
 #: `response_model`: the streaming chunks, which only ever appear inside SSE
-#: frames, and the two request bodies declared through `openapi_extra`. Without
-#: this they exist only as anonymous inline schemas, so a code generator has no
-#: named type to emit for the streaming half of the API.
+#: frames, and the request bodies declared through `openapi_extra` — including
+#: both shapes the audio-transcription route accepts, which it hand-parses.
+#: Without this they exist only as anonymous inline schemas, so a code generator
+#: has no named type to emit for the streaming half of the API.
 PUBLISHED_SCHEMA_MODELS: tuple[type, ...] = (
+    AudioTranscriptionCreateRequest,
+    AudioTranscriptionMultipartRequest,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionChunk,

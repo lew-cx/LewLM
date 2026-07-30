@@ -329,6 +329,14 @@ def _manifest_by_modality(scan_payload: dict[str, object], modality: str) -> dic
     )
 
 
+def _manifest_by_audio_role(scan_payload: dict[str, object], role: str) -> dict[str, object]:
+    return next(
+        manifest
+        for manifest in scan_payload["manifests"]
+        if role in manifest["audio_roles"]
+    )
+
+
 def _scenario(payload: dict[str, object], scenario_name: str) -> dict[str, object]:
     return next(item for item in payload["scenarios"] if item["scenario"] == scenario_name)
 
@@ -488,7 +496,7 @@ def test_cli_benchmark_diagnostics_audio_encoder_reuse(
         services=services_with_fake_attachment_runtime,
         capsys=capsys,
     )
-    manifest = _manifest_by_modality(scan_payload, "audio")
+    manifest = _manifest_by_audio_role(scan_payload, "transcription")
 
     payload = _telemetry_benchmark_payload(
         services=services_with_fake_attachment_runtime,
@@ -772,7 +780,7 @@ def test_optimization_benchmark_suite_logs_combined_results(
         temp_settings,
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
-            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(),
+            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=temp_settings),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
             RuntimeAffinity.MLX_VISION: FakeMLXVisionRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),

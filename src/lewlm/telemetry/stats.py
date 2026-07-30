@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 import wave
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.conversion.service import ConversionService
@@ -127,6 +127,7 @@ from lewlm.telemetry.models import (
     RuntimeSupportPathSummary,
     RuntimeSupportStrategy,
     RuntimeStats,
+    ServingProfileInventory,
     ServingProfileRecommendation,
     TargetPlatformValidation,
     WorkloadOptimizationDefault,
@@ -1939,6 +1940,36 @@ class TelemetryService:
         self.metadata_store.append_benchmark_record(updated_result.model_dump(mode="json"))
         self._persist_benchmark_probe_records(updated_result)
         return updated_result
+
+    def list_serving_profiles(
+        self,
+        *,
+        model_id: str | None = None,
+        capability: str | None = None,
+        limit: int = 50,
+    ) -> ServingProfileInventory:
+        """List stored serving profiles, newest first.
+
+        Reads back what autotune persisted so a caller can see which profiles
+        exist on this host rather than only the one the last run produced.
+        `limit` bounds how many stored profiles are read before `model_id` and
+        `capability` narrow them, so it is a scan window rather than a page size.
+        """
+
+        items: list[ServingProfileRecommendation] = []
+        unreadable_count = 0
+        for payload in self.metadata_store.list_serving_profiles(limit=limit):
+            try:
+                recommendation = ServingProfileRecommendation.model_validate(payload)
+            except ValidationError:
+                unreadable_count += 1
+                continue
+            if model_id is not None and recommendation.model_id != model_id:
+                continue
+            if capability is not None and recommendation.capability != capability:
+                continue
+            items.append(recommendation)
+        return ServingProfileInventory(count=len(items), items=items, unreadable_count=unreadable_count)
 
     async def autotune(
         self,

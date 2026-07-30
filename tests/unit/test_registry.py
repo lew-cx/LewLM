@@ -6,7 +6,13 @@ import time
 from pathlib import Path
 
 from lewlm.core.bootstrap import bootstrap_services
-from lewlm.core.contracts import ConversionStatus, ModelFormat, ModelModality, RuntimeAffinity
+from lewlm.core.contracts import (
+    AudioCapabilityRole,
+    ConversionStatus,
+    ModelFormat,
+    ModelModality,
+    RuntimeAffinity,
+)
 from lewlm.conversion.models import ConversionJobRequest, ConversionPolicy, JobStatus
 
 
@@ -41,6 +47,28 @@ def test_registry_scan_tracks_unchanged_models(
     assert second.discovered_count == 3
     assert second.unchanged_count == 3
     assert second.new_count == 0
+
+
+def test_registry_scan_counts_a_rewritten_manifest_as_updated(
+    temp_settings,
+    sample_models_root: Path,
+) -> None:
+    """A scan rewrites what it discovers, so any rewritten field is an update.
+
+    Counting only fingerprint changes let a scan report `unchanged` while the
+    registry moved under the caller.
+    """
+
+    services = bootstrap_services(temp_settings)
+    first = services.model_registry.scan()
+    stale_manifest = first.manifests[0].model_copy(update={"architecture_family": "stale-family"})
+    services.metadata_store.replace_model_manifests([stale_manifest], stale_source_paths=[])
+
+    second = services.model_registry.scan()
+
+    assert second.updated_count == 1
+    assert second.unchanged_count == 2
+    assert services.model_registry.get_manifest(stale_manifest.model_id).architecture_family != "stale-family"
 
 
 def test_registry_scan_supports_encrypted_persistence(
@@ -99,13 +127,19 @@ def test_registry_scan_detects_embedding_rerank_and_audio_models(
 
     summary = services.model_registry.scan()
 
-    assert summary.discovered_count == 3
+    assert summary.discovered_count == 4
     modalities_by_name = {manifest.display_name: set(manifest.modality) for manifest in summary.manifests}
     assert modalities_by_name["e5-small-embed-mlx"] == {ModelModality.EMBEDDING}
     assert modalities_by_name["bge-reranker-base-mlx"] == {ModelModality.EMBEDDING, ModelModality.RERANK}
     assert modalities_by_name["whisper-mini-audio"] == {ModelModality.AUDIO}
+    assert modalities_by_name["kokoro-mini-tts"] == {ModelModality.AUDIO}
+    audio_roles_by_name = {manifest.display_name: manifest.audio_roles for manifest in summary.manifests}
+    assert audio_roles_by_name["whisper-mini-audio"] == (AudioCapabilityRole.TRANSCRIPTION,)
+    assert audio_roles_by_name["kokoro-mini-tts"] == (AudioCapabilityRole.SPEECH,)
     runtime_affinity_by_name = {manifest.display_name: manifest.runtime_affinity for manifest in summary.manifests}
     assert runtime_affinity_by_name["whisper-mini-audio"] == (RuntimeAffinity.CONVERSION, RuntimeAffinity.MLX_AUDIO)
+    # Published as a bare weights file with no tokenizer or processor, and still runnable.
+    assert runtime_affinity_by_name["kokoro-mini-tts"] == (RuntimeAffinity.MLX_AUDIO,)
 
 
 def test_registry_inventory_prefers_converted_artifacts_after_conversion(

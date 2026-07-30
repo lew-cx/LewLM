@@ -35,6 +35,7 @@ from lewlm.core.contracts import (
     ServiceReadinessState,
     ServiceReadinessSummary,
     build_portable_performance_core_evidence,
+    manifest_supports_audio_capability,
     performance_core_evidence_mode_from_measured_status,
     runtime_support_path_for_affinity,
 )
@@ -1645,7 +1646,11 @@ class ModelRouter:
         if ModelModality.RERANK in manifest.modality:
             capabilities.append(CapabilityName.RERANK)
         if ModelModality.AUDIO in manifest.modality:
-            capabilities.extend((CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH))
+            capabilities.extend(
+                capability
+                for capability in (CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH)
+                if manifest_supports_audio_capability(manifest, capability)
+            )
         ordered = [capability for capability in self._capability_priority if capability in capabilities]
         return tuple(ordered)
 

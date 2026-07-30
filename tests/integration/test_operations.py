@@ -16,6 +16,7 @@ from conftest import (
     FakeMLXAudioRuntime,
     FakeMLXConversionBackend,
     FakeMLXSemanticRuntime,
+    UnavailableMLXAudioRuntime,
     UnavailableMLXTextRuntime,
     UnavailableMLXVisionRuntime,
     set_host_platform,
@@ -23,7 +24,7 @@ from conftest import (
 from lewlm.api.app import create_app
 from lewlm.conversion.models import ConversionJobRequest, JobStatus
 from lewlm.core.bootstrap import bootstrap_services
-from lewlm.core.contracts import CapabilityName, GenerateMessage, GenerateRequest, GenerateResponse, ModelFormat, ModelManifest, RuntimeAffinity
+from lewlm.core.contracts import AudioCapabilityRole, CapabilityName, GenerateMessage, GenerateRequest, GenerateResponse, ModelFormat, ModelManifest, RuntimeAffinity
 from lewlm.core.errors import BackpressureError
 from lewlm.runtime.request_context import reset_application_context, set_application_context
 from lewlm.security.persistence import ENCRYPTED_FILE_MAGIC
@@ -394,6 +395,10 @@ def test_runtime_stats_readiness_reports_external_audio_bridge_surfaces(
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalAudioRuntime(),
+            # The packaged MLX audio path is what `bridge_only` is asserting the
+            # absence of, so it has to be explicitly unavailable. Without this
+            # the assertion only holds on hosts lacking mlx-audio.
+            RuntimeAffinity.MLX_AUDIO: UnavailableMLXAudioRuntime(),
         },
     )
     app = create_app(temp_settings, services=services)
@@ -540,6 +545,54 @@ def test_autotune_endpoint_persists_recommended_serving_profile(
     )
     assert stored_profile is not None
     assert stored_profile["profile_id"] == payload["profile_id"]
+
+
+def test_serving_profiles_endpoint_lists_what_autotune_stored(
+    temp_settings,
+    services_with_fake_attachment_runtime,
+) -> None:
+    """The tuning loop can read back the profiles that exist, not just the last run."""
+
+    app = create_app(temp_settings, services=services_with_fake_attachment_runtime)
+    with TestClient(app) as client:
+        empty_response = client.get("/v1/serving-profiles")
+        scan_response = client.post("/v1/models/scan", json={})
+        vision_model_id = next(
+            manifest["model_id"]
+            for manifest in scan_response.json()["manifests"]
+            if manifest["display_name"] == "qwen2-vl-vision-mlx"
+        )
+        autotune_response = client.post(
+            "/v1/benchmarks/autotune",
+            json={"model_id": vision_model_id, "prompt": "Autotune ping", "workload_class": "single_image"},
+        )
+        listed = client.get("/v1/serving-profiles")
+        filtered_out = client.get("/v1/serving-profiles", params={"model": "not-a-model"})
+
+    assert empty_response.status_code == 200
+    assert empty_response.json()["count"] == 0
+    assert autotune_response.status_code == 200
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["count"] == 1
+    assert payload["unreadable_count"] == 0
+    assert payload["items"][0]["profile_id"] == autotune_response.json()["profile_id"]
+    assert payload["items"][0]["workload_class"] == "single_image"
+    assert filtered_out.json()["count"] == 0
+
+
+@pytest.mark.parametrize("limit", [0, -1, 501])
+def test_serving_profiles_endpoint_rejects_unbounded_scan_limits(
+    temp_settings,
+    services_with_fake_attachment_runtime,
+    limit: int,
+) -> None:
+    app = create_app(temp_settings, services=services_with_fake_attachment_runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/serving-profiles", params={"limit": limit})
+
+    assert response.status_code == 422
 
 
 def test_autotune_endpoint_persists_multimodal_workload_specific_profile(
@@ -942,7 +995,7 @@ def test_runtime_stats_include_request_metrics(app_with_fake_multimodal_runtime,
         audio_model_id = next(
             manifest["model_id"]
             for manifest in manifests
-            if "audio" in manifest["modality"]
+            if "transcription" in manifest["audio_roles"]
         )
 
         embeddings_response = client.post(
@@ -1173,7 +1226,7 @@ def test_runtime_response_cache_reuses_audio_transcription_results(
         audio_model_id = next(
             manifest["model_id"]
             for manifest in manifests
-            if "audio" in manifest["modality"]
+            if "transcription" in manifest["audio_roles"]
         )
 
         first_transcription = client.post(
@@ -1247,7 +1300,7 @@ def test_runtime_response_cache_reuses_audio_speech_results(
         audio_model_id = next(
             manifest["model_id"]
             for manifest in manifests
-            if "audio" in manifest["modality"]
+            if "speech" in manifest["audio_roles"]
         )
 
         first_speech = client.post(
@@ -1391,7 +1444,7 @@ async def test_multimodal_orchestrator_coalesces_concurrent_duplicate_audio_tran
         audio_model_id = next(
             manifest.model_id
             for manifest in manifests
-            if "audio" in manifest.modality
+            if AudioCapabilityRole.TRANSCRIPTION in manifest.audio_roles
         )
 
         first_transcription = asyncio.create_task(
@@ -1451,7 +1504,7 @@ async def test_multimodal_orchestrator_coalesces_concurrent_duplicate_audio_spee
         audio_model_id = next(
             manifest.model_id
             for manifest in manifests
-            if "audio" in manifest.modality
+            if AudioCapabilityRole.SPEECH in manifest.audio_roles
         )
 
         first_speech = asyncio.create_task(

@@ -229,6 +229,7 @@ For that path, `runtime_support_strategy.paths[].performance_core_evidence` is t
 - The MLX runtimes are intentionally Apple Silicon-first.
 - `llamacpp` is the main packaged cross-platform runtime path today and the first-class non-Apple runtime family.
 - Non-Apple `audio_transcription` and `audio_speech` are currently bridge-backed through `external_accelerator`, not packaged through `llamacpp`, and LewLM keeps that bridge-only audio boundary explicit.
+- An audio model claims only the side it serves. Discovery records `audio_roles` on the manifest, so a transcription bundle does not advertise `audio_speech` and a request for the wrong surface is refused rather than failing inside the backend. A bundle discovery cannot classify carries no roles and keeps claiming both.
 - `external_accelerator` remains loopback-only and adapter-backed in this milestone.
 - `external_accelerator` is a bridge to another local server, not proof that LewLM owns or bundles that server.
 - `external_accelerator` only claims vision, audio, embeddings, or rerank when the configured local server satisfies the matching compatibility probe.

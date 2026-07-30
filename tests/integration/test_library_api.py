@@ -19,7 +19,14 @@ from lewlm import LewLM
 from lewlm.cli.main import handle_config
 from lewlm.conversion.models import ConversionPolicy, JobStatus
 from lewlm.core.bootstrap import bootstrap_services
-from lewlm.core.contracts import GenerateAttachment, GenerateMessage, ReasoningVisibility, RuntimeAffinity
+from lewlm.core.contracts import (
+    AudioCapabilityRole,
+    GenerateAttachment,
+    GenerateMessage,
+    ModelModality,
+    ReasoningVisibility,
+    RuntimeAffinity,
+)
 from lewlm.core.errors import PrivacyModeError
 from lewlm.documents.ingest.models import DocumentSourceType
 from lewlm.documents.ir.models import DocumentOutputFormat, ListBlock
@@ -78,14 +85,19 @@ def test_library_facade_supports_embeddable_workflows(
     audio_dir.mkdir(parents=True)
     (audio_dir / "config.json").write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
     (audio_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+    # Transcription and synthesis are different models, so the facade needs one of each.
+    speech_dir = temp_settings.models_dir[0] / "kokoro-mini-tts"
+    speech_dir.mkdir(parents=True)
+    (speech_dir / "config.json").write_text(json.dumps({"model_type": "kokoro"}), encoding="utf-8")
+    (speech_dir / "kokoro-v1_0.safetensors").write_bytes(b"tts-weights")
 
     lewlm = LewLM(services=services_with_fake_runtime_and_conversion)
 
     scan_summary = lewlm.scan_models()
-    assert scan_summary.discovered_count == 4
+    assert scan_summary.discovered_count == 5
 
     inventory = lewlm.inventory()
-    assert inventory.count == 4
+    assert inventory.count == 5
 
     conversion_candidate = next(
         manifest for manifest in inventory.items if manifest.conversion_status.value == "requires_conversion"
@@ -94,8 +106,17 @@ def test_library_facade_supports_embeddable_workflows(
     job = lewlm.wait_for_job(job.job_id)
     assert job.status == JobStatus.COMPLETED
 
-    runnable_model = next(manifest for manifest in lewlm.list_models() if manifest.conversion_status.value == "runnable")
-    audio_model = next(manifest for manifest in lewlm.list_models() if "audio" in {modality.value for modality in manifest.modality})
+    runnable_model = next(
+        manifest
+        for manifest in lewlm.list_models()
+        if manifest.conversion_status.value == "runnable" and ModelModality.TEXT in manifest.modality
+    )
+    audio_model = next(
+        manifest for manifest in lewlm.list_models() if AudioCapabilityRole.TRANSCRIPTION in manifest.audio_roles
+    )
+    speech_model = next(
+        manifest for manifest in lewlm.list_models() if AudioCapabilityRole.SPEECH in manifest.audio_roles
+    )
     chat = lewlm.chat_sync(prompt="Hello from the package API", model_id=runnable_model.model_id)
     transcription = lewlm.transcribe_audio_sync(
         sample_audio_bytes,
@@ -105,7 +126,7 @@ def test_library_facade_supports_embeddable_workflows(
     )
     speech = lewlm.synthesize_speech_sync(
         "Hello from the package API",
-        model_id=audio_model.model_id,
+        model_id=speech_model.model_id,
         voice="alloy",
         audio_format="wav",
     )
@@ -150,7 +171,7 @@ def test_library_facade_supports_embeddable_workflows(
     assert "total_memory_mb" in health["readiness"]["host_platform"]
     assert "total_memory_source" in health["readiness"]["host_platform"]
     assert "total_memory_reason" in health["readiness"]["host_platform"]
-    assert health["storage"]["model_count"] == 4
+    assert health["storage"]["model_count"] == 5
 
     runtime_stats = lewlm.runtime_stats_sync()
     assert runtime_stats.runtime_policy == "balanced"

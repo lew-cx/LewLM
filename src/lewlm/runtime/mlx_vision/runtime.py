@@ -483,11 +483,16 @@ class MLXVisionRuntime(ManagedTextRuntime):
         module = import_module("mlx_vlm")
         generate = resolve_backend_callable(module, ("generate", "chat", "generate_text"))
         client = self._clients[request.model_id]
-        prompt = _messages_to_prompt(request.messages)
         cache_bridge, image_paths, cache_lookup_source = self._build_encoder_cache_bridge(
             request=request,
             client=client,
             callable_obj=generate,
+        )
+        prompt = _vision_chat_prompt(
+            module=module,
+            client=client,
+            messages=request.messages,
+            num_images=len(image_paths),
         )
         callable_obj, callable_key, provided_values, passthrough_keys = self._generation_invocation(
             request=request,
@@ -523,11 +528,16 @@ class MLXVisionRuntime(ManagedTextRuntime):
         module = import_module("mlx_vlm")
         generate_stream = resolve_backend_callable(module, ("generate_stream", "stream_generate"))
         client = self._clients[request.model_id]
-        prompt = _messages_to_prompt(request.messages)
         cache_bridge, image_paths, cache_lookup_source = self._build_encoder_cache_bridge(
             request=request,
             client=client,
             callable_obj=generate_stream,
+        )
+        prompt = _vision_chat_prompt(
+            module=module,
+            client=client,
+            messages=request.messages,
+            num_images=len(image_paths),
         )
         callable_obj, callable_key, provided_values, passthrough_keys = self._generation_invocation(
             request=request,
@@ -953,13 +963,18 @@ class MLXVisionRuntime(ManagedTextRuntime):
     def _prepare_native_batch_inputs(
         self,
         requests: Sequence[GenerateRequest],
-    ) -> tuple[list[str], list[str] | None, str | None]:
-        prompt_values: list[str] = []
+    ) -> tuple[list[Any], list[str] | None, str | None]:
+        # `batch_generate` templates every prompt it is handed, so it receives the raw
+        # messages while the single-request paths template them through `_vision_chat_prompt`.
+        templates_prompts = _resolve_mlx_vlm_chat_template(import_module("mlx_vlm")) is not None
+        prompt_values: list[Any] = []
         image_inputs: list[str] = []
         saw_images = False
         saw_text_only = False
         for request in requests:
-            prompt_values.append(_messages_to_prompt(request.messages))
+            prompt_values.append(
+                _chat_template_messages(request.messages) if templates_prompts else _messages_to_prompt(request.messages),
+            )
             image_paths, modality, _, _, _, bundle_count = _request_image_paths(request)
             if not image_paths:
                 saw_text_only = True
@@ -1150,6 +1165,49 @@ def _messages_to_prompt(messages: list[Any]) -> str:
         rendered.append(f"{message.role}: {message.content}")
     rendered.append("assistant:")
     return "\n".join(rendered)
+
+
+def _chat_template_messages(messages: list[Any]) -> list[dict[str, str]]:
+    return [{"role": message.role, "content": message.content} for message in messages]
+
+
+def _resolve_mlx_vlm_chat_template(module: Any) -> Any | None:
+    candidate = getattr(module, "apply_chat_template", None)
+    if callable(candidate):
+        return candidate
+    try:
+        prompt_utils = import_module("mlx_vlm.prompt_utils")
+    except ImportError:
+        return None
+    candidate = getattr(prompt_utils, "apply_chat_template", None)
+    return candidate if callable(candidate) else None
+
+
+def _vision_chat_prompt(
+    *,
+    module: Any,
+    client: dict[str, Any],
+    messages: list[Any],
+    num_images: int,
+) -> str:
+    """Render messages the way the backend expects them for single-request generation.
+
+    `batch_generate` applies the model chat template to whatever prompt it is handed,
+    while `generate` and `stream_generate` decode the prompt verbatim. Templating here
+    keeps chat, streaming, and batched chat on the same prompt for the same messages.
+    """
+    apply_chat_template = _resolve_mlx_vlm_chat_template(module)
+    processor = client.get("processor")
+    config = getattr(client.get("model"), "config", None)
+    if apply_chat_template is None or processor is None or config is None:
+        return _messages_to_prompt(messages)
+    rendered = apply_chat_template(
+        processor,
+        config,
+        _chat_template_messages(messages),
+        num_images=num_images,
+    )
+    return rendered if isinstance(rendered, str) else _messages_to_prompt(messages)
 
 
 def _mlx_sampling_options(temperature: float) -> dict[str, Any]:

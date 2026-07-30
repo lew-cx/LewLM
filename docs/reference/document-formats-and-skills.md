@@ -31,6 +31,53 @@ Supporting structures include:
 - citations
 - per-block metadata
 
+## Style tokens
+
+`DocumentIR.style_tokens` declares document-level tokens. Sections, blocks,
+headers, footers, and citations reference them by name through their own
+`style_tokens` lists, and a section's references cascade to its blocks.
+
+Only the reserved names below change rendered output. Any other declared token
+is accepted, validated for nothing beyond a non-empty unique name, echoed in
+JSON, and never reaches a renderer — that keeps ingestion provenance tokens such
+as `code`, `ocr`, and source DOCX paragraph style names inert. LewLM does not
+accept raw CSS or executable styling: a reserved token value is a validated
+colour, a validated font family, a bounded point size, or a closed keyword.
+
+| Reserved name | Value grammar | Default element scope |
+| --- | --- | --- |
+| `body_color` | `#RRGGBB` | body content |
+| `body_font` | font family of letters, digits, spaces, `.`, `_`, `-` (≤64 chars) | body content |
+| `body_font_size_pt` | number between 4 and 96 | body content |
+| `heading_color` | `#RRGGBB` | headings |
+| `heading_font` | font family | headings |
+| `heading_font_size_pt` | number between 4 and 96 | headings |
+| `surface_color` | `#RRGGBB` | callouts |
+| `accent_color` | `#RRGGBB` | callout rules and table header fills |
+| `emphasis` | `normal`, `bold`, `italic`, `bold_italic` | referenced elements only |
+
+`applies_to` restricts a token to one element class: `document` (or omitted)
+keeps the default scope, and `heading`, `paragraph`, `list`, `table`, `callout`,
+`image`, `citation`, `header`, or `footer` narrows it to that class. An element
+that references a token by name applies it regardless of scope. Body roles
+resolve before heading roles, so a heading wins when an element opts into both.
+
+### Per-format behaviour
+
+| Format | Colour | Font family | Point size | Emphasis | Accent |
+| --- | --- | --- | --- | --- | --- |
+| `text` | inert | inert | inert | inert | inert |
+| `markdown` | inert | inert | inert | `**`/`*` wrapping | inert |
+| `json` | echoed verbatim, not interpreted | echoed | echoed | echoed | echoed |
+| `csv` | inert | inert | inert | inert | inert |
+| `docx` | run font colour and `w:shd` shading | run font name | run font size | run bold/italic | table header cell shading |
+| `pdf` | CSS colour and background | CSS font family | CSS font size | CSS weight/style | callout rule and table header fill |
+| `xlsx` | cell font colour and solid fill | cell font name | cell font size | cell bold/italic | table header cell fill |
+
+PDF style support above describes the WeasyPrint path. The ReportLab fallback
+honours colour, point size, emphasis, and accent fills but ignores font family
+tokens because it can only lay out its built-in font set.
+
 ## Built-in skill catalog
 
 | Skill | Primary use | Example file |
@@ -62,3 +109,5 @@ Document validation enforces:
 - at least one block per section
 - table row widths that match the header width
 - image paths that resolve inside allowed roots
+- unique, non-empty style-token names
+- reserved style-token values and scopes that match the published vocabulary

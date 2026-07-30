@@ -11,6 +11,12 @@ from lewlm.documents.validators.ir import DocumentIRValidator
 
 
 class CsvDocumentRenderer(DocumentRenderer):
+    """Render CSV.
+
+    CSV carries tabular values only, so every style token is inert in this
+    format by contract.
+    """
+
     output_format = DocumentOutputFormat.CSV
     media_type = "text/csv"
     file_extension = ".csv"

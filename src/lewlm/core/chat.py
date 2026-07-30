@@ -1888,7 +1888,21 @@ class ChatOrchestrator:
         # backlog is only drained once generation ends and the client sees the
         # tail arrive in one burst. Blocking `put` paces decode to delivery.
         stream_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=1)
-        stream_session = self._stream_session_from_queue(context=context, queue=stream_queue)
+        producer_task: asyncio.Task[None] | None = None
+
+        async def cancel_producer() -> None:
+            """Stop decode when the sole consumer abandons this stream."""
+
+            if producer_task is None or producer_task.done():
+                return
+            producer_task.cancel()
+            await asyncio.gather(producer_task, return_exceptions=True)
+
+        stream_session = self._stream_session_from_queue(
+            context=context,
+            queue=stream_queue,
+            on_consumer_close=cancel_producer,
+        )
 
         async def iterator() -> None:
             generate_started_at = time.perf_counter()
@@ -2061,7 +2075,7 @@ class ChatOrchestrator:
                     companion_manifests=context.companion_manifests,
                 )
 
-        asyncio.create_task(iterator())
+        producer_task = asyncio.create_task(iterator())
         return stream_session
 
     async def _execute_stream_batch(

@@ -147,7 +147,7 @@ def test_end_to_end_external_models_exercise_all_expected_model_folders(
                 assert warm_response.json()["status"] == "warmed"
                 warm_runtime = warm_response.json()["runtime"]
                 if expected["runtime_affinity"] == ["mlx_vision"] and "multimodal" in expected["modality"]:
-                    assert warm_runtime == "fake_mlx_semantic"
+                    assert warm_runtime == "fake_mlx_vision"
 
                 prompt = f"Confirm bundled fallback coverage for {folder_name}."
                 chat_response = client.post(
@@ -159,8 +159,10 @@ def test_end_to_end_external_models_exercise_all_expected_model_folders(
                 )
                 assert chat_response.status_code == 200
                 assert chat_response.json()["model"] == manifest["model_id"]
-                expected_response_prefix = "Vision echo: " if warm_runtime == "fake_mlx_vision" else "Echo: "
-                assert chat_response.json()["choices"][0]["message"]["content"] == f"{expected_response_prefix}{prompt}"
+                # This is a text-only chat request, so routing may use the
+                # semantic text runtime even when explicit warming selected the
+                # manifest's multimodal MLX affinity.
+                assert chat_response.json()["choices"][0]["message"]["content"] == f"Echo: {prompt}"
 
                 unload_response = client.post(f"/v1/models/{manifest['model_id']}/unload")
                 assert unload_response.status_code == 200
@@ -215,7 +217,7 @@ def test_end_to_end_external_multimodal_model_converts_and_handles_multimodal_io
         first_scan = client.post("/v1/models/scan", json={})
         assert first_scan.status_code == 200
         first_payload = first_scan.json()
-        assert first_payload["discovered_count"] == 8
+        assert first_payload["discovered_count"] == 9
 
         source_model_id = next(
             manifest["model_id"]
@@ -242,7 +244,7 @@ def test_end_to_end_external_multimodal_model_converts_and_handles_multimodal_io
         second_scan = client.post("/v1/models/scan", json={})
         assert second_scan.status_code == 200
         second_payload = second_scan.json()
-        assert second_payload["discovered_count"] == 10
+        assert second_payload["discovered_count"] == 11
 
         converted_multimodal_manifest = next(
             manifest

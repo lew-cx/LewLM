@@ -757,6 +757,109 @@ def test_mlx_text_runtime_restores_persisted_prefix_cache(monkeypatch, tmp_path:
     assert snapshot["persistent_multi_context_cache"]["metrics"]["persisted_page_count"] == 2
 
 
+def test_mlx_text_runtime_prefills_prompt_cache_through_generate_step_and_forwards_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_tokenizer = FakeTokenizer()
+    captured: dict[str, list[dict[str, object]]] = {"prefill": [], "generate": [], "stream": []}
+
+    def fake_load(*, path_or_hf_repo: str):
+        return f"model:{path_or_hf_repo}", fake_tokenizer
+
+    # Mirrors the installed mlx-lm signatures: prompt caches ride in `**kwargs`, and the
+    # completion entrypoints raise rather than return when asked for zero tokens.
+    def fake_generate(model, tokenizer, prompt, verbose=False, **kwargs):
+        assert kwargs.get("max_tokens") != 0, "completion entrypoints cannot prefill a cache"
+        captured["generate"].append({"prompt": list(prompt), "kwargs": kwargs})
+        return {"text": "cached output", "usage": {"prompt_tokens": len(list(prompt)), "completion_tokens": 1}}
+
+    def fake_generate_stream(model, tokenizer, prompt, max_tokens=256, **kwargs):
+        assert max_tokens != 0, "completion entrypoints cannot prefill a cache"
+        captured["stream"].append({"prompt": list(prompt), "max_tokens": max_tokens, "kwargs": kwargs})
+        return [{"text": "cached"}, {"text": " stream"}]
+
+    def fake_generate_step(prompt, model, *, max_tokens=256, prompt_cache=None, prefill_step_size=2048, **kwargs):
+        captured["prefill"].append(
+            {
+                "prompt": list(prompt),
+                "model": model,
+                "max_tokens": max_tokens,
+                "prompt_cache": prompt_cache,
+                "prefill_step_size": prefill_step_size,
+            },
+        )
+        if isinstance(prompt_cache, dict):
+            prompt_cache["tokens"] = [*list(prompt_cache.get("tokens", [])), *list(prompt)]
+        for _ in range(max_tokens):
+            yield 0, None
+
+    fake_module = SimpleNamespace(
+        load=fake_load,
+        generate=fake_generate,
+        generate_stream=fake_generate_stream,
+        generate_step=fake_generate_step,
+    )
+
+    def fake_import(name: str):
+        if name in {"mlx_lm", "mlx_lm.generate"}:
+            return fake_module
+        if name == "mlx_lm.models.cache":
+            return SimpleNamespace(
+                make_prompt_cache=lambda model: {"tokens": []},
+                trim_prompt_cache=lambda cache, trim_count: None,
+            )
+        if name == "mlx.core":
+            return SimpleNamespace(array=list)
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.mlx_text.runtime.import_module", fake_import)
+
+    runtime = MLXTextRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    manifest = _manifest(model_id="prefill-model", modality=(ModelModality.TEXT,))
+    request = GenerateRequest(
+        model_id=manifest.model_id,
+        messages=[GenerateMessage(role="user", content="hello")],
+        max_tokens=8,
+        temperature=0.0,
+    )
+
+    asyncio.run(runtime.load_model(manifest))
+    asyncio.run(runtime.generate(request))
+
+    prompt_tokens = fake_tokenizer.encode(
+        fake_tokenizer.apply_chat_template(
+            [{"role": "user", "content": "hello"}],
+            tokenize=False,
+            add_generation_prompt=True,
+        ),
+    )
+
+    assert len(captured["prefill"]) == 1
+    prefill = captured["prefill"][0]
+    assert prefill["prompt"] == prompt_tokens[:-1]
+    assert prefill["max_tokens"] == 0
+    assert prefill["prefill_step_size"] == runtime.settings.prefill_token_batch_size
+    assert request.metadata["prefix_cache"]["prefilled_uncached_tokens"] == len(prompt_tokens) - 1
+    assert request.metadata["mlx_acceleration"]["phase_details"]["prefill"]["phase"] == "prefill"
+
+    # Generation resumes from the warmed cache, so it must receive both the trailing
+    # token and the cache the prefill just filled.
+    assert len(captured["generate"]) == 1
+    assert captured["generate"][0]["prompt"] == prompt_tokens[-1:]
+    assert captured["generate"][0]["kwargs"]["prompt_cache"] is prefill["prompt_cache"]
+    assert captured["generate"][0]["kwargs"]["max_tokens"] == 8
+
+    async def collect() -> list[str]:
+        return [chunk async for chunk in runtime.stream_generate(request)]
+
+    assert asyncio.run(collect()) == ["cached", " stream"]
+    assert len(captured["stream"]) == 1
+    assert captured["stream"][0]["prompt"] == prompt_tokens[-1:]
+    assert captured["stream"][0]["max_tokens"] == 8
+    assert isinstance(captured["stream"][0]["kwargs"]["prompt_cache"], dict)
+
+
 def test_mlx_text_runtime_exposes_prefix_cache_admission_preview(monkeypatch, tmp_path: Path) -> None:
     fake_tokenizer = FakeTokenizer()
 

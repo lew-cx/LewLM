@@ -175,6 +175,36 @@ class CapabilityName(str, Enum):
     CONVERSION = "conversion"
 
 
+class AudioCapabilityRole(str, Enum):
+    """Which side of the audio contract a model can actually serve."""
+
+    TRANSCRIPTION = "transcription"
+    SPEECH = "speech"
+
+
+#: The audio role each audio capability requires of a model.
+AUDIO_CAPABILITY_ROLES: dict[CapabilityName, AudioCapabilityRole] = {
+    CapabilityName.AUDIO_TRANSCRIPTION: AudioCapabilityRole.TRANSCRIPTION,
+    CapabilityName.AUDIO_SPEECH: AudioCapabilityRole.SPEECH,
+}
+
+
+def manifest_supports_audio_capability(manifest: "ModelManifest", capability: CapabilityName) -> bool:
+    """Report whether `manifest` claims the audio role `capability` requires.
+
+    An audio bundle that discovery could not classify carries no roles, and
+    every audio capability stays claimable for it — the same answer LewLM gave
+    before roles existed.
+    """
+
+    role = AUDIO_CAPABILITY_ROLES.get(capability)
+    if role is None:
+        return True
+    if not manifest.audio_roles:
+        return True
+    return role in manifest.audio_roles
+
+
 class CapabilityReadinessState(str, Enum):
     READY = "ready"
     NO_MODELS = "no_models"
@@ -247,6 +277,9 @@ class ModelManifest(BaseModel):
     architecture_family: str
     architecture_subtype: ArchitectureSubtype = ArchitectureSubtype.UNKNOWN
     modality: tuple[ModelModality, ...]
+    # Which audio capabilities the bundle can serve. Empty when the model is not
+    # audio, or when discovery could not tell transcription from synthesis.
+    audio_roles: tuple[AudioCapabilityRole, ...] = Field(default_factory=tuple)
     source_path: str
     format_type: ModelFormat
     quantization: str | None = None
@@ -1668,6 +1701,40 @@ class AudioSpeechResponse(BaseModel):
     media_type: str
     voice: str | None = None
     duration_seconds: float | None = None
+
+
+class AudioVoiceSource(str, Enum):
+    """Where a synthesis voice was found."""
+
+    BUNDLE = "bundle"
+    BACKEND_CACHE = "backend_cache"
+
+
+class AudioVoice(BaseModel):
+    """A synthesis voice the host can actually resolve right now.
+
+    Voices are host state, not manifest state: a backend may resolve a voice
+    from its own download cache rather than from the model directory, so this
+    is reported per host and per model instead of being declared up front, and
+    each voice names the file it was found in.
+    """
+
+    voice_id: str
+    source: AudioVoiceSource
+    source_path: str | None = None
+
+
+class AudioVoiceInventory(BaseModel):
+    """Voices available for one model on this host."""
+
+    model_id: str
+    runtime_name: str | None = None
+    voices: list[AudioVoice] = Field(default_factory=list)
+    # True when LewLM could enumerate this runtime's voices at all. A backend
+    # may still accept a name it can fetch on demand, so a listed voice is a
+    # guarantee while an absent one is not a refusal.
+    enumerable: bool = True
+    reason: str | None = None
 
 
 @runtime_checkable

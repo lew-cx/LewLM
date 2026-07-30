@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,7 +67,9 @@ class ModelRegistry:
                 "roots": [str(root) for root in resolved_roots],
             },
         )
-        existing_by_source = dict(self.metadata_store.list_model_manifest_records())
+        existing_by_source = {
+            manifest.source_path: manifest for manifest in self.metadata_store.list_model_manifests()
+        }
         manifests = discover_models(resolved_roots)
         discovered_sources = {manifest.source_path for manifest in manifests}
 
@@ -74,12 +77,16 @@ class ModelRegistry:
         updated_count = 0
         unchanged_count = 0
         for manifest in manifests:
-            existing_fingerprint = existing_by_source.get(manifest.source_path)
-            if existing_fingerprint is None:
+            existing_manifest = existing_by_source.get(manifest.source_path)
+            if existing_manifest is None:
                 new_count += 1
-            elif existing_fingerprint == manifest.fingerprint:
+            elif _manifest_change_signature(existing_manifest) == _manifest_change_signature(manifest):
                 unchanged_count += 1
             else:
+                # A scan rewrites every manifest it discovers, so anything the
+                # rewrite would change counts as an update — not just a changed
+                # fingerprint. Otherwise a scan reports no change while the
+                # registry moves under the caller.
                 updated_count += 1
 
         stale_sources = [
@@ -127,7 +134,12 @@ class ModelRegistry:
         requested_roots = tuple(Path(root).expanduser().resolve(strict=False) for root in (roots or self.settings.models_dir))
         if roots is None:
             requested_roots = (*requested_roots, *self._conversion_artifact_scan_roots())
-        requested_roots = tuple(dict.fromkeys(requested_roots))
+        unique_roots = tuple(dict.fromkeys(requested_roots))
+        requested_roots = tuple(
+            root
+            for root in unique_roots
+            if not any(root != other and root.is_relative_to(other) for other in unique_roots)
+        )
         for root in requested_roots:
             if not root.exists():
                 raise ModelScanError("Model root does not exist.", details={"path": str(root)})
@@ -311,6 +323,20 @@ class ModelRegistry:
             except ValueError:
                 continue
         return False
+
+
+def _manifest_change_signature(manifest: ModelManifest) -> str:
+    """Serialize the parts of a manifest a rescan is expected to preserve.
+
+    Discovery timestamps move on every scan, so they are excluded; everything
+    else is compared, because everything else is what a caller reads.
+    """
+
+    payload = manifest.model_dump(mode="json", exclude={"discovered_at"})
+    validation = payload.get("last_validation_result")
+    if isinstance(validation, dict):
+        validation.pop("checked_at", None)
+    return json.dumps(payload, sort_keys=True, default=str)
 
 
 def _slugify_manifest_selector(value: str) -> str:

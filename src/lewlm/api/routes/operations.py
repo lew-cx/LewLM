@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from lewlm.api.dependencies import get_services
@@ -13,7 +15,12 @@ from lewlm.runtime.identity import RuntimeInfo
 from lewlm.runtime.residency import ModelResidencySnapshot
 from lewlm.runtime.operations import LifecycleOperationRecord
 from lewlm.security.authorization import LifecycleCapability, request_api_credential
-from lewlm.telemetry.stats import CacheStats, RuntimeStats, ServingProfileRecommendation
+from lewlm.telemetry.stats import (
+    CacheStats,
+    RuntimeStats,
+    ServingProfileInventory,
+    ServingProfileRecommendation,
+)
 
 
 router = APIRouter(tags=["operations"])
@@ -97,6 +104,27 @@ def cluster_stats(request: Request) -> ClusterStatus:
 
     services = get_services(request)
     return services.cluster_service.status()
+
+
+@router.get("/v1/serving-profiles", response_model=ServingProfileInventory)
+def list_serving_profiles(
+    request: Request,
+    model: str | None = None,
+    capability: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> ServingProfileInventory:
+    """List serving profiles stored on this host, newest first.
+
+    `limit` bounds the stored profiles read before `model` and `capability`
+    narrow them, so it is a scan window rather than a page size.
+    """
+
+    services = get_services(request)
+    return services.telemetry_service.list_serving_profiles(
+        model_id=model,
+        capability=capability,
+        limit=limit,
+    )
 
 
 @router.post("/v1/benchmarks/autotune", response_model=ServingProfileRecommendation)

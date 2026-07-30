@@ -1260,6 +1260,16 @@ class UnavailableMLXVisionRuntime(FakeMLXVisionRuntime):
         return {}
 
 
+class UnavailableMLXAudioRuntime(FakeMLXAudioRuntime):
+    name = "unavailable_mlx_audio"
+
+    def _check_environment(self) -> tuple[bool, str | None]:
+        return False, "Disabled for deterministic test coverage."
+
+    def performance_feature_snapshot(self) -> dict[str, object]:
+        return {}
+
+
 class FakeExternalSemanticRuntime(FakeMLXSemanticRuntime):
     name = "local_external_adapter"
     affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
@@ -1685,6 +1695,20 @@ def sample_multimodal_models_root(temp_settings: LewLMSettings) -> Path:
     )
     (audio_dir / "processor_config.json").write_text("{}", encoding="utf-8")
 
+    # A synthesis bundle beside the transcription one, so audio routing has to
+    # pick a side rather than being right by having only one candidate. Laid
+    # out as published: model-named weights, no tokenizer, no processor.
+    speech_dir = root / "kokoro-mini-tts"
+    speech_dir.mkdir(parents=True)
+    (speech_dir / "config.json").write_text(
+        json.dumps({"model_type": "kokoro", "sample_rate": 24000}),
+        encoding="utf-8",
+    )
+    (speech_dir / "kokoro-v1_0.safetensors").write_bytes(b"tts-weights")
+    voices_dir = speech_dir / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "af_heart.safetensors").write_bytes(b"voice-pack")
+
     return root
 
 
@@ -1869,6 +1893,10 @@ def services_with_fake_external_vision_runtime(
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.EXTERNAL_ACCELERATOR: FakeExternalVisionRuntime(),
             RuntimeAffinity.MLX_TEXT: UnavailableMLXTextRuntime(settings=temp_settings),
+            # The packaged MLX vision path is the bridge's competitor here, so it
+            # has to be explicitly unavailable. Without this the assertion only
+            # holds on hosts where mlx-vlm happens not to be installed.
+            RuntimeAffinity.MLX_VISION: UnavailableMLXVisionRuntime(),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
     )

@@ -781,6 +781,84 @@ def test_mlx_vision_runtime_batch_generate_falls_back_for_frame_bundle_requests(
     )
 
 
+def test_mlx_vision_runtime_templates_single_request_prompts_like_the_batched_path(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    fake_model = SimpleNamespace(config=SimpleNamespace(model_type="gemma4"))
+
+    def fake_load(*, path_or_hf_repo: str, **kwargs):
+        return fake_model, "vision-processor"
+
+    def fake_apply_chat_template(processor, config, prompt, *, num_images=0, **kwargs):
+        captured.setdefault("templated", []).append((processor, config, prompt, num_images))  # type: ignore[union-attr]
+        turns = "".join(f"<turn>{message['role']}\n{message['content']}</turn>" for message in prompt)
+        return f"{turns}<turn>model\n"
+
+    def fake_generate(*, model, processor, prompt, image=None, verbose=False, **kwargs):
+        captured["generate_prompt"] = prompt
+        return SimpleNamespace(text="chat output")
+
+    def fake_stream_generate(*, model, processor, prompt, image=None, **kwargs):
+        captured["stream_prompt"] = prompt
+        return [SimpleNamespace(text="stream output")]
+
+    def fake_batch_generate(*, model, processor, prompts, **kwargs):
+        captured["batch_prompts"] = prompts
+        return SimpleNamespace(texts=["batch output"])
+
+    fake_module = SimpleNamespace(
+        load=fake_load,
+        generate=fake_generate,
+        stream_generate=fake_stream_generate,
+        batch_generate=fake_batch_generate,
+        apply_chat_template=fake_apply_chat_template,
+    )
+    monkeypatch.setattr("lewlm.runtime.mlx_vision.runtime.import_module", lambda name: fake_module)
+
+    runtime = MLXVisionRuntime()
+    manifest = _manifest()
+
+    def build_request() -> GenerateRequest:
+        return GenerateRequest(
+            model_id=manifest.model_id,
+            messages=[
+                GenerateMessage(role="user", content="what colour is the sky"),
+                GenerateMessage(role="assistant", content="blue"),
+                GenerateMessage(role="user", content="and at night"),
+            ],
+            max_tokens=16,
+            temperature=0.0,
+        )
+
+    async def collect() -> list[str]:
+        return [chunk async for chunk in runtime.stream_generate(build_request())]
+
+    asyncio.run(runtime.load_model(manifest))
+    asyncio.run(runtime.generate(build_request()))
+    assert asyncio.run(collect()) == ["stream output"]
+    asyncio.run(runtime.generate_batch([build_request()]))
+
+    expected_messages = [
+        {"role": "user", "content": "what colour is the sky"},
+        {"role": "assistant", "content": "blue"},
+        {"role": "user", "content": "and at night"},
+    ]
+    expected_prompt = (
+        "<turn>user\nwhat colour is the sky</turn>"
+        "<turn>assistant\nblue</turn>"
+        "<turn>user\nand at night</turn>"
+        "<turn>model\n"
+    )
+    # Chat and streaming template the messages themselves; `batch_generate` templates
+    # whatever it is handed, so it receives the same messages untemplated.
+    assert captured["generate_prompt"] == expected_prompt
+    assert captured["stream_prompt"] == expected_prompt
+    assert captured["batch_prompts"] == [expected_messages]
+    assert captured["templated"] == [
+        ("vision-processor", fake_model.config, expected_messages, 0),
+        ("vision-processor", fake_model.config, expected_messages, 0),
+    ]
+
+
 def _manifest() -> ModelManifest:
     return ModelManifest(
         model_id="vision-model",

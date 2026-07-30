@@ -21,6 +21,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | `DELETE` | `/v1/model-lifecycle/operations/{operation_id}` | cancel a pending/running lifecycle operation |
 | `GET` | `/v1/jobs/{job_id}` | background job status |
 | `POST` | `/v1/benchmarks/autotune` | serving-profile recommendation |
+| `GET` | `/v1/serving-profiles` | stored serving profiles, newest first (`model`, `capability`, `limit` from 1 to 500) |
 | `GET` | `/v1/cluster/stats` | experimental cluster status |
 
 ### LewLM middleware evidence
@@ -80,7 +81,10 @@ Features:
 | `POST` | `/v1/rerank` | rerank candidate documents |
 | `POST` | `/v1/audio/transcriptions` | audio transcription via JSON or multipart |
 | `POST` | `/v1/audio/speech` | speech synthesis |
+| `GET` | `/v1/audio/voices` | synthesis voices resolvable for a model on this host |
 | `POST` | `/v1/tokenize/count` | model-accurate token count and deterministic truncation boundary |
+
+Audio capability is per model, not per runtime: a manifest carries `audio_roles`, and the inventory's `ready_capabilities` names only the side a model serves, so a synthesis request against a transcription model is a `routing_error` rather than a `500`. `GET /v1/audio/voices` reports the voices a synthesis model can resolve **on this host**, since a backend may keep its voice packs in its own download cache rather than in the model directory. A listed voice is a guarantee; an absent one is not a refusal, because a backend may fetch a name on demand.
 
 ### Documents, tools, and skills
 

@@ -20,6 +20,7 @@ from lewlm.conversion.models import (
 )
 from lewlm.core.contracts import (
     ArchitectureSubtype,
+    AudioCapabilityRole,
     ConversionStatus,
     ExternalQuantizerReference,
     LayerQuantizationOverride,
@@ -45,6 +46,49 @@ ONNX_GENAI_CONFIG_FILENAMES = ("genai_config.json",)
 QUANTIZATION_PROFILE_FILENAMES = (QUANTIZATION_PROFILE_METADATA_FILENAME, "quantization_profile.json")
 DISTRIBUTED_PIPELINE_FILENAMES = ("distributed_pipeline.json",)
 AUDIO_KEYWORDS = {"asr", "audio", "bark", "kokoro", "parler", "speech", "stt", "transcribe", "tts", "wav2vec", "whisper", "xtts"}
+# Which side of the audio contract a bundle serves. Checked against the same
+# identifiers that decide the audio modality, so a model that names itself is
+# classified without loading it.
+AUDIO_TRANSCRIPTION_KEYWORDS = {
+    "asr",
+    "conformer",
+    "distil-whisper",
+    "moonshine",
+    "parakeet",
+    "speech2text",
+    "speech_to_text",
+    "speech-to-text",
+    "speechtotext",
+    "stt",
+    "transcribe",
+    "transcription",
+    "wav2vec",
+    "whisper",
+}
+AUDIO_SPEECH_KEYWORDS = {
+    "bark",
+    "chatterbox",
+    "csm",
+    "dia",
+    "kokoro",
+    "orpheus",
+    "outetts",
+    "parler",
+    "sesame",
+    "spark-tts",
+    "styletts",
+    "text2speech",
+    "text_to_speech",
+    "text-to-speech",
+    "texttospeech",
+    "tts",
+    "vits",
+    "vocoder",
+    # Named after a transcription family but synthesizes, so matching both
+    # keyword sets leaves it claiming both rather than being refused wrongly.
+    "whisperspeech",
+    "xtts",
+}
 VISION_KEYWORDS = {"fuyu", "idefics", "llava", "moondream", "pixtral", "qwen2-vl", "vision", "vl"}
 EMBEDDING_KEYWORDS = {"bge", "e5", "embed", "embedding", "gte"}
 RERANK_KEYWORDS = {"rerank", "reranker"}
@@ -72,6 +116,14 @@ def discover_models(roots: Iterable[Path]) -> list[ModelManifest]:
     manifests: list[ModelManifest] = []
     for root in roots:
         manifests.extend(_discover_root(root))
+    # Overlapping roots can encounter the exact same bundle more than once
+    # (for example a cache root plus a converted artifact below that cache).
+    # The metadata store keys manifests by source path, so preserve the first
+    # discovery instead of manufacturing duplicate model ids for one source.
+    unique_by_source: dict[str, ModelManifest] = {}
+    for manifest in manifests:
+        unique_by_source.setdefault(manifest.source_path, manifest)
+    manifests = list(unique_by_source.values())
     manifests = _ensure_unique_model_ids(manifests)
     manifests.sort(key=lambda manifest: (manifest.display_name.casefold(), manifest.model_id))
     return manifests
@@ -96,7 +148,7 @@ def _discover_root(root: Path) -> list[ModelManifest]:
         conversion_output = _load_conversion_output_metadata(path, file_names)
         config_data = _load_json(path / "config.json") if "config.json" in file_names else {}
 
-        bundle_format = _detect_bundle_format(file_names)
+        bundle_format = _detect_bundle_format(file_names, path=path, config_data=config_data)
         if bundle_format is not None:
             manifests.append(
                 _build_directory_manifest(
@@ -120,8 +172,14 @@ def _discover_root(root: Path) -> list[ModelManifest]:
     return manifests
 
 
-def _detect_bundle_format(file_names: set[str]) -> ModelFormat | None:
+def _detect_bundle_format(
+    file_names: set[str],
+    *,
+    path: Path | None = None,
+    config_data: dict[str, Any] | None = None,
+) -> ModelFormat | None:
     normalized_names = {name.casefold() for name in file_names}
+    config_data = config_data or {}
     if {"adapter_config.json"} <= file_names and any(name.startswith("adapter_model") for name in file_names):
         return ModelFormat.ADAPTER_BUNDLE
     if any(name in normalized_names for name in ONNX_GENAI_CONFIG_FILENAMES) or (
@@ -135,6 +193,20 @@ def _detect_bundle_format(file_names: set[str]) -> ModelFormat | None:
         return ModelFormat.ONNX_GENAI
     if "config.json" in file_names and any(name in {"weights.safetensors", "weights.npz"} for name in file_names):
         return ModelFormat.MLX
+    if (
+        QUANTIZATION_PROFILE_METADATA_FILENAME in file_names
+        and any(name.endswith((".safetensors", ".npz")) for name in normalized_names)
+    ):
+        # LewLM wrote this quantization profile when it produced the bundle, so
+        # the directory is conversion output rather than a fresh source to
+        # convert again — even though its weights are sharded like the original.
+        return ModelFormat.MLX
+    if "jang_config.json" in normalized_names and any(
+        name.endswith((".safetensors", ".npz")) for name in normalized_names
+    ):
+        # JANG bundles are MLX-native sharded outputs. Their Hugging Face-shaped
+        # tokenizer and processor files describe inputs, not the weight runtime.
+        return ModelFormat.MLX
     if "config.json" in file_names and (
         any(name.endswith(".safetensors") for name in file_names)
         or any(name.endswith(".bin") for name in file_names)
@@ -144,9 +216,31 @@ def _detect_bundle_format(file_names: set[str]) -> ModelFormat | None:
         or "generation_config.json" in file_names
     ):
         return ModelFormat.HUGGINGFACE
+    if (
+        "config.json" in file_names
+        and any(name.endswith((".safetensors", ".npz")) for name in normalized_names)
+        and _is_audio_bundle(path=path, file_names=file_names, config_data=config_data)
+    ):
+        # A speech bundle carries neither a tokenizer nor a processor and names
+        # its weights after the model, so the strict MLX and Hugging Face checks
+        # above both miss it. The audio backends load weights by glob, so the
+        # bundle is runnable as published.
+        return ModelFormat.MLX
     if "config.json" in file_names and any(name in PROCESSOR_FILENAMES for name in file_names):
         return ModelFormat.AUDIO_FOLDER
     return None
+
+
+def _is_audio_bundle(*, path: Path | None, file_names: set[str], config_data: dict[str, Any]) -> bool:
+    if path is None:
+        return False
+    modalities = _infer_modalities(
+        path=path,
+        file_names=file_names,
+        config_data=config_data,
+        processor_data={},
+    )
+    return _is_audio_only(modalities)
 
 
 def _build_gguf_manifest(path: Path) -> ModelManifest:
@@ -238,6 +332,13 @@ def _build_directory_manifest(
         config_data=config_data,
         processor_data=processor_data,
     )
+    audio_roles = _infer_audio_roles(
+        path=path,
+        file_names=file_names,
+        config_data=config_data,
+        processor_data=processor_data,
+        modalities=modalities,
+    )
     runtime_affinity = _frontier_runtime_affinity(
         base_affinity=_infer_runtime_affinity(format_type=format_type, modalities=modalities),
         architecture_subtype=architecture_subtype,
@@ -280,6 +381,7 @@ def _build_directory_manifest(
         architecture_family=architecture_family,
         architecture_subtype=architecture_subtype,
         modality=modalities,
+        audio_roles=audio_roles,
         source_path=str(path),
         format_type=format_type,
         quantization=quantization_profile_label(quantization_profile) or _infer_quantization(display_name, config_data),
@@ -386,6 +488,9 @@ def _build_layered_manifests(*, path: Path, layered_manifest: LayeredConversionM
                     ),
                     "display_name": display_name,
                     "modality": artifact.modality,
+                    "audio_roles": (
+                        base_manifest.audio_roles if ModelModality.AUDIO in artifact.modality else ()
+                    ),
                     "runtime_affinity": artifact.runtime_affinity,
                     "tokenizer_path": (
                         str(path / artifact.tokenizer_path)
@@ -441,6 +546,34 @@ def _infer_modalities(
     if ModelModality.TEXT in unique_modalities and len(unique_modalities) > 1:
         unique_modalities.append(ModelModality.MULTIMODAL)
     return tuple(unique_modalities)
+
+
+def _infer_audio_roles(
+    *,
+    path: Path,
+    file_names: set[str],
+    config_data: dict[str, Any],
+    processor_data: dict[str, Any],
+    modalities: tuple[ModelModality, ...],
+) -> tuple[AudioCapabilityRole, ...]:
+    """Classify an audio bundle as transcription, synthesis, or both.
+
+    Returns an empty tuple when the model is not audio or when nothing in the
+    bundle names a side, so an unclassifiable bundle keeps claiming both rather
+    than losing a capability it may well serve.
+    """
+
+    if ModelModality.AUDIO not in modalities:
+        return ()
+    searchable_text = " ".join(
+        _model_identifiers(path=path, file_names=file_names, config_data=config_data, processor_data=processor_data),
+    )
+    roles: list[AudioCapabilityRole] = []
+    if any(keyword in searchable_text for keyword in AUDIO_TRANSCRIPTION_KEYWORDS):
+        roles.append(AudioCapabilityRole.TRANSCRIPTION)
+    if any(keyword in searchable_text for keyword in AUDIO_SPEECH_KEYWORDS):
+        roles.append(AudioCapabilityRole.SPEECH)
+    return tuple(roles)
 
 
 def _infer_runtime_affinity(

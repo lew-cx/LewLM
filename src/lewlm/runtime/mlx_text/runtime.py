@@ -1258,7 +1258,7 @@ class MLXTextRuntime(ManagedTextRuntime):
                     **performance_options,
                 },
                 capability=CapabilityName.STREAMING.value,
-                passthrough_keys=("sampler", "temperature", "temp"),
+                passthrough_keys=("max_tokens", "prompt_cache", "sampler", "temperature", "temp"),
             )
             self._record_feature_usage(prompt_token_count=len(prompt_tokens), feature_usage=feature_usage)
             for chunk in chunks:
@@ -1299,7 +1299,7 @@ class MLXTextRuntime(ManagedTextRuntime):
                 **(performance_options or {}),
             },
             capability=CapabilityName.CHAT.value,
-            passthrough_keys=("max_tokens", "sampler", "temperature", "temp"),
+            passthrough_keys=("max_tokens", "prompt_cache", "sampler", "temperature", "temp"),
             phase=phase,
         )
         return _generate_response_from_result(result=result, model_id=request.model_id)
@@ -2219,23 +2219,13 @@ class MLXTextRuntime(ManagedTextRuntime):
                 helpers["trim_prompt_cache"](cache_payload, trim_count)
         uncached_prefix_tokens = prompt_tokens[matched_prefix_tokens:-1]
         if uncached_prefix_tokens:
-            generate = resolve_backend_callable(module, ("generate", "chat", "generate_text"))
-            self._acceleration.invoke(
+            self._prefill_prompt_cache(
                 request=request,
-                callable_obj=generate,
-                callable_key="generate",
-                provided_values={
-                    "client": {"model": model, "tokenizer": tokenizer},
-                    "model": model,
-                    "tokenizer": tokenizer,
-                    "prompt": uncached_prefix_tokens,
-                    "max_tokens": 0,
-                    "verbose": False,
-                    "prompt_cache": cache_payload,
-                },
-                capability="prefix_cache_prefill",
-                passthrough_keys=("max_tokens",),
-                phase="prefill",
+                module=module,
+                model=model,
+                tokenizer=tokenizer,
+                prompt_tokens=uncached_prefix_tokens,
+                cache_payload=cache_payload,
             )
         stored_cache = copy.deepcopy(cache_payload)
         stored_entry = self._prefix_cache.save(
@@ -2267,6 +2257,53 @@ class MLXTextRuntime(ManagedTextRuntime):
             "effective_prefill_tokens": len(uncached_prefix_tokens),
         }
         return [prompt_tokens[-1]], cache_payload
+
+    def _prefill_prompt_cache(
+        self,
+        *,
+        request: GenerateRequest,
+        module: Any,
+        model: Any,
+        tokenizer: Any | None,
+        prompt_tokens: list[int],
+        cache_payload: Any,
+        callable_key: str = "prompt_cache_prefill",
+    ) -> None:
+        """Warm `cache_payload` with `prompt_tokens` without emitting any tokens."""
+        prefill = _mlx_prompt_cache_prefill(module)
+        if prefill is not None:
+            self._acceleration.invoke(
+                request=request,
+                callable_obj=prefill,
+                callable_key=callable_key,
+                provided_values={
+                    "model": model,
+                    "prompt_tokens": prompt_tokens,
+                    "prompt_cache": cache_payload,
+                    "prefill_step_size": self.settings.prefill_token_batch_size,
+                },
+                capability="prefix_cache_prefill",
+                phase="prefill",
+            )
+            return
+        generate = resolve_backend_callable(module, ("generate", "chat", "generate_text"))
+        self._acceleration.invoke(
+            request=request,
+            callable_obj=generate,
+            callable_key=callable_key,
+            provided_values={
+                "client": {"model": model, "tokenizer": tokenizer},
+                "model": model,
+                "tokenizer": tokenizer,
+                "prompt": prompt_tokens,
+                "max_tokens": 0,
+                "verbose": False,
+                "prompt_cache": cache_payload,
+            },
+            capability="prefix_cache_prefill",
+            passthrough_keys=("max_tokens", "prompt_cache"),
+            phase="prefill",
+        )
 
     def _reserve_paged_kv_residency(
         self,
@@ -2712,7 +2749,7 @@ class MLXTextRuntime(ManagedTextRuntime):
                 break
             verify_prompt, cached_prefix_tokens = self._advance_speculation_prompt_cache(
                 request=request,
-                generate=generate,
+                module=module,
                 model=model,
                 tokenizer=tokenizer,
                 prompt_cache=prompt_cache,
@@ -2785,7 +2822,7 @@ class MLXTextRuntime(ManagedTextRuntime):
         self,
         *,
         request: GenerateRequest,
-        generate: Any,
+        module: Any,
         model: Any,
         tokenizer: Any | None,
         prompt_cache: Any,
@@ -2796,16 +2833,14 @@ class MLXTextRuntime(ManagedTextRuntime):
             return [], 0
         uncached_prefix_tokens = target_tokens[cached_prefix_tokens:-1]
         if uncached_prefix_tokens:
-            self._invoke_generate_response(
+            self._prefill_prompt_cache(
                 request=request,
-                generate=generate,
+                module=module,
                 model=model,
                 tokenizer=tokenizer,
-                prompt=list(uncached_prefix_tokens),
-                max_tokens=0,
-                prompt_cache=prompt_cache,
+                prompt_tokens=list(uncached_prefix_tokens),
+                cache_payload=prompt_cache,
                 callable_key="draft_verify_prefill",
-                phase="prefill",
             )
             cached_prefix_tokens = len(target_tokens) - 1
         return [int(target_tokens[-1])], cached_prefix_tokens
@@ -3311,6 +3346,58 @@ def _prompt_token_ids(tokenizer: Any | None, prompt: str) -> list[int]:
         if isinstance(encoded, Sequence) and not isinstance(encoded, (str, bytes, bytearray)):
             return [int(token) for token in encoded if isinstance(token, (int, float))]
     return list(prompt.encode("utf-8"))
+
+
+def _resolve_mlx_generation_module(module: Any) -> Any | None:
+    if getattr(module, "generate_step", None) is not None:
+        return module
+    try:
+        return import_module("mlx_lm.generate")
+    except ImportError:
+        return None
+
+
+def _mlx_prompt_cache_prefill(module: Any) -> Any | None:
+    """Build a callable that fills a prompt cache without generating a token.
+
+    The high-level `generate` entrypoint cannot serve this: it forwards prompt caches
+    only as opaque keyword arguments, and installed versions raise rather than return
+    when asked for zero tokens. `generate_step` is the backend's own prefill loop, so
+    it stops once the prompt is resident in the cache.
+    """
+    generation_module = _resolve_mlx_generation_module(module)
+    if generation_module is None:
+        return None
+    generate_step = resolve_backend_callable(generation_module, ("generate_step",), required=False)
+    if generate_step is None:
+        return None
+    try:
+        mx = import_module("mlx.core")
+    except ImportError:
+        return None
+    to_array = getattr(mx, "array", None)
+    if not callable(to_array):
+        return None
+
+    def prefill_prompt_cache(
+        *,
+        model: Any,
+        prompt_tokens: Sequence[int],
+        prompt_cache: Any,
+        prefill_step_size: int,
+    ) -> None:
+        steps = generate_step(
+            to_array(list(prompt_tokens)),
+            model,
+            max_tokens=0,
+            prompt_cache=prompt_cache,
+            prefill_step_size=prefill_step_size,
+        )
+        # Nothing is yielded at `max_tokens=0`; advancing the generator runs the prefill.
+        for _ in steps:
+            break
+
+    return prefill_prompt_cache
 
 
 def _mlx_cache_helpers() -> dict[str, Any] | None:

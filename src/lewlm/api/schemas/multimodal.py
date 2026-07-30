@@ -147,6 +147,25 @@ class AudioTranscriptionCreateRequest(BaseModel):
     prompt: str | None = None
 
 
+class AudioTranscriptionMultipartRequest(BaseModel):
+    """Form fields accepted by the multipart form of `/v1/audio/transcriptions`.
+
+    The route hand-parses the form because it serves two body shapes, so this
+    model exists to publish the field names rather than to validate them.
+    """
+
+    file: bytes = Field(
+        json_schema_extra={"format": "binary"},
+        description="Audio file to transcribe.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Model id to transcribe with. LewLM routes to a transcription-capable model when omitted.",
+    )
+    language: str | None = Field(default=None, description="Spoken-language hint for the decoder.")
+    prompt: str | None = Field(default=None, description="Optional decoding prompt passed to the backend.")
+
+
 class AudioTranscriptionSegment(BaseModel):
     start_seconds: float | None = None
     end_seconds: float | None = None

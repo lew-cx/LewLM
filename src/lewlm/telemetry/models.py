@@ -549,6 +549,21 @@ class ServingProfileRecommendation(BaseModel):
     candidate_summaries: list[AutotuneCandidateSummary] = Field(default_factory=list)
 
 
+class ServingProfileInventory(BaseModel):
+    """Stored serving profiles, so the tuning loop has a memory to read back.
+
+    Profiles are keyed by host, model, runtime and workload class, and a
+    generation applies whichever one matches; this lists what exists rather
+    than only what the last autotune run produced.
+    """
+
+    count: int
+    items: list[ServingProfileRecommendation] = Field(default_factory=list)
+    # True when older stored payloads were dropped because they no longer parse
+    # as a recommendation, which is a migration signal rather than an empty host.
+    unreadable_count: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class AutotuneCandidateSpec:
     name: str

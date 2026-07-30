@@ -54,14 +54,27 @@ async def _stream_items_with_structured_output(
     on_completed: Callable[[str], None],
 ) -> AsyncIterator[_ContentDeltaT]:
     deltas: list[str] = []
-    async for item in stream_items:
-        if item.content is not None:
-            deltas.append(item.content)
-        yield item
-    on_completed("".join(deltas))
+    completed = False
+    try:
+        async for item in stream_items:
+            if item.content is not None:
+                deltas.append(item.content)
+            yield item
+        completed = True
+    finally:
+        close = getattr(stream_items, "aclose", None)
+        if callable(close):
+            await close()
+    if completed:
+        on_completed("".join(deltas))
 
 
 async def _content_stream(stream_items: AsyncIterator[_ContentDelta]) -> AsyncIterator[str]:
-    async for item in stream_items:
-        if item.content:
-            yield item.content
+    try:
+        async for item in stream_items:
+            if item.content:
+                yield item.content
+    finally:
+        close = getattr(stream_items, "aclose", None)
+        if callable(close):
+            await close()

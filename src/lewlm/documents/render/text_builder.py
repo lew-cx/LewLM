@@ -8,6 +8,12 @@ from lewlm.documents.validators.ir import DocumentIRValidator
 
 
 class TextDocumentRenderer(DocumentRenderer):
+    """Render plain text.
+
+    Plain text carries no styling vocabulary, so every style token is inert in
+    this format by contract.
+    """
+
     output_format = DocumentOutputFormat.TEXT
     media_type = "text/plain"
     file_extension = ".txt"

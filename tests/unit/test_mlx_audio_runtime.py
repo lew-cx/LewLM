@@ -8,8 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from lewlm.core.contracts import (
+    AudioCapabilityRole,
     AudioSpeechRequest,
     AudioTranscriptionRequest,
+    AudioVoiceSource,
     CapabilityName,
     ConversionStatus,
     ModelFormat,
@@ -19,6 +21,7 @@ from lewlm.core.contracts import (
     RuntimeAffinity,
     ValidationState,
 )
+from lewlm.core.errors import UnsupportedCapabilityError
 from lewlm.runtime.mlx_audio.runtime import MLXAudioRuntime
 from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache
 
@@ -144,7 +147,7 @@ def test_mlx_audio_runtime_supports_tts_submodule_layout(monkeypatch) -> None:
     monkeypatch.setattr("lewlm.runtime.mlx_audio.runtime.import_module", fake_import)
 
     runtime = MLXAudioRuntime()
-    manifest = _manifest()
+    manifest = _speech_manifest()
 
     asyncio.run(runtime.load_model(manifest))
 
@@ -261,12 +264,70 @@ def test_mlx_audio_runtime_reuses_encoder_features_across_identical_audio_with_d
     assert second_request.metadata["encoder_cache"]["cache_hits"] == 1
 
 
+def test_mlx_audio_runtime_reports_capability_per_manifest_not_per_runtime() -> None:
+    runtime = MLXAudioRuntime()
+    transcription_manifest = _manifest()
+    speech_manifest = _speech_manifest()
+
+    assert runtime.supports_manifest_capability(transcription_manifest, CapabilityName.AUDIO_TRANSCRIPTION) is True
+    assert runtime.supports_manifest_capability(transcription_manifest, CapabilityName.AUDIO_SPEECH) is False
+    assert runtime.supports_manifest_capability(speech_manifest, CapabilityName.AUDIO_SPEECH) is True
+    assert runtime.supports_manifest_capability(speech_manifest, CapabilityName.AUDIO_TRANSCRIPTION) is False
+    assert "audio_speech" in str(runtime.manifest_capability_reason(transcription_manifest, CapabilityName.AUDIO_SPEECH))
+
+
+def test_mlx_audio_runtime_refuses_a_capability_the_model_does_not_serve(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.runtime.mlx_audio.runtime.import_module", lambda name: SimpleNamespace())
+
+    runtime = MLXAudioRuntime()
+    manifest = _manifest()
+    asyncio.run(runtime.load_model(manifest))
+
+    with pytest.raises(UnsupportedCapabilityError) as excinfo:
+        asyncio.run(
+            runtime.synthesize_speech(
+                AudioSpeechRequest(model_id=manifest.model_id, input_text="Hello", audio_format="wav"),
+            ),
+        )
+
+    # The refusal names the request as inappropriate rather than failing inside the backend.
+    assert excinfo.value.details["capability"] == CapabilityName.AUDIO_SPEECH.value
+    assert excinfo.value.details["audio_roles"] == ["transcription"]
+
+
+def test_mlx_audio_runtime_lists_voice_packs_from_the_bundle_and_backend_cache(tmp_path: Path, monkeypatch) -> None:
+    bundle_dir = tmp_path / "Kokoro-82M"
+    (bundle_dir / "voices").mkdir(parents=True)
+    (bundle_dir / "voices" / "af_bundled.safetensors").write_bytes(b"voice")
+    (bundle_dir / "bf_loose.pt").write_bytes(b"voice")
+    (bundle_dir / "kokoro-v1_0.safetensors").write_bytes(b"weights")
+
+    cache_root = tmp_path / "hub"
+    snapshot_voices = cache_root / "models--prince-canuma--Kokoro-82M" / "snapshots" / "abc123" / "voices"
+    snapshot_voices.mkdir(parents=True)
+    (snapshot_voices / "am_cached.safetensors").write_bytes(b"voice")
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_root))
+
+    runtime = MLXAudioRuntime()
+    voices = runtime.speech_voices(_speech_manifest(source_path=str(bundle_dir)))
+
+    assert [voice.voice_id for voice in voices] == ["af_bundled", "am_cached", "bf_loose"]
+    assert {voice.voice_id: voice.source for voice in voices} == {
+        "af_bundled": AudioVoiceSource.BUNDLE,
+        "bf_loose": AudioVoiceSource.BUNDLE,
+        "am_cached": AudioVoiceSource.BACKEND_CACHE,
+    }
+    # The model weights are not a voice pack.
+    assert "kokoro-v1_0" not in {voice.voice_id for voice in voices}
+
+
 def _manifest() -> ModelManifest:
     return ModelManifest(
         model_id="audio-model",
         display_name="whisper-mini-audio",
         architecture_family="whisper",
         modality=(ModelModality.AUDIO,),
+        audio_roles=(AudioCapabilityRole.TRANSCRIPTION,),
         source_path="/tmp/audio-model",
         format_type=ModelFormat.AUDIO_FOLDER,
         runtime_affinity=(RuntimeAffinity.MLX_AUDIO,),
@@ -278,4 +339,17 @@ def _manifest() -> ModelManifest:
             status=ValidationState.VALID,
             message="ok",
         ),
+    )
+
+
+def _speech_manifest(*, source_path: str = "/tmp/speech-model") -> ModelManifest:
+    return _manifest().model_copy(
+        update={
+            "model_id": "speech-model",
+            "display_name": "Kokoro-82M",
+            "architecture_family": "kokoro",
+            "audio_roles": (AudioCapabilityRole.SPEECH,),
+            "source_path": source_path,
+            "format_type": ModelFormat.MLX,
+        },
     )

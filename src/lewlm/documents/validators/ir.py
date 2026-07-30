@@ -6,6 +6,11 @@ from pathlib import Path
 
 from lewlm.core.errors import DocumentValidationError
 from lewlm.documents.ir.models import DocumentIR, ImageBlock, TableBlock
+from lewlm.documents.ir.style import (
+    is_known_style_scope,
+    normalize_style_value,
+    resolve_style_role,
+)
 
 
 class DocumentIRValidator:
@@ -16,6 +21,7 @@ class DocumentIRValidator:
             raise DocumentValidationError("Document title cannot be empty.")
         if not document.sections:
             raise DocumentValidationError("Document must contain at least one section.")
+        self._validate_style_tokens(document)
 
         for section_index, section in enumerate(document.sections):
             if not section.blocks:
@@ -37,6 +43,44 @@ class DocumentIRValidator:
                 if isinstance(block, TableBlock):
                     return block
         raise DocumentValidationError("CSV rendering requires at least one table block.")
+
+    def _validate_style_tokens(self, document: DocumentIR) -> None:
+        """Validate declared style tokens against the reserved vocabulary.
+
+        Reserved token names must carry a value that satisfies the role grammar
+        and, when scoped, a known element class. Any other name is accepted as
+        inert lineage and is never rendered.
+        """
+
+        seen: set[str] = set()
+        for token_index, token in enumerate(document.style_tokens):
+            name = token.name.strip()
+            if not name:
+                raise DocumentValidationError(
+                    "Style tokens must declare a non-empty name.",
+                    details={"token_index": token_index},
+                )
+            if token.name in seen:
+                raise DocumentValidationError(
+                    "Style token names must be unique.",
+                    details={"token_index": token_index, "name": token.name},
+                )
+            seen.add(token.name)
+            role = resolve_style_role(token.name)
+            if role is None:
+                continue
+            try:
+                normalize_style_value(role, token.value)
+            except ValueError as exc:
+                raise DocumentValidationError(
+                    str(exc),
+                    details={"token_index": token_index, "name": token.name, "value": token.value},
+                ) from exc
+            if not is_known_style_scope(token.applies_to):
+                raise DocumentValidationError(
+                    "Reserved style tokens must be scoped to a known element class.",
+                    details={"token_index": token_index, "name": token.name, "applies_to": token.applies_to},
+                )
 
     def _validate_table(self, section_index: int, block_index: int, block: TableBlock) -> None:
         if not block.rows:

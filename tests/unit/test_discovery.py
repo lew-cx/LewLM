@@ -3,9 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-from lewlm.conversion.models import CONVERSION_OUTPUT_METADATA_FILENAME, LAYERED_CONVERSION_MANIFEST_FILENAME
+from lewlm.conversion.models import (
+    CONVERSION_OUTPUT_METADATA_FILENAME,
+    LAYERED_CONVERSION_MANIFEST_FILENAME,
+    QUANTIZATION_PROFILE_METADATA_FILENAME,
+)
 from lewlm.core.contracts import (
     ArchitectureSubtype,
+    AudioCapabilityRole,
     ConversionStatus,
     ModelArtifactRole,
     ModelFormat,
@@ -141,6 +146,100 @@ def test_discovery_treats_quantized_sharded_outputs_as_huggingface_conversion_so
     assert manifest.text_only_runtime_affinity == ()
     assert manifest.text_only_runtime_source is None
     assert manifest.text_only_runtime_reason is None
+
+
+def test_discovery_treats_lewlm_quantization_output_as_an_existing_conversion_artifact(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "converted-gemma4-mlx"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text(
+        '{"model_type":"gemma4","quantization":{"bits":4,"group_size":64},"text_config":{"hidden_size":2048}}',
+        encoding="utf-8",
+    )
+    (bundle_dir / QUANTIZATION_PROFILE_METADATA_FILENAME).write_text(
+        json.dumps({"name": "balanced", "strategy": "weight_only", "weight_precision": "int4"}),
+        encoding="utf-8",
+    )
+    (bundle_dir / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+    (bundle_dir / "model-00001-of-00002.safetensors").write_bytes(b"weights-1")
+    (bundle_dir / "model-00002-of-00002.safetensors").write_bytes(b"weights-2")
+    (bundle_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest.format_type == ModelFormat.MLX
+    assert manifest.conversion_status == ConversionStatus.RUNNABLE
+
+
+def test_discovery_treats_jang_sharded_outputs_as_mlx(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "Gemma-4-31B-JANG_4M"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text('{"model_type":"gemma4"}', encoding="utf-8")
+    (bundle_dir / "jang_config.json").write_text(
+        json.dumps({"format": "jang", "quantization": {"target_bits": 4}}),
+        encoding="utf-8",
+    )
+    (bundle_dir / "model-00001-of-00002.safetensors").write_bytes(b"weights-1")
+    (bundle_dir / "model-00002-of-00002.safetensors").write_bytes(b"weights-2")
+    (bundle_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (bundle_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+
+    assert len(manifests) == 1
+    assert manifests[0].format_type == ModelFormat.MLX
+    assert manifests[0].conversion_status == ConversionStatus.RUNNABLE
+
+
+def test_discovery_deduplicates_bundles_reached_through_overlapping_roots(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "qwen-mlx"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text('{"model_type":"qwen2"}', encoding="utf-8")
+    (bundle_dir / "weights.safetensors").write_bytes(b"weights")
+    (bundle_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path, bundle_dir])
+
+    assert len(manifests) == 1
+    assert manifests[0].source_path == str(bundle_dir)
+
+
+def test_discovery_splits_audio_bundles_into_transcription_and_synthesis_roles(tmp_path: Path) -> None:
+    stt_dir = tmp_path / "whisper-large-v3-mlx"
+    stt_dir.mkdir()
+    (stt_dir / "config.json").write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
+    (stt_dir / "weights.npz").write_bytes(b"stt-weights")
+    (stt_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    tts_dir = tmp_path / "Kokoro-82M"
+    tts_dir.mkdir()
+    (tts_dir / "config.json").write_text(json.dumps({"model_type": "kokoro"}), encoding="utf-8")
+    (tts_dir / "kokoro-v1_0.safetensors").write_bytes(b"tts-weights")
+
+    manifests = {manifest.display_name: manifest for manifest in discover_models([tmp_path])}
+
+    assert manifests["whisper-large-v3-mlx"].audio_roles == (AudioCapabilityRole.TRANSCRIPTION,)
+    # Published with model-named weights and no tokenizer or processor, which
+    # the strict MLX and Hugging Face checks both miss.
+    assert manifests["Kokoro-82M"].format_type == ModelFormat.MLX
+    assert manifests["Kokoro-82M"].conversion_status == ConversionStatus.RUNNABLE
+    assert manifests["Kokoro-82M"].audio_roles == (AudioCapabilityRole.SPEECH,)
+    assert manifests["Kokoro-82M"].runtime_affinity == (RuntimeAffinity.MLX_AUDIO,)
+
+
+def test_discovery_leaves_audio_roles_empty_when_the_bundle_names_no_side(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "voicebox-mini-audio"
+    bundle_dir.mkdir()
+    (bundle_dir / "config.json").write_text(json.dumps({"model_type": "voicebox"}), encoding="utf-8")
+    (bundle_dir / "processor_config.json").write_text("{}", encoding="utf-8")
+
+    manifests = discover_models([tmp_path])
+
+    assert len(manifests) == 1
+    assert manifests[0].modality == (ModelModality.AUDIO,)
+    # An unclassifiable audio bundle keeps claiming both capabilities.
+    assert manifests[0].audio_roles == ()
 
 
 def test_discovery_detects_onnx_genai_bundles_as_windows_native_candidates(tmp_path: Path) -> None:

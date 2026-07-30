@@ -16,7 +16,7 @@ def test_chat_orchestrator_uses_prefix_cache_for_scheduler_admission(
         runtime_overrides={
             RuntimeAffinity.EXPERIMENTAL: FakeLlamaCppRuntime(),
             RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime(),
-            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(),
+            RuntimeAffinity.MLX_TEXT: FakeMLXSemanticRuntime(settings=temp_settings),
             RuntimeAffinity.MLX_AUDIO: FakeMLXAudioRuntime(),
         },
     )

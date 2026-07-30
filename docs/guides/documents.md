@@ -31,6 +31,40 @@ LewLM's `DocumentIR` model supports:
 - headers and footers
 - citations
 
+## Style tokens
+
+`DocumentIR.style_tokens` declares brand tokens that sections, blocks, headers,
+footers, and citations reference by name. A closed vocabulary — `body_color`,
+`body_font`, `body_font_size_pt`, `heading_color`, `heading_font`,
+`heading_font_size_pt`, `surface_color`, `accent_color`, and `emphasis` — drives
+DOCX, PDF, and XLSX typography and colour; every other token name is preserved
+as inert lineage. Values are validated, and raw CSS is never accepted.
+
+```python
+from lewlm.documents.ir import DocumentIR, DocumentSection, ParagraphBlock, StyleToken
+
+document = DocumentIR(
+    title="Quarterly Brief",
+    style_tokens=[
+        StyleToken(name="accent_color", value="#2563EB", applies_to="document"),
+        StyleToken(name="heading_color", value="#111827"),
+        StyleToken(name="body_font", value="Georgia"),
+        StyleToken(name="emphasis", value="bold"),
+    ],
+    sections=[
+        DocumentSection(
+            heading="Summary",
+            blocks=[ParagraphBlock(text="Delivery stayed on plan.", style_tokens=["emphasis"])],
+        ),
+    ],
+)
+```
+
+Text, Markdown, and CSV carry no typography vocabulary: Markdown renders
+`emphasis` only, and the other two are inert. See
+[Document formats and skills](../reference/document-formats-and-skills.md) for
+the full per-format matrix.
+
 ## Output formats
 
 Generated artifacts can target:

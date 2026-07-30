@@ -9,12 +9,14 @@ from fastapi import APIRouter, Request
 from starlette.datastructures import UploadFile
 
 from lewlm.api.dependencies import get_services
+from lewlm.api.openapi import component_ref
 from lewlm.api.schemas.chat import CompletionUsage
 from lewlm.api.schemas.multimodal import (
     AudioSpeechCreateRequest,
     AudioSpeechCreateResponse,
     AudioTranscriptionCreateRequest,
     AudioTranscriptionCreateResponse,
+    AudioTranscriptionMultipartRequest,
     AudioTranscriptionSegment,
     EmbeddingCreateRequest,
     EmbeddingCreateResponse,
@@ -29,6 +31,7 @@ from lewlm.api.schemas.multimodal import (
     TokenCountRequest,
     TokenCountResponse,
 )
+from lewlm.core.contracts import AudioVoiceInventory
 from lewlm.core.errors import ConfigurationError, UnsupportedMediaTypeError
 from lewlm.security.files import validate_audio_bytes
 
@@ -197,7 +200,25 @@ async def count_tokens(payload: TokenCountRequest, request: Request) -> TokenCou
     )
 
 
-@router.post("/v1/audio/transcriptions", response_model=AudioTranscriptionCreateResponse)
+@router.post(
+    "/v1/audio/transcriptions",
+    response_model=AudioTranscriptionCreateResponse,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                # Declared here because the handler accepts either shape and
+                # hand-parses the form, which FastAPI cannot infer a body from.
+                "multipart/form-data": {
+                    "schema": component_ref(AudioTranscriptionMultipartRequest),
+                },
+                "application/json": {
+                    "schema": component_ref(AudioTranscriptionCreateRequest),
+                },
+            },
+        },
+    },
+)
 async def transcribe_audio(request: Request) -> AudioTranscriptionCreateResponse:
     """Transcribe a JSON or multipart audio payload with a compatible local model."""
 
@@ -238,6 +259,14 @@ async def transcribe_audio(request: Request) -> AudioTranscriptionCreateResponse
         routing=execution.routing,
         metadata=execution.metadata,
     )
+
+
+@router.get("/v1/audio/voices", response_model=AudioVoiceInventory)
+def list_audio_voices(request: Request, model: str | None = None) -> AudioVoiceInventory:
+    """List the synthesis voices the selected model can resolve on this host."""
+
+    services = get_services(request)
+    return services.multimodal_orchestrator.list_speech_voices(model_id=model)
 
 
 @router.post("/v1/audio/speech", response_model=AudioSpeechCreateResponse)

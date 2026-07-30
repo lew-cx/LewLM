@@ -19,6 +19,7 @@ from lewlm.core.contracts import (
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
     AudioTranscriptionSegment,
+    AudioVoiceInventory,
     EmbeddingRequest,
     EmbeddingResponse,
     ModelManifest,
@@ -1324,6 +1325,39 @@ class MultimodalOrchestrator:
                 "capability": capability,
                 "coalesced": True,
             },
+        )
+
+    def list_speech_voices(self, *, model_id: str | None = None) -> AudioVoiceInventory:
+        """Report the synthesis voices the selected model can resolve on this host.
+
+        Voices are host state rather than manifest state, so this is answered by
+        the runtime that would serve the request instead of being declared on
+        the model.
+        """
+
+        manifest, runtime, _ = self.model_router.route_audio_speech(model_id)
+        speech_voices = getattr(runtime, "speech_voices", None)
+        if not callable(speech_voices):
+            return AudioVoiceInventory(
+                model_id=manifest.model_id,
+                runtime_name=runtime.name,
+                enumerable=False,
+                reason=f"`{runtime.name}` does not expose its voice inventory to LewLM.",
+            )
+        voices = list(speech_voices(manifest))
+        return AudioVoiceInventory(
+            model_id=manifest.model_id,
+            runtime_name=runtime.name,
+            voices=voices,
+            enumerable=True,
+            reason=(
+                f"{len(voices)} voice pack(s) are resolvable on this host."
+                if voices
+                else (
+                    "No voice pack was found for this model on this host. The backend may still "
+                    "accept a voice name it can download on demand."
+                )
+            ),
         )
 
     async def synthesize_speech(

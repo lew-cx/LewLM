@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
+from pathlib import Path
 import platform
 from typing import Any
 
@@ -15,6 +16,8 @@ from lewlm.core.contracts import (
     build_portable_performance_core_evidence,
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
+    AudioVoice,
+    AudioVoiceSource,
     CapabilityName,
     EmbeddingRequest,
     EmbeddingResponse,
@@ -24,6 +27,7 @@ from lewlm.core.contracts import (
     ModelFormat,
     ModelManifest,
     ModelModality,
+    manifest_supports_audio_capability,
     RerankRequest,
     RerankResponse,
     RuntimeCandidateReport,
@@ -520,17 +524,65 @@ class ManagedAudioRuntime(ManagedRuntime):
         {CapabilityName.AUDIO_TRANSCRIPTION, CapabilityName.AUDIO_SPEECH},
     )
 
+    def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool:
+        return super().supports_manifest_capability(manifest, capability) and manifest_supports_audio_capability(
+            manifest,
+            capability,
+        )
+
+    def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None:
+        if not manifest_supports_audio_capability(manifest, capability):
+            declared = ", ".join(role.value for role in manifest.audio_roles)
+            return (
+                f"`{manifest.display_name}` is a {declared} model and cannot serve `{capability.value}`."
+            )
+        return super().manifest_capability_reason(manifest, capability)
+
+    def speech_voices(self, manifest: ModelManifest) -> list[AudioVoice]:
+        """List the synthesis voices this runtime can resolve for `manifest`.
+
+        The bundle's own `voices/` directory is runtime-agnostic; a runtime that
+        also resolves voices from elsewhere extends this.
+        """
+
+        voices: dict[str, AudioVoice] = {}
+        collect_voice_files(voices, Path(manifest.source_path) / "voices", source=AudioVoiceSource.BUNDLE)
+        return sorted(voices.values(), key=lambda voice: voice.voice_id)
+
     async def transcribe_audio(self, request: AudioTranscriptionRequest) -> AudioTranscriptionResponse:
         self._ensure_available()
         self._ensure_loaded(request.model_id)
+        self._ensure_audio_role(request.model_id, CapabilityName.AUDIO_TRANSCRIPTION)
         self._touch_model(request.model_id)
         return await self._transcribe_audio(request)
 
     async def synthesize_speech(self, request: AudioSpeechRequest) -> AudioSpeechResponse:
         self._ensure_available()
         self._ensure_loaded(request.model_id)
+        self._ensure_audio_role(request.model_id, CapabilityName.AUDIO_SPEECH)
         self._touch_model(request.model_id)
         return await self._synthesize_speech(request)
+
+    def _ensure_audio_role(self, model_id: str, capability: CapabilityName) -> None:
+        """Refuse a mismatched audio request before the backend fails on it.
+
+        Without this a synthesis request against a transcription model reaches
+        the backend and surfaces as an internal error, which says nothing about
+        the request being inappropriate for the model.
+        """
+
+        manifest = self._loaded_manifests.get(model_id)
+        if manifest is None or manifest_supports_audio_capability(manifest, capability):
+            return
+        raise UnsupportedCapabilityError(
+            f"`{manifest.display_name}` does not serve `{capability.value}`.",
+            details={
+                "runtime": self.name,
+                "model_id": model_id,
+                "capability": capability.value,
+                "audio_roles": [role.value for role in manifest.audio_roles],
+            },
+        )
 
     @abstractmethod
     async def _transcribe_audio(self, request: AudioTranscriptionRequest) -> AudioTranscriptionResponse:
@@ -539,6 +591,29 @@ class ManagedAudioRuntime(ManagedRuntime):
     @abstractmethod
     async def _synthesize_speech(self, request: AudioSpeechRequest) -> AudioSpeechResponse:
         """Synthesize speech audio from text."""
+
+
+#: Formats voice packs ship in. A voice is one file, named after the voice.
+VOICE_FILE_SUFFIXES = (".safetensors", ".pt", ".npz", ".bin")
+
+
+def collect_voice_files(
+    voices: dict[str, AudioVoice],
+    directory: Path,
+    *,
+    source: AudioVoiceSource,
+    suffixes: tuple[str, ...] = VOICE_FILE_SUFFIXES,
+) -> None:
+    """Add each voice pack in `directory` to `voices`, keeping the first seen."""
+
+    if not directory.is_dir():
+        return
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.suffix.casefold() not in suffixes:
+            continue
+        if path.stem in voices:
+            continue
+        voices[path.stem] = AudioVoice(voice_id=path.stem, source=source, source_path=str(path))
 
 
 def _matches_platform_value(current_value: str, supported_values: tuple[str, ...]) -> bool:
