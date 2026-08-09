@@ -83,6 +83,7 @@ from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace, PromptCompiler, PromptOverrideRecord
 from lewlm.routing.service import ModelRouter
+from lewlm.runtime.cancellation import raise_if_request_cancelled
 from lewlm.runtime.catalog import RuntimeCatalog
 from lewlm.runtime.request_context import application_id_var, client_instance_id_var
 from lewlm.runtime.residency import ModelResidencyManager
@@ -342,6 +343,10 @@ class ChatOrchestrator:
             capability=CapabilityName.CHAT,
             routed_target=routed_target,
         )
+        # Checked per request, not per admission: a runtime that batches
+        # continuously shares one admission across several requests, so this is
+        # the last point at which one of them can still be dropped on its own.
+        raise_if_request_cancelled(stage="chat.complete")
         if self._supports_frontier_batching(context=context, capability=CapabilityName.CHAT):
             batch_result = await self._complete_batch_scheduler.enqueue(
                 key=self._continuous_batch_key(context=context, capability=CapabilityName.CHAT),
@@ -414,6 +419,7 @@ class ChatOrchestrator:
             capability=CapabilityName.STREAMING,
             routed_target=routed_target,
         )
+        raise_if_request_cancelled(stage="chat.stream")
         if self._supports_frontier_batching(context=context, capability=CapabilityName.STREAMING):
             batch_result = await self._stream_batch_scheduler.enqueue(
                 key=self._continuous_batch_key(context=context, capability=CapabilityName.STREAMING),

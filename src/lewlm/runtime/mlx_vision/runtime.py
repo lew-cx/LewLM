@@ -559,10 +559,14 @@ class MLXVisionRuntime(ManagedTextRuntime):
                 passthrough_keys=passthrough_keys,
                 phase="stream",
             )
+            decoder = _IncrementalChunkDecoder(_stream_tokenizer(client))
             for chunk in chunks:
-                text = _chunk_to_text(chunk)
+                text = decoder.consume(chunk)
                 if text:
                     yield text
+            trailing = decoder.trailing()
+            if trailing:
+                yield trailing
         finally:
             self._record_encoder_cache_request(request=request, cache_bridge=cache_bridge)
 
@@ -1247,6 +1251,97 @@ def _chunk_to_text(chunk: object) -> str:
         return text if isinstance(text, str) else ""
     text = getattr(chunk, "text", None)
     return text if isinstance(text, str) else ""
+
+
+def _stream_tokenizer(client: dict[str, Any]) -> Any | None:
+    """Return the tokenizer `mlx_vlm.stream_generate` detokenizes its own output with."""
+    processor = client.get("processor")
+    if processor is None:
+        return None
+    return getattr(processor, "tokenizer", processor)
+
+
+def _chunk_token_id(chunk: object) -> int | None:
+    token = chunk.get("token") if isinstance(chunk, dict) else getattr(chunk, "token", None)
+    item = getattr(token, "item", None)
+    if callable(item):
+        token = item()
+    return int(token) if isinstance(token, (int, float)) and not isinstance(token, bool) else None
+
+
+class _IncrementalChunkDecoder:
+    """Turn word-boundary stream segments into one delta per generated token.
+
+    ``mlx_vlm``'s SPM and BPE streaming detokenizers only move text out of their
+    pending buffer when a token opens a new word, so a reply whose tokens never
+    open one -- ``"One...\\n\\ntwo...\\n\\nthree..."`` -- streams nothing at all
+    until ``finalize()`` releases the whole thing as a single segment. Decoding
+    the tokens seen so far and yielding the new suffix restores per-token
+    delivery. Prefixes ending in the Unicode replacement character remain
+    buffered because byte-fallback tokens can only be decoded safely once the
+    rest of the UTF-8 sequence arrives. :meth:`trailing` flushes anything the
+    backend still reports beyond the stable prefix we emitted.
+
+    Chunks that carry no token id leave the decode untouched, and a stream whose
+    chunks never carry one falls back to the backend's segments unchanged.
+    """
+
+    def __init__(self, tokenizer: Any | None) -> None:
+        self._decode = getattr(tokenizer, "decode", None) if tokenizer is not None else None
+        self._tokens: list[int] = []
+        self._emitted = ""
+        self._backend_text = ""
+        self._pending: object | None = None
+        self._started = False
+
+    def consume(self, chunk: object) -> str:
+        text = _chunk_to_text(chunk)
+        self._backend_text += text
+        if not callable(self._decode):
+            self._emitted = self._backend_text
+            return text
+        # One chunk of lookahead: the backend's last chunk is the post-``finalize``
+        # one, which repeats the previous token id and would decode a duplicate.
+        previous, self._pending = self._pending, chunk
+        if not self._started:
+            self._started = True
+            return ""
+        return self._advance(previous)
+
+    def trailing(self) -> str:
+        if not self._backend_text.startswith(self._emitted) or len(self._backend_text) <= len(self._emitted):
+            return ""
+        delta = self._backend_text[len(self._emitted) :]
+        self._emitted = self._backend_text
+        return delta
+
+    def _advance(self, chunk: object | None) -> str:
+        token = _chunk_token_id(chunk)
+        if token is None:
+            return ""
+        self._tokens.append(token)
+
+        # Prefer the backend's own segment whenever it has advanced far enough
+        # to cover this token. That keeps the normal SPM/BPE path linear; prefix
+        # decoding is only the escape hatch for the pathological run of empty
+        # segments G29 exposed.
+        if self._backend_text.startswith(self._emitted) and len(self._backend_text) > len(self._emitted):
+            delta = self._backend_text[len(self._emitted) :]
+            self._emitted = self._backend_text
+            return delta
+
+        rendered = str(self._decode(self._tokens))
+        # Hugging Face decoders render an incomplete byte-fallback sequence as
+        # U+FFFD, then replace it with the real character once the remaining
+        # byte tokens arrive. Emitting that provisional suffix would corrupt a
+        # stream permanently because already-sent SSE text cannot be retracted.
+        if rendered.endswith("\ufffd"):
+            return ""
+        if not rendered.startswith(self._emitted) or len(rendered) <= len(self._emitted):
+            return ""
+        delta = rendered[len(self._emitted) :]
+        self._emitted = rendered
+        return delta
 
 
 def _batch_generation_texts(result: object) -> list[str]:

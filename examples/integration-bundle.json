@@ -17736,6 +17736,18 @@
       "description": "The configured request rate for this client was exceeded."
     },
     {
+      "code": "request_cancelled",
+      "http_status": 499,
+      "retryable": false,
+      "description": "Raised when a request stopped at a checkpoint because its handle was cancelled."
+    },
+    {
+      "code": "request_handle_conflict",
+      "http_status": 409,
+      "retryable": false,
+      "description": "Raised when a cancellation handle is already active or reserved by another caller."
+    },
+    {
       "code": "request_too_large",
       "http_status": 413,
       "retryable": false,

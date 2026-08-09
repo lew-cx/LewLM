@@ -37,6 +37,7 @@ from lewlm.documents.ingest.ocr import OcrBackendStatus, detect_ocr_backend, per
 from lewlm.documents.ir.models import CalloutBlock, DocumentIR, DocumentSection, ImageBlock, ListBlock, ParagraphBlock, TableBlock
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
+from lewlm.runtime.cancellation import raise_if_request_cancelled
 from lewlm.security.files import (
     read_scoped_text_file,
     resolve_scoped_path,
@@ -528,6 +529,10 @@ class DocumentIngestService:
                 total_sources = len(normalized)
                 for requested in normalized:
                     index = requested.index
+                    # Checked between sources, outside the per-source guard: a
+                    # cancelled ingestion stops the run rather than being
+                    # recorded as one more failed source.
+                    raise_if_request_cancelled(stage="document.ingest")
                     # One source failing must not discard the sources that
                     # parsed cleanly, so each is contained and reported.
                     try:

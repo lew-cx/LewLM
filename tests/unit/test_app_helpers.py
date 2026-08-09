@@ -39,7 +39,7 @@ from lewlm.core.contracts import (
     RoutingDecision,
     RuntimeAffinity,
 )
-from lewlm.core.errors import LewLMError, PackUnavailableError
+from lewlm.core.errors import InvalidRequestError, LewLMError, PackUnavailableError
 from lewlm.core.execution_metadata import build_routed_execution_metadata
 from lewlm.core.provenance import RetrievalScoringPolicy
 from lewlm.documents.ingest.models import DocumentChunk, DocumentSourceType, IngestedDocumentSource
@@ -915,7 +915,8 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
 
         def do_POST(self) -> None:
             length = int(self.headers.get("content-length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            raw_body = self.rfile.read(length)
+            payload = json.loads(raw_body.decode("utf-8")) if raw_body else None
             request_log.append(
                 {
                     "method": "POST",
@@ -924,7 +925,14 @@ def _serve_http_app_client_api() -> Iterator[tuple[str, list[dict[str, object]]]
                     "payload": payload,
                 },
             )
-            if self.path == "/v1/chat/completions":
+            if self.path == "/v1/requests/handle-remote-1/cancel":
+                response = {
+                    "request_id": "handle-remote-1",
+                    "state": "cancelling",
+                    "runtime_instance_id": "runtime-remote-1",
+                    "application_id": "docktizo",
+                }
+            elif self.path == "/v1/chat/completions":
                 if payload["model"] == "bridge-error-model":
                     response = {
                         "error": {
@@ -1206,6 +1214,7 @@ def test_http_app_client_round_trips_typed_requests_and_responses(sample_audio_b
     with _serve_http_app_client_api() as (base_url, request_log):
         client = LewLMAppClient.from_http(base_url, api_key="secret-key")
         health = client.health()
+        cancellation = client.cancel_request("handle-remote-1")
         chat = client.chat_completion(
             model="chat-model",
             messages=[ChatMessage(role="user", content="Hello from HTTP")],
@@ -1296,6 +1305,8 @@ def test_http_app_client_round_trips_typed_requests_and_responses(sample_audio_b
 
     assert health.status == "ok"
     assert health.configuration.tool_sandbox_enabled is True
+    assert cancellation.request_id == "handle-remote-1"
+    assert cancellation.state.value == "cancelling"
     assert chat.model == "chat-model"
     assert chat.choices[0].message.content == "Echo: Hello from HTTP"
     assert responses.output_text == "Echo: Hello from responses over HTTP"
@@ -1320,6 +1331,7 @@ def test_http_app_client_round_trips_typed_requests_and_responses(sample_audio_b
     assert runtime_stats.runtime_policy == "balanced"
     post_paths = [entry["path"] for entry in request_log if entry["method"] == "POST"]
     assert post_paths == [
+        "/v1/requests/handle-remote-1/cancel",
         "/v1/chat/completions",
         "/v1/responses",
         "/v1/embeddings",
@@ -1348,6 +1360,13 @@ def test_http_app_client_round_trips_typed_requests_and_responses(sample_audio_b
     assert tool_request["payload"]["tool"] == "documents.generate"
     assert tool_request["payload"]["input"]["file_name"] == "remote-tool.md"
     assert all(entry["headers"].get("X-Api-Key") == "secret-key" for entry in request_log)
+
+
+def test_http_app_client_refuses_a_non_path_safe_cancellation_handle_without_network_io() -> None:
+    client = LewLMAppClient.from_http("http://127.0.0.1:1")
+
+    with pytest.raises(InvalidRequestError):
+        client.cancel_request("handle#fragment")
 
 
 def test_http_app_client_preserves_typed_image_parts() -> None:

@@ -21,6 +21,7 @@ from lewlm.core.contracts import (
     ValidationState,
 )
 from lewlm.runtime.mlx_vision.runtime import (
+    _IncrementalChunkDecoder,
     MLXVisionRuntime,
     _infer_quantization_specs,
     _mlx_vlm_weights_need_sanitization,
@@ -857,6 +858,160 @@ def test_mlx_vision_runtime_templates_single_request_prompts_like_the_batched_pa
         ("vision-processor", fake_model.config, expected_messages, 0),
         ("vision-processor", fake_model.config, expected_messages, 0),
     ]
+
+
+class _WordBoundaryDetokenizer:
+    """`mlx_vlm`'s SPM/BPE detokenizers: text only leaves the buffer on a new word."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.offset = 0
+        self._unflushed = ""
+
+    def add_token(self, token: str) -> None:
+        if token.startswith(" "):
+            self.text += self._unflushed
+            self._unflushed = token
+        else:
+            self._unflushed += token
+
+    def finalize(self) -> None:
+        self.text += self._unflushed
+        self._unflushed = ""
+
+    @property
+    def last_segment(self) -> str:
+        segment = self.text[self.offset :]
+        self.offset = len(self.text)
+        return segment
+
+
+def _word_boundary_stream(reply: list[str]) -> list[SimpleNamespace]:
+    """Chunks shaped like `mlx_vlm.stream_generate`, ending with the post-finalize one."""
+    detokenizer = _WordBoundaryDetokenizer()
+    chunks = []
+    for index, token in enumerate(reply):
+        detokenizer.add_token(token)
+        chunks.append(SimpleNamespace(text=detokenizer.last_segment, token=index))
+    detokenizer.finalize()
+    chunks.append(SimpleNamespace(text=detokenizer.last_segment, token=len(reply) - 1))
+    return chunks
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # Newline-separated, so no token ever opens a new word and the backend
+        # holds the whole reply back until `finalize()`.
+        ["One", "...", "\n\n", "two", "...", "\n\n", "three", "..."],
+        [" The", " sea", " is", " wide", "."],
+    ],
+    ids=["no-word-boundaries", "space-separated"],
+)
+def test_mlx_vision_runtime_streams_one_delta_per_token_regardless_of_word_boundaries(
+    monkeypatch,
+    reply: list[str],
+) -> None:
+    chunks = _word_boundary_stream(reply)
+    tokenizer = SimpleNamespace(decode=lambda tokens: "".join(reply[token] for token in tokens))
+
+    fake_module = SimpleNamespace(
+        load=lambda *, path_or_hf_repo, **kwargs: (
+            SimpleNamespace(config=SimpleNamespace(model_type="qwen-vl")),
+            SimpleNamespace(tokenizer=tokenizer),
+        ),
+        generate=lambda **kwargs: SimpleNamespace(text="".join(reply)),
+        stream_generate=lambda **kwargs: iter(chunks),
+    )
+    monkeypatch.setattr("lewlm.runtime.mlx_vision.runtime.import_module", lambda name: fake_module)
+
+    runtime = MLXVisionRuntime()
+    manifest = _manifest()
+    request = GenerateRequest(
+        model_id=manifest.model_id,
+        messages=[GenerateMessage(role="user", content="count slowly")],
+        max_tokens=16,
+        temperature=0.0,
+    )
+
+    async def collect() -> list[str]:
+        return [chunk async for chunk in runtime.stream_generate(request)]
+
+    asyncio.run(runtime.load_model(manifest))
+    deltas = asyncio.run(collect())
+
+    # One delta per generated token, and the same text the backend itself would render.
+    assert len(deltas) == len(reply)
+    assert "".join(deltas) == "".join(chunk.text for chunk in chunks)
+
+
+def test_mlx_vision_runtime_streams_backend_segments_when_no_tokenizer_is_exposed(monkeypatch) -> None:
+    reply = ["One", "...", "\n\n", "two", "..."]
+    chunks = _word_boundary_stream(reply)
+
+    fake_module = SimpleNamespace(
+        load=lambda *, path_or_hf_repo, **kwargs: ("vision-model", "vision-processor"),
+        generate=lambda **kwargs: SimpleNamespace(text="".join(reply)),
+        stream_generate=lambda **kwargs: iter(chunks),
+    )
+    monkeypatch.setattr("lewlm.runtime.mlx_vision.runtime.import_module", lambda name: fake_module)
+
+    runtime = MLXVisionRuntime()
+    manifest = _manifest()
+    request = GenerateRequest(
+        model_id=manifest.model_id,
+        messages=[GenerateMessage(role="user", content="count slowly")],
+        max_tokens=16,
+        temperature=0.0,
+    )
+
+    async def collect() -> list[str]:
+        return [chunk async for chunk in runtime.stream_generate(request)]
+
+    asyncio.run(runtime.load_model(manifest))
+    deltas = asyncio.run(collect())
+
+    # Without a tokenizer to decode with, the backend's own segments pass through unchanged.
+    assert deltas == [chunk.text for chunk in chunks if chunk.text]
+    assert "".join(deltas) == "".join(reply)
+
+
+def test_incremental_decoder_uses_backend_segments_without_redecoding_a_normal_stream() -> None:
+    reply = [" The", " sea", " is", " wide", " today"]
+    decode_calls: list[list[int]] = []
+    tokenizer = SimpleNamespace(
+        decode=lambda tokens: decode_calls.append(list(tokens)) or "".join(reply[token] for token in tokens),
+    )
+    decoder = _IncrementalChunkDecoder(tokenizer)
+
+    deltas = [decoder.consume(chunk) for chunk in _word_boundary_stream(reply)]
+    trailing = decoder.trailing()
+
+    assert "".join([*deltas, trailing]) == "".join(reply)
+    assert decode_calls == []
+
+
+def test_incremental_decoder_does_not_emit_an_incomplete_utf8_replacement_character() -> None:
+    decoded_prefixes = {
+        (0,): "\ufffd",
+        (0, 1): "\ufffd",
+        (0, 1, 2): "夢",
+    }
+    tokenizer = SimpleNamespace(decode=lambda tokens: decoded_prefixes[tuple(tokens)])
+    decoder = _IncrementalChunkDecoder(tokenizer)
+    chunks = [
+        SimpleNamespace(text="", token=0),
+        SimpleNamespace(text="", token=1),
+        SimpleNamespace(text="", token=2),
+        # `mlx_vlm` finalizes its byte buffer in one post-generation chunk.
+        SimpleNamespace(text="夢", token=2),
+    ]
+
+    deltas = [decoder.consume(chunk) for chunk in chunks]
+    deltas.append(decoder.trailing())
+
+    assert "".join(deltas) == "夢"
+    assert "\ufffd" not in deltas
 
 
 def _manifest() -> ModelManifest:

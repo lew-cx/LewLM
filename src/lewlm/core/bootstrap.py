@@ -25,6 +25,7 @@ from lewlm.routing.service import ModelRouter
 from lewlm.security.audit import AuditLogger
 from lewlm.security.authorization import ToolAuthorizer
 from lewlm.security.persistence import PersistenceEncryptor
+from lewlm.runtime.cancellation import RequestCancellationRegistry
 from lewlm.runtime.catalog import RuntimeCatalog, build_default_runtime_catalog
 from lewlm.runtime.experimental import DistributedClusterService
 from lewlm.runtime.request_coalescer import InFlightRequestCoalescer
@@ -63,6 +64,7 @@ class LewLMServices:
     model_load_scheduler: RuntimeRequestScheduler
     model_residency_manager: ModelResidencyManager
     lifecycle_operation_manager: LifecycleOperationManager
+    request_cancellation_registry: RequestCancellationRegistry
     runtime_metrics_recorder: RuntimeMetricsRecorder
     block_disk_cache: BlockDiskCache
     multimodal_encoder_cache: MultimodalEncoderCache
@@ -413,6 +415,11 @@ def bootstrap_services(
         event_bus=core_foundation.event_bus,
         audit_logger=core_foundation.audit_logger,
     )
+    request_cancellation_registry = RequestCancellationRegistry(
+        runtime_instance_id=runtime_instance.runtime_instance_id,
+        intent_ttl_seconds=resolved_settings.request_cancellation_intent_ttl_seconds,
+        max_tracked_requests=resolved_settings.request_cancellation_max_tracked_requests,
+    )
     optional_modules = _build_optional_module_services(
         resolved_settings,
         pack_registry=pack_registry,
@@ -511,6 +518,7 @@ def bootstrap_services(
         model_load_scheduler=performance_core.model_load_scheduler,
         model_residency_manager=model_residency_manager,
         lifecycle_operation_manager=lifecycle_operation_manager,
+        request_cancellation_registry=request_cancellation_registry,
         runtime_metrics_recorder=performance_core.runtime_metrics_recorder,
         block_disk_cache=performance_core.block_disk_cache,
         multimodal_encoder_cache=performance_core.multimodal_encoder_cache,

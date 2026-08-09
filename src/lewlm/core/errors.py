@@ -403,6 +403,37 @@ class JobNotFoundError(LewLMError):
         )
 
 
+class RequestCancelledError(LewLMError):
+    """Raised when a request stopped at a checkpoint because its handle was cancelled.
+
+    The status is 499 (client closed request): the work was abandoned on the
+    caller's own instruction, so it is neither a client mistake nor a host fault.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="request_cancelled",
+            # Not in `HTTPStatus`: 499 is the de-facto code for a request the
+            # caller withdrew, and it must not be confused with a 4xx the caller
+            # could fix by changing the payload.
+            status_code=499,
+            details=details,
+        )
+
+
+class RequestHandleConflictError(LewLMError):
+    """Raised when a cancellation handle is already active or reserved by another caller."""
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="request_handle_conflict",
+            status_code=HTTPStatus.CONFLICT,
+            details=details,
+        )
+
+
 class ConversionError(LewLMError):
     """Raised when a model conversion job fails."""
 
@@ -458,6 +489,8 @@ _ERROR_CLASS_BY_CODE: dict[str, type[LewLMError]] = {
     "sandbox_execution_error": SandboxExecutionError,
     "job_not_found": JobNotFoundError,
     "conversion_error": ConversionError,
+    "request_cancelled": RequestCancelledError,
+    "request_handle_conflict": RequestHandleConflictError,
     "not_implemented": NotImplementedLewLMError,
 }
 

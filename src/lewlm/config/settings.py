@@ -82,6 +82,11 @@ class LewLMSettings(BaseSettings):
     model_drain_timeout_seconds: int = 30
     runtime_request_queue_limit: int = 16
     runtime_request_queue_timeout_seconds: int = 15
+    # A cancellation can arrive before the request it targets when the caller and
+    # the request originator are different processes, so an unmatched intent is
+    # held for a while rather than dropped.
+    request_cancellation_intent_ttl_seconds: int = 300
+    request_cancellation_max_tracked_requests: int = 512
     continuous_batch_window_milliseconds: int = 8
     continuous_batch_max_batch_size: int = 4
     decode_priority_scheduling_enabled: bool = True
@@ -255,6 +260,10 @@ class LewLMSettings(BaseSettings):
             raise ValueError("cluster_stage_timeout_seconds must be at least 1.")
         if self.model_drain_timeout_seconds < 1:
             raise ValueError("model_drain_timeout_seconds must be at least 1.")
+        if self.request_cancellation_intent_ttl_seconds < 1:
+            raise ValueError("request_cancellation_intent_ttl_seconds must be at least 1.")
+        if self.request_cancellation_max_tracked_requests < 1:
+            raise ValueError("request_cancellation_max_tracked_requests must be at least 1.")
         if self.max_application_metric_entries < 1:
             raise ValueError("max_application_metric_entries must be at least 1.")
         if self.speculative_decoding_num_draft_tokens < 1:
@@ -404,6 +413,8 @@ class LewLMSettings(BaseSettings):
             "model_drain_timeout_seconds": self.model_drain_timeout_seconds,
             "runtime_request_queue_limit": self.runtime_request_queue_limit,
             "runtime_request_queue_timeout_seconds": self.runtime_request_queue_timeout_seconds,
+            "request_cancellation_intent_ttl_seconds": self.request_cancellation_intent_ttl_seconds,
+            "request_cancellation_max_tracked_requests": self.request_cancellation_max_tracked_requests,
             "continuous_batch_window_milliseconds": self.continuous_batch_window_milliseconds,
             "continuous_batch_max_batch_size": self.continuous_batch_max_batch_size,
             "decode_priority_scheduling_enabled": self.decode_priority_scheduling_enabled,

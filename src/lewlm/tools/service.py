@@ -22,6 +22,7 @@ from lewlm.documents.service import DocumentGenerationService
 from lewlm.documents.skills.service import DocumentTransformService
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
+from lewlm.runtime.cancellation import raise_if_request_cancelled
 from lewlm.security.audit import AuditLogger
 from lewlm.security.authorization import ToolAction, ToolAuthorizer
 from lewlm.security.sandbox import run_in_subprocess
@@ -243,6 +244,10 @@ class ToolExecutionService:
         request_id: str | None = None,
         emit_tool_events: bool = True,
     ) -> ToolExecutionEnvelope:
+        # The only cancellation checkpoint the synchronous document surfaces
+        # pass through: refuse before the tool starts rather than emitting
+        # started/failed events for work the caller has already withdrawn.
+        raise_if_request_cancelled(stage=f"tool.{request.tool}")
         descriptor = self.tool_catalog.get_tool(request.tool)
         started_at = utc_now()
         started_perf = time.perf_counter()

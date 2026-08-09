@@ -8,6 +8,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from lewlm.app_helpers import (
     APP_CLIENT_OPERATIONS,
@@ -21,7 +22,9 @@ from lewlm.app_helpers import (
 )
 from lewlm.async_helpers import ASYNC_CLIENT_OPERATIONS, LewLMAsyncClient
 from lewlm.api.schemas.chat import ChatCompletionRequest, ChatMessage
-from lewlm.api.schemas.multimodal import TokenCountRequest
+from lewlm.api.schemas.multimodal import EmbeddingCreateRequest, TokenCountRequest
+from lewlm.core.errors import InvalidRequestError
+from lewlm.runtime.cancellation import RequestCancellationState
 
 
 # --- bounded reads on the synchronous client ---------------------------------
@@ -381,3 +384,81 @@ def test_oversized_response_error_names_the_operation() -> None:
         _read_bounded(_FakeStream(b"x" * 100), limit=10, url="http://x/y", operation="generate_document")
     assert exc_info.value.operation == "generate_document"
     assert "`generate_document`" in str(exc_info.value)
+
+
+# --- cancellation handles ----------------------------------------------------
+
+
+async def test_a_cancellable_operation_sends_the_callers_request_handle() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.headers)
+        return _json_response({"request_id": "r"})
+
+    async with LewLMAsyncClient("http://lewlm.test", transport=_transport(handler)) as client:
+        # The stub body is deliberately not a full response: the header the
+        # request carried is what this covers.
+        with pytest.raises(ValidationError):
+            await client.embeddings(
+                EmbeddingCreateRequest(input=["text"]),
+                request_id="handle-1",
+            )
+
+    assert seen["x-request-id"] == "handle-1"
+
+
+async def test_operations_without_a_handle_do_not_send_one() -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return _json_response({"status": "ok"})
+
+    async with LewLMAsyncClient("http://lewlm.test", transport=_transport(handler)) as client:
+        await client._send("GET", "/v1/health", operation="health", payload=None, timeout_seconds=None)
+
+    assert "x-request-id" not in seen[0]
+
+
+async def test_cancel_request_targets_the_handle_and_returns_the_acknowledgement() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return _json_response(
+            {
+                "request_id": "handle-1",
+                "state": "cancelling",
+                "runtime_instance_id": "runtime-1",
+                "application_id": "docktizo",
+            },
+        )
+
+    async with LewLMAsyncClient("http://lewlm.test", transport=_transport(handler)) as client:
+        record = await client.cancel_request("handle-1")
+
+    assert seen == {"method": "POST", "path": "/v1/requests/handle-1/cancel"}
+    assert record.state is RequestCancellationState.CANCELLING
+    assert record.runtime_instance_id == "runtime-1"
+
+
+async def test_async_client_refuses_a_handle_that_cannot_round_trip_through_the_cancel_path() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _json_response({})
+
+    async with LewLMAsyncClient("http://lewlm.test", transport=_transport(handler)) as client:
+        with pytest.raises(InvalidRequestError):
+            await client.cancel_request("handle?query")
+        with pytest.raises(InvalidRequestError):
+            await client.embeddings(
+                EmbeddingCreateRequest(input=["text"]),
+                request_id="handle/segment",
+            )
+
+    assert calls == 0

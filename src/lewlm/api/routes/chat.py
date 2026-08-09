@@ -34,6 +34,7 @@ from lewlm.core.chat import ChatStreamDelta
 from lewlm.core.contracts import GenerateMessage, ReasoningOutput, ReasoningVisibility
 from lewlm.core.errors import ConfigurationError
 from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace
+from lewlm.runtime.cancellation import request_cancelled
 from lewlm.runtime.request_context import apply_body_correlation_id
 from lewlm.security.workspace import secure_workspace
 
@@ -559,11 +560,15 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
     source_stream = None
     delivered_final_chunk = False
     try:
+        if request_cancelled():
+            return
         sent_role = False
         sent_serving_profile = False
         deltas: list[str] = []
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
+            if request_cancelled():
+                return
             if item is None:
                 yield ": keep-alive\n\n"
                 continue
@@ -587,6 +592,8 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
             sent_role = True
             sent_serving_profile = True
             yield f"data: {chunk.model_dump_json()}\n\n"
+        if request_cancelled():
+            return
         if on_complete is not None:
             try:
                 on_complete("".join(deltas))
@@ -639,10 +646,14 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
     source_stream = None
     delivered_final_chunk = False
     try:
+        if request_cancelled():
+            return
         deltas: list[str] = []
         sent_serving_profile = False
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
+            if request_cancelled():
+                return
             if item is None:
                 yield ": keep-alive\n\n"
                 continue
@@ -659,6 +670,8 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             )
             sent_serving_profile = True
             yield f"data: {chunk.model_dump_json()}\n\n"
+        if request_cancelled():
+            return
         if on_complete is not None:
             try:
                 on_complete("".join(deltas))

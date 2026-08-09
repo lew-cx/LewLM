@@ -19,6 +19,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | `GET` | `/v1/runtime/residencies` | live model residency snapshots |
 | `GET` | `/v1/model-lifecycle/operations/{operation_id}` | poll an asynchronous lifecycle operation |
 | `DELETE` | `/v1/model-lifecycle/operations/{operation_id}` | cancel a pending/running lifecycle operation |
+| `POST` | `/v1/requests/{request_id}/cancel` | cancel an in-flight request by its `x-request-id` handle |
 | `GET` | `/v1/jobs/{job_id}` | background job status |
 | `POST` | `/v1/benchmarks/autotune` | serving-profile recommendation |
 | `GET` | `/v1/serving-profiles` | stored serving profiles, newest first (`model`, `capability`, `limit` from 1 to 500) |
@@ -172,7 +173,41 @@ The retrieval surface also includes per-stage `embedding_stage` and `rerank_stag
 
 ### Request identifiers
 
-Every response carries `x-request-id`. Send your own and LewLM echoes it verbatim; omit it and LewLM mints one. It is set on error responses too, so a failed call is still traceable. This is distinct from `x-lewlm-correlation-id`: the request ID identifies one HTTP call, the correlation ID ties a caller's workflow together across many.
+Every response carries `x-request-id`. Send your own URL-safe handle and LewLM echoes it verbatim; omit it and LewLM mints one. Handles are 1–128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, and `-`; other values are refused with `invalid_request` rather than being silently trimmed into a different cancellation identity. The header is set on error responses too, so a failed call is still traceable. This is distinct from `x-lewlm-correlation-id`: the request ID identifies one HTTP call, the correlation ID ties a caller's workflow together across many.
+
+### Cancelling an in-flight request
+
+A caller awaiting its own HTTP response can cancel by disconnecting. A separate process — an API that dispatched work to a worker, an orchestrator supervising a queue — cannot: it holds no socket for that request. `POST /v1/requests/{request_id}/cancel` addresses the request by the `x-request-id` handle it was sent with, so cancellation does not depend on owning the connection.
+
+```
+POST /v1/responses            x-request-id: 5f1c…   x-lewlm-application-id: docktizo
+POST /v1/requests/5f1c…/cancel                      x-lewlm-application-id: docktizo
+```
+
+The call is idempotent and returns the current state of the handle:
+
+| `state` | Meaning |
+| --- | --- |
+| `cancelling` | a request with this handle is in flight and has been signalled |
+| `pending` | no request with this handle is known. The intent is held until `expires_at`, and a request arriving with it is stopped immediately — so an orchestrator may cancel before the worker has even issued the call |
+| `cancelled` | the request stopped at a checkpoint |
+| `completed` | the request reached a terminal state without observing the signal |
+
+Repeat the call to observe the outcome; the state moves from `cancelling` to `cancelled` or `completed`. A cancelled request fails with `request_cancelled` (499) and `details.stage` names the checkpoint that stopped it.
+
+Use an unpredictable UUID or comparable high-entropy handle within the URL-safe alphabet above, and do not reuse it while a request is active. Concurrent reuse is ambiguous and is refused with `request_handle_conflict` (409), leaving the original request registered.
+
+When API-key authentication is enabled, LewLM binds the handle to a keyed fingerprint of the credential that issued or first cancelled it; the raw key is never retained in the cancellation record. A different credential is refused with `tool_authorization_error`. `x-lewlm-application-id` is untrusted observability metadata, not authorization: changing it neither grants nor removes cancellation authority. In an open deployment there is no authenticated owner to compare, so possession of the unpredictable handle is the capability to cancel it.
+
+What LewLM does **not** claim:
+
+- **Cooperative, not pre-emptive.** The request stops at its next checkpoint: runtime admission (including while queued behind it), the entry to a tool or document operation, and between sources during multi-source ingestion. Work already committed to one bounded backend call runs to completion.
+- **Process-local.** Only the instance named by `runtime_instance_id` on the record can act on the handle. Behind a load balancer, cancel against the instance that accepted the request.
+- **Batched requests share an admission.** On a runtime that batches continuously, several requests pass admission together; once such a batch is dispatched, its members are no longer individually cancellable.
+- **Streaming remains cooperative.** The handle stays active until the response body closes, and LewLM checks it before the first frame and between stream items or heartbeats. Work already awaiting one bounded backend chunk is not pre-empted. Disconnecting remains the immediate option for the process that owns the connection, and LewLM closes the source stream deterministically on the way out.
+- **Sandboxed tool and document work is stopped before it starts**, not during: with `tool_sandbox_enabled`, the operation runs in a subprocess that no checkpoint reaches.
+
+Handles are remembered in bounded, in-memory maps (`request_cancellation_max_tracked_requests`, `request_cancellation_intent_ttl_seconds`); an old handle eventually reports `pending` again rather than `completed`.
 
 ### Sampling controls
 
@@ -229,6 +264,8 @@ Common codes include:
 | `invalid_request` | 422 | A request body or parameter failed validation. `details.fields[]` names each offending field with a message and type. |
 | `internal_error` | 500 | An unexpected failure. Carries `details.cause_type` so a host app can report something actionable; LewLM never returns a bare, envelope-less 500. |
 | `not_found` / `method_not_allowed` | 404 / 405 | Framework routing errors, normalized onto the same envelope. |
+| `request_cancelled` | 499 | The request stopped because its `x-request-id` handle was cancelled. `details.stage` names the checkpoint. Not retryable: the caller withdrew the work. |
+| `request_handle_conflict` | 409 | The handle is already active or reserved by another authenticated caller. Use a fresh high-entropy request ID. |
 | `backend_contract_violation` | 502 | A backend returned a result LewLM cannot trust — a rerank index outside the candidate range, a duplicate index, an unscored candidate, or a non-finite score. Expected mainly on bridge-backed runtimes. |
 
 Backend load failures are always returned in this envelope, including on the streaming chat and responses routes.

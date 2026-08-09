@@ -60,6 +60,8 @@ Built-in feature pack names: `documents`.
 | `LEWLM_MAX_APPLICATION_METRIC_ENTRIES` | `64` | bounded named application metric entries before overflow aggregation |
 | `LEWLM_RUNTIME_REQUEST_QUEUE_LIMIT` | `16` | queue depth limit |
 | `LEWLM_RUNTIME_REQUEST_QUEUE_TIMEOUT_SECONDS` | `15` | queue wait timeout |
+| `LEWLM_REQUEST_CANCELLATION_INTENT_TTL_SECONDS` | `300` | how long a cancellation for a request that has not arrived yet is honoured |
+| `LEWLM_REQUEST_CANCELLATION_MAX_TRACKED_REQUESTS` | `512` | bound on remembered request handles |
 | `LEWLM_CONTINUOUS_BATCH_WINDOW_MILLISECONDS` | `8` | native batch join window |
 | `LEWLM_CONTINUOUS_BATCH_MAX_BATCH_SIZE` | `4` | native batch size cap |
 | `LEWLM_DECODE_PRIORITY_SCHEDULING_ENABLED` | `true` | decode-priority scheduling |

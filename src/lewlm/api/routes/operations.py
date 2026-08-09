@@ -11,6 +11,7 @@ from lewlm.api.dependencies import get_services
 from lewlm.conversion.models import JobRecord
 from lewlm.core.contracts import CapabilityName
 from lewlm.runtime.experimental import ClusterStatus
+from lewlm.runtime.cancellation import RequestCancellationRecord
 from lewlm.runtime.identity import RuntimeInfo
 from lewlm.runtime.residency import ModelResidencySnapshot
 from lewlm.runtime.operations import LifecycleOperationRecord
@@ -72,6 +73,33 @@ async def cancel_lifecycle_operation(operation_id: str, request: Request) -> Lif
     services = get_services(request)
     _authorize_lifecycle(request, services, LifecycleCapability.DRAIN_MODEL)
     return await services.lifecycle_operation_manager.cancel(operation_id)
+
+
+@router.post("/v1/requests/{request_id}/cancel", response_model=RequestCancellationRecord)
+async def cancel_request(request_id: str, request: Request) -> RequestCancellationRecord:
+    """Cancel an in-flight request by the `x-request-id` handle it was sent with.
+
+    Idempotent, and safe to call before the target request arrives: an unknown
+    handle records an intent that stops a matching request on arrival. Repeat the
+    call to observe whether the request actually stopped — `cancelling` means the
+    signal was delivered, `cancelled` that a checkpoint acted on it, `completed`
+    that the request finished first.
+
+    Cancellation is best-effort and process-local: only the LewLM instance named
+    by `runtime_instance_id` can act on the handle, and work already committed to
+    one bounded backend call runs to completion.
+    """
+
+    services = get_services(request)
+    return services.request_cancellation_registry.cancel(
+        request_id,
+        application_id=request.headers.get("x-lewlm-application-id"),
+        credential=(
+            request_api_credential(request.headers)
+            if services.settings.api_key_required
+            else None
+        ),
+    )
 
 
 @router.get("/v1/jobs/{job_id}", response_model=JobRecord)

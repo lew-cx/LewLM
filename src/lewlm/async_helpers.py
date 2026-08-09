@@ -61,6 +61,7 @@ from lewlm.app_helpers import (
     validate_operation_limits,
 )
 from lewlm.documents.skills.models import DocumentTransformRequest
+from lewlm.runtime.cancellation import RequestCancellationRecord, validate_request_handle
 from lewlm.runtime.identity import RuntimeInfo
 from lewlm.runtime.operations import LifecycleOperationRecord
 from lewlm.runtime.residency import ModelResidencySnapshot
@@ -229,6 +230,38 @@ class LewLMAsyncClient:
             timeout_seconds=timeout_seconds,
         )
 
+    async def cancel_request(
+        self,
+        request_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> RequestCancellationRecord:
+        """Cancel an in-flight request by the `request_id` handle it was sent with.
+
+        The handle is chosen by the caller and passed to the operation itself
+        (`responses(..., request_id=handle)`), so an orchestrator in another
+        process — one that owns no task and no socket for that request — can
+        still stop it. The call is idempotent, and may be made before the target
+        request has even arrived: an unknown handle is remembered, and a matching
+        request is stopped on arrival.
+
+        Cancellation is best-effort and process-local. LewLM stops the request at
+        its next checkpoint, so work already committed to one bounded backend
+        call finishes; only the instance named by `runtime_instance_id` on the
+        returned record can act on the handle. Repeat the call to observe the
+        outcome: `cancelling` means the signal is delivered, `cancelled` that the
+        request stopped, `completed` that it finished first.
+        """
+
+        request_id = validate_request_handle(request_id)
+        return await self._request(
+            "POST",
+            f"/v1/requests/{request_id}/cancel",
+            RequestCancellationRecord,
+            operation="cancel_request",
+            timeout_seconds=timeout_seconds,
+        )
+
     async def get_lifecycle_operation(
         self,
         operation_id: str,
@@ -266,6 +299,7 @@ class LewLMAsyncClient:
         payload: ToolExecutionRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> ToolExecutionEnvelope:
         return await self._request(
             "POST",
@@ -274,6 +308,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="execute_tool",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     # --- generation surfaces --------------------------------------------------
@@ -283,6 +318,7 @@ class LewLMAsyncClient:
         payload: ChatCompletionRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> ChatCompletionResponse:
         if payload.stream:
             raise ValueError(
@@ -296,6 +332,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="chat_completion",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def stream_chat_completion(
@@ -303,11 +340,14 @@ class LewLMAsyncClient:
         payload: ChatCompletionRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ):
         """Yield raw server-sent event payloads for a streaming chat request.
 
         Cancelling the consuming task closes the underlying response, so the
         server stops generating instead of running to completion unobserved.
+        A separate process can use `request_id` to stop the stream cooperatively;
+        LewLM checks the handle before the first frame and between stream items.
         """
 
         streaming_payload = payload.model_copy(update={"stream": True})
@@ -316,7 +356,7 @@ class LewLMAsyncClient:
             "POST",
             "/v1/chat/completions",
             content=_encoded(streaming_payload),
-            headers={"content-type": "application/json", **self._request_headers()},
+            headers={"content-type": "application/json", **self._request_headers(request_id)},
             timeout=request_timeout,
         ) as response:
             if response.status_code >= 400:
@@ -336,6 +376,7 @@ class LewLMAsyncClient:
         payload: ResponseCreateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> ResponseCreateResponse:
         if payload.stream:
             raise ValueError("LewLMAsyncClient.responses does not support stream=True.")
@@ -346,6 +387,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="responses",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def embeddings(
@@ -353,6 +395,7 @@ class LewLMAsyncClient:
         payload: EmbeddingCreateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> EmbeddingCreateResponse:
         return await self._request(
             "POST",
@@ -361,6 +404,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="embeddings",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def rerank(
@@ -368,6 +412,7 @@ class LewLMAsyncClient:
         payload: RerankCreateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> RerankCreateResponse:
         return await self._request(
             "POST",
@@ -376,6 +421,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="rerank",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def retrieve_context(
@@ -383,6 +429,7 @@ class LewLMAsyncClient:
         payload: RetrievalContextRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> RetrievalContextResponse:
         return await self._request(
             "POST",
@@ -391,6 +438,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="retrieve_context",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def count_tokens(
@@ -420,6 +468,7 @@ class LewLMAsyncClient:
         payload: AudioTranscriptionCreateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> AudioTranscriptionCreateResponse:
         return await self._request(
             "POST",
@@ -428,6 +477,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="transcribe_audio",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def synthesize_speech(
@@ -435,6 +485,7 @@ class LewLMAsyncClient:
         payload: AudioSpeechCreateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> AudioSpeechCreateResponse:
         return await self._request(
             "POST",
@@ -443,6 +494,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="synthesize_speech",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def rename_session(
@@ -483,6 +535,7 @@ class LewLMAsyncClient:
         payload: DocumentIngestRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> DocumentIngestResponse:
         return await self._request(
             "POST",
@@ -491,6 +544,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="ingest_documents",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def generate_document(
@@ -498,6 +552,7 @@ class LewLMAsyncClient:
         payload: DocumentGenerateRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> DocumentGenerateResponse:
         return await self._request(
             "POST",
@@ -506,6 +561,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="generate_document",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     async def transform_document(
@@ -513,6 +569,7 @@ class LewLMAsyncClient:
         payload: DocumentTransformRequest,
         *,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> DocumentTransformResponse:
         return await self._request(
             "POST",
@@ -521,6 +578,7 @@ class LewLMAsyncClient:
             payload=payload,
             operation="transform_document",
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
 
     @staticmethod
@@ -555,10 +613,13 @@ class LewLMAsyncClient:
 
     # --- transport ------------------------------------------------------------
 
-    def _request_headers(self) -> dict[str, str]:
+    def _request_headers(self, request_id: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
         if self._correlation_id:
-            return {"x-lewlm-correlation-id": self._correlation_id}
-        return {}
+            headers["x-lewlm-correlation-id"] = self._correlation_id
+        if request_id is not None:
+            headers["x-request-id"] = validate_request_handle(request_id)
+        return headers
 
     async def _request(
         self,
@@ -569,6 +630,7 @@ class LewLMAsyncClient:
         operation: str,
         payload: BaseModel | None = None,
         timeout_seconds: float | None = None,
+        request_id: str | None = None,
     ) -> ResponseT:
         raw = await self._send(
             method,
@@ -576,6 +638,7 @@ class LewLMAsyncClient:
             operation=operation,
             payload=payload,
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
         return response_type.model_validate_json(raw)
 
@@ -611,9 +674,10 @@ class LewLMAsyncClient:
         operation: str,
         payload: BaseModel | None,
         timeout_seconds: float | None,
+        request_id: str | None = None,
     ) -> bytes:
         limit = self._limit_for(operation)
-        headers = self._request_headers()
+        headers = self._request_headers(request_id)
         content = None
         if payload is not None:
             headers = {**headers, "content-type": "application/json"}

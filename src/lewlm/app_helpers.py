@@ -77,6 +77,7 @@ from lewlm.documents.skills.models import DocumentTransformRequest
 from lewlm.documents.ingest.models import DocumentChunk, IngestedDocumentSource
 from lewlm.structured_output import StructuredOutputRequest
 from lewlm.telemetry.stats import RuntimeStats
+from lewlm.runtime.cancellation import RequestCancellationRecord, validate_request_handle
 from lewlm.runtime.identity import RuntimeInfo
 from lewlm.runtime.operations import LifecycleOperationRecord
 from lewlm.runtime.residency import ModelResidencySnapshot
@@ -213,6 +214,8 @@ class _AppClientBackend(Protocol):
     def get_lifecycle_operation(self, operation_id: str) -> LifecycleOperationRecord: ...
 
     def cancel_lifecycle_operation(self, operation_id: str) -> LifecycleOperationRecord: ...
+
+    def cancel_request(self, request_id: str) -> RequestCancellationRecord: ...
 
     def list_tools(self) -> ToolListResponse: ...
 
@@ -372,6 +375,18 @@ class LewLMAppClient:
         """Cancel an asynchronous model lifecycle operation when still active."""
 
         return self._backend.cancel_lifecycle_operation(operation_id)
+
+    def cancel_request(self, request_id: str) -> RequestCancellationRecord:
+        """Cancel an in-flight request by its `x-request-id` handle.
+
+        For orchestrating requests this client did not issue: this client sends
+        one request at a time on the calling thread, and does not stamp per-call
+        handles, so the handles it cancels come from elsewhere — typically a
+        worker using `LewLMAsyncClient(..., request_id=...)`. Cancellation is
+        best-effort and only affects the LewLM instance holding the request.
+        """
+
+        return self._backend.cancel_request(request_id)
 
     def list_tools(self) -> ToolListResponse:
         """Return the typed local-tool catalog."""
@@ -941,6 +956,13 @@ class _EmbeddedAppClientBackend:
             helper_name="LewLMAppClient.cancel_lifecycle_operation",
             async_name="LifecycleOperationManager.cancel",
         )
+
+    def cancel_request(self, request_id: str) -> RequestCancellationRecord:
+        # Embedded callers share the process with the registry, so no event loop
+        # is involved: the handle is cancelled directly. The host owns the
+        # process and has no HTTP application identity, so it may cancel any
+        # handle its own server issued.
+        return self._lewlm.services.request_cancellation_registry.cancel(request_id, trusted_caller=True)
 
     def _lifecycle(self, model_id: str, *, operation: str) -> ModelLifecycleResponse:
         from lewlm.library import _run_sync
@@ -1584,6 +1606,15 @@ class _HttpAppClientBackend:
             f"/v1/model-lifecycle/operations/{operation_id}",
             operation="cancel_lifecycle_operation",
             response_type=LifecycleOperationRecord,
+        )
+
+    def cancel_request(self, request_id: str) -> RequestCancellationRecord:
+        request_id = validate_request_handle(request_id)
+        return self._request_json(
+            "POST",
+            f"/v1/requests/{request_id}/cancel",
+            operation="cancel_request",
+            response_type=RequestCancellationRecord,
         )
 
     def list_tools(self) -> ToolListResponse:

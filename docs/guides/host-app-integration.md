@@ -158,6 +158,24 @@ async with LewLMAsyncClient(
 
 Every operation accepts a per-operation `timeout_seconds`. `with_correlation_id()` returns a view that stamps a different correlation ID while sharing the same connection pool. Call `aclose()` (or use the context manager) when finished; it is idempotent.
 
+## Cancelling from another process
+
+Cancelling the task that awaits a call is enough when one process owns the request. It is not enough when the process that decides to stop the work is not the one holding the connection — an API accepting a cancel while a durable worker runs the generation, for example. Give the operation a handle you choose, and cancel it by name from wherever the decision is made:
+
+```python
+handle = str(uuid4())
+
+# worker process
+answer = await client.responses(request, request_id=handle)
+
+# API or orchestrator process, no task or socket for that request
+record = await orchestrator_client.cancel_request(handle)
+```
+
+`request_id` is accepted by the generation, retrieval, tool, and document operations, and travels as the `x-request-id` header. Use an unpredictable UUID or comparable high-entropy value made of 1–128 URL-safe letters, digits, `.`, `_`, `~`, or `-`, and never reuse one while a request is active; invalid handles fail locally in the typed clients or as `invalid_request` over HTTP, while concurrent reuse fails with `request_handle_conflict` (HTTP 409). `cancel_request()` is idempotent, may be called before the worker has issued its request at all, and returns the state of the handle (`cancelling`, `pending`, `cancelled`, `completed`) — call it again to see whether the request actually stopped. A stopped request fails with `request_cancelled` (HTTP 499), which is a withdrawal, not a failure to retry.
+
+Cancellation is cooperative and process-local: LewLM stops at its next checkpoint, so work already inside one bounded backend call finishes, and only the instance named by `runtime_instance_id` on the record can act on the handle. When API-key authentication is enabled, the target and cancel calls must use the same credential. `x-lewlm-application-id` remains observability metadata and is never authority; in an open deployment, possession of the unpredictable handle is the only capability boundary. The full boundaries — batching, streaming, and sandboxed tool work — are in [the HTTP API reference](../reference/http-api.md).
+
 ## Tokenizer-aware counting
 
 Estimating one token per four bytes is safe but wastes context. `POST /v1/tokenize/count` and `LewLMAppClient.count_tokens(...)` use the selected model's own tokenizer:

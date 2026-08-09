@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 import asyncio
 import logging
 from typing import AsyncIterator
@@ -19,6 +19,7 @@ from lewlm._version import __version__
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.bootstrap import LewLMServices, bootstrap_services
 from lewlm.core.errors import FRAMEWORK_ERROR_CODES, InternalError, InvalidRequestError, LewLMError
+from lewlm.security.authorization import request_api_credential
 from lewlm.security.http import RequestGuard
 from lewlm.api.openapi import normalize_openapi_schema, register_named_schemas
 from lewlm.api.schemas.chat import (
@@ -40,6 +41,7 @@ from lewlm.runtime.request_context import (
     reset_application_context,
     set_application_context,
 )
+from lewlm.runtime.cancellation import validate_request_handle
 
 from .routes.chat import router as chat_router
 from .routes.cluster import router as cluster_router
@@ -121,23 +123,68 @@ def create_app(
     @app.middleware("http")
     async def request_guard_middleware(request: Request, call_next):
         correlation_id = normalize_correlation_id(request.headers.get("x-lewlm-correlation-id"))
-        # A caller-supplied request ID is echoed as-is; otherwise LewLM mints one
-        # so every response is traceable in logs even without a caller ID.
-        request_id = normalize_correlation_id(request.headers.get("x-request-id")) or str(uuid4())
+        raw_request_id = request.headers.get("x-request-id")
+        request_id_error: LewLMError | None = None
+        if raw_request_id is None:
+            request_id = str(uuid4())
+        else:
+            try:
+                request_id = validate_request_handle(raw_request_id)
+            except LewLMError as exc:
+                # Do not reflect an invalid, potentially unbounded identifier.
+                # The generated ID still gives the error response a safe trace.
+                request_id = str(uuid4())
+                request_id_error = exc
+        application_id = request.headers.get("x-lewlm-application-id")
         context_tokens = set_application_context(
-            application_id=request.headers.get("x-lewlm-application-id"),
+            application_id=application_id,
             client_instance_id=request.headers.get("x-lewlm-client-instance-id"),
             correlation_id=correlation_id,
         )
         request.state.request_id = request_id
+        active_cancellation_scope = None
         try:
             await request_guard.enforce(request)
+            if request_id_error is not None:
+                raise request_id_error
         except LewLMError as exc:
             _audit_request_failure(request, exc)
             response = JSONResponse(status_code=exc.status_code, content={"error": exc.to_dict()})
         else:
-            response = await call_next(request)
+            # Registered before the route runs and released only after its body
+            # finishes or disconnects, so streaming requests remain addressable
+            # as well. The token is a context variable, so every checkpoint
+            # downstream — including sync handlers on the thread pool — sees it.
+            try:
+                candidate_scope = _request_cancellation_scope(
+                    request,
+                    request_id=request_id,
+                    application_id=application_id,
+                )
+                candidate_scope.__enter__()
+                active_cancellation_scope = candidate_scope
+                response = await call_next(request)
+            except LewLMError as exc:
+                if active_cancellation_scope is not None:
+                    active_cancellation_scope.__exit__(type(exc), exc, exc.__traceback__)
+                    active_cancellation_scope = None
+                # Registration conflicts originate in middleware, outside
+                # FastAPI's route exception handlers, so normalize them here.
+                _audit_request_failure(request, exc)
+                response = JSONResponse(status_code=exc.status_code, content={"error": exc.to_dict()})
+            else:
+                body_iterator = getattr(response, "body_iterator", None)
+                if body_iterator is None:
+                    active_cancellation_scope.__exit__(None, None, None)
+                else:
+                    response.body_iterator = _body_with_cancellation_scope(
+                        body_iterator,
+                        active_cancellation_scope,
+                    )
+                active_cancellation_scope = None
         finally:
+            if active_cancellation_scope is not None:
+                active_cancellation_scope.__exit__(None, None, None)
             reset_application_context(context_tokens)
         response.headers["x-request-id"] = request_id
         if correlation_id is not None:
@@ -256,6 +303,46 @@ def _validation_field_details(errors: list[dict]) -> list[dict[str, str]]:
             },
         )
     return details
+
+
+def _request_cancellation_scope(request: Request, *, request_id: str, application_id: str | None):
+    """Make one in-flight request addressable by its `x-request-id` handle.
+
+    Requests served before the service container exists — there are none in a
+    normal lifespan — simply run without a handle rather than failing.
+    """
+
+    services = getattr(request.app.state, "services", None)
+    if services is None or _is_cancellation_request(request):
+        return nullcontext()
+    credential = request_api_credential(request.headers) if services.settings.api_key_required else None
+    return services.request_cancellation_registry.track(
+        request_id,
+        application_id=application_id,
+        credential=credential,
+    )
+
+
+async def _body_with_cancellation_scope(body_iterator, cancellation_scope):
+    """Keep a handle active until the response body finishes or disconnects."""
+
+    try:
+        async for chunk in body_iterator:
+            yield chunk
+    finally:
+        cancellation_scope.__exit__(None, None, None)
+
+
+def _is_cancellation_request(request: Request) -> bool:
+    """Whether this is the cancel endpoint itself.
+
+    Cancelling a cancellation is meaningless, and tracking it would let a caller
+    that reuses one `x-request-id` for both the work and the cancel silently
+    shadow the very handle it is trying to stop.
+    """
+
+    path = request.url.path
+    return path.startswith("/v1/requests/") and path.endswith("/cancel")
 
 
 def _error_response(request: Request, exc: LewLMError, *, headers: dict | None = None) -> JSONResponse:

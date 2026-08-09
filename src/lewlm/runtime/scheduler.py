@@ -9,6 +9,7 @@ import time
 from typing import Any, Generic, Literal, TypeVar
 
 from lewlm.core.errors import BackpressureError
+from lewlm.runtime.cancellation import current_cancellation_token, raise_if_request_cancelled
 
 PayloadT = TypeVar("PayloadT")
 ResultT = TypeVar("ResultT")
@@ -109,6 +110,10 @@ class RuntimeRequestScheduler:
         decode_priority: bool = False,
         prefill_isolation: bool = False,
     ) -> RuntimeRequestAdmission:
+        # Admission is the checkpoint every runtime-backed request passes, so a
+        # cancelled request never reaches a model — including one cancelled
+        # while it was still waiting behind the queue.
+        raise_if_request_cancelled(stage="runtime_admission")
         scheduling_lane: Literal["decode", "prefill"] = "prefill" if prefill_heavy else "decode"
         decode_priority_requested = self.decode_priority_enabled and scheduling_lane == "decode" and decode_priority
         prefill_isolated = self._prefill_isolation_active(
@@ -192,30 +197,62 @@ class RuntimeRequestScheduler:
             )
         if waiter is None:
             raise AssertionError("Runtime scheduler waiter was not created.")
+        cancellation_token = current_cancellation_token()
+        cancellation_waiter = (
+            asyncio.create_task(cancellation_token.wait_cancelled())
+            if cancellation_token is not None
+            else None
+        )
+        waitables: set[asyncio.Future | asyncio.Task] = {waiter.future}
+        if cancellation_waiter is not None:
+            waitables.add(cancellation_waiter)
         try:
-            granted = await asyncio.wait_for(waiter.future, timeout=self.queue_timeout_seconds)
+            done, _ = await asyncio.wait(
+                waitables,
+                timeout=self.queue_timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         except asyncio.CancelledError:
-            with self._lock:
-                self._remove_waiter_locked(waiter)
+            raced_grant = self._withdraw_waiter(waiter)
+            if raced_grant is not None:
+                self._release_withdrawn_grant(waiter)
             raise
-        except asyncio.TimeoutError as exc:
-            with self._lock:
-                self._remove_waiter_locked(waiter)
-                self._timed_out_requests += 1
-            raise BackpressureError(
-                "Runtime request queue wait timed out.",
-                details={
-                    "max_concurrent_runtime_requests": self.max_concurrent_requests,
-                    "runtime_request_queue_limit": self.queue_limit,
-                    "runtime_request_queue_timeout_seconds": self.queue_timeout_seconds,
-                },
-            ) from exc
+        finally:
+            if cancellation_waiter is not None and not cancellation_waiter.done():
+                cancellation_waiter.cancel()
+                await asyncio.gather(cancellation_waiter, return_exceptions=True)
+
+        if cancellation_waiter is not None and cancellation_waiter in done:
+            raced_grant = self._withdraw_waiter(waiter)
+            if raced_grant is not None:
+                self._release_withdrawn_grant(waiter)
+            # Marks the token as observed as well as raising the typed 499.
+            raise_if_request_cancelled(stage="runtime_admission")
+            raise AssertionError("Cancellation waiter completed without a cancelled token.")
+
+        if waiter.future not in done:
+            raced_grant = self._withdraw_waiter(waiter)
+            if raced_grant is not None:
+                granted = raced_grant
+            else:
+                with self._lock:
+                    self._timed_out_requests += 1
+                raise BackpressureError(
+                    "Runtime request queue wait timed out.",
+                    details={
+                        "max_concurrent_runtime_requests": self.max_concurrent_requests,
+                        "runtime_request_queue_limit": self.queue_limit,
+                        "runtime_request_queue_timeout_seconds": self.queue_timeout_seconds,
+                    },
+                )
+        else:
+            granted = waiter.future.result()
 
         wait_seconds = time.perf_counter() - waiter.enqueued_at
         with self._lock:
             self._total_queue_wait_seconds += max(wait_seconds, 0.0)
             self._max_queue_wait_seconds = max(self._max_queue_wait_seconds, wait_seconds)
-        return RuntimeRequestAdmission(
+        admission = RuntimeRequestAdmission(
             scheduler=self,
             was_queued=True,
             wait_seconds=round(wait_seconds, 4),
@@ -223,6 +260,14 @@ class RuntimeRequestScheduler:
             decode_priority_applied=granted.decode_priority_applied,
             prefill_isolated=prefill_isolated,
         )
+        try:
+            raise_if_request_cancelled(stage="runtime_admission")
+        except BaseException:
+            # The slot was granted while this request was queued. Hand it back
+            # to the next waiter instead of holding it for work that stopped.
+            admission.release()
+            raise
+        return admission
 
     def release(
         self,
@@ -433,6 +478,23 @@ class RuntimeRequestScheduler:
             self._queued_decode_requests = max(0, self._queued_decode_requests - 1)
         else:
             self._queued_prefill_requests = max(0, self._queued_prefill_requests - 1)
+
+    def _withdraw_waiter(self, waiter: _QueuedRuntimeRequest) -> _GrantedRuntimeRequest | None:
+        """Remove a queued waiter, or return the slot it won in the same race."""
+
+        with self._lock:
+            if waiter in self._waiters:
+                self._remove_waiter_locked(waiter)
+                return None
+            if waiter.future.done() and not waiter.future.cancelled():
+                return waiter.future.result()
+            return None
+
+    def _release_withdrawn_grant(self, waiter: _QueuedRuntimeRequest) -> None:
+        self.release(
+            scheduling_lane=waiter.scheduling_lane,
+            prefill_isolated=waiter.prefill_isolated,
+        )
 
     def _dispatch_waiters_locked(self) -> None:
         if self.max_concurrent_requests <= 0:

@@ -117,6 +117,7 @@ Helper methods:
 | `runtime_info()` / `list_model_residencies()` / `get_model_residency()` | shared-runtime identity and residency inspection |
 | `warm_model()` / `drain_model()` / `unload_model()` | synchronous lifecycle helpers |
 | `create_drain_operation()` / `get_lifecycle_operation()` / `cancel_lifecycle_operation()` | non-blocking for HTTP-backed clients; embedded synchronous clients return the terminal recorded operation |
+| `cancel_request()` | cancel an in-flight request by its `x-request-id` handle, including one issued by another process |
 | `chat_completion()` | chat-completions request/response helper |
 | `responses()` | responses-style request/response helper |
 | `embeddings()` | embeddings helper |
