@@ -470,6 +470,22 @@ class ManagedTextRuntime(ManagedRuntime):
             ),
         )
 
+    def validate_structured_output(
+        self,
+        contract: StructuredOutputRequest | None,
+        *,
+        model_id: str | None = None,
+    ) -> None:
+        """Reject a contract this runtime cannot honour, before generation starts.
+
+        A runtime that compiles the contract into something a decoder must
+        accept — a grammar, most of all — needs to say so while the caller can
+        still be answered with an error envelope. Once a stream has started,
+        there is nowhere left to put one.
+        """
+
+        return None
+
     def supports_continuous_batching(self, capability: CapabilityName) -> bool:
         return False
 

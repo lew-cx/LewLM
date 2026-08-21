@@ -22,7 +22,7 @@ from lewlm.documents.service import DocumentGenerationService
 from lewlm.documents.skills.service import DocumentTransformService
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
-from lewlm.runtime.cancellation import raise_if_request_cancelled
+from lewlm.runtime.cancellation import current_cancellation_token, raise_if_request_cancelled
 from lewlm.security.audit import AuditLogger
 from lewlm.security.authorization import ToolAction, ToolAuthorizer
 from lewlm.security.sandbox import run_in_subprocess
@@ -251,7 +251,10 @@ class ToolExecutionService:
         descriptor = self.tool_catalog.get_tool(request.tool)
         started_at = utc_now()
         started_perf = time.perf_counter()
-        resolved_request_id = request_id or str(uuid4())
+        cancellation_token = current_cancellation_token()
+        resolved_request_id = request_id or (
+            cancellation_token.request_id if cancellation_token is not None else str(uuid4())
+        )
         normalized_actor = "api" if actor == "api" else "cli"
         idempotency_key = self._idempotency_key(request)
         authorization_details = self._request_audit_details(descriptor.name, request)

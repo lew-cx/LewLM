@@ -2482,6 +2482,13 @@
               "default": null,
               "title": "Fallback Reason"
             },
+            "grammar_relaxations": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Grammar Relaxations",
+              "type": "array"
+            },
             "parsed_output": {
               "anyOf": [
                 {},
@@ -4250,6 +4257,13 @@
               ],
               "default": null,
               "title": "Fallback Reason"
+            },
+            "grammar_relaxations": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Grammar Relaxations",
+              "type": "array"
             },
             "parsed_output": {
               "anyOf": [
@@ -6980,6 +6994,13 @@
               "default": null,
               "title": "Fallback Reason"
             },
+            "grammar_relaxations": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Grammar Relaxations",
+              "type": "array"
+            },
             "parsed_output": {
               "anyOf": [
                 {},
@@ -8682,6 +8703,13 @@
               ],
               "default": null,
               "title": "Fallback Reason"
+            },
+            "grammar_relaxations": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Grammar Relaxations",
+              "type": "array"
             },
             "parsed_output": {
               "anyOf": [

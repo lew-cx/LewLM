@@ -76,6 +76,10 @@ class StructuredOutputRuntimeStatus(BaseModel):
     decoder_enforced: bool = False
     fallback_used: bool = False
     fallback_reason: str | None = None
+    #: Bounds a decoder could not be constrained to and that LewLM therefore
+    #: checked after generation instead — `properties.summary.maxLength (5000)`.
+    #: Decode-time enforcement of the surrounding structure still holds.
+    grammar_relaxations: list[str] = Field(default_factory=list)
 
 
 class StructuredOutputResult(BaseModel):
@@ -87,6 +91,7 @@ class StructuredOutputResult(BaseModel):
     decoder_enforced: bool = False
     fallback_used: bool = False
     fallback_reason: str | None = None
+    grammar_relaxations: list[str] = Field(default_factory=list)
     parsed_output: Any | None = None
     validation: StructuredOutputValidation = Field(default_factory=StructuredOutputValidation)
 
@@ -162,6 +167,7 @@ def analyze_structured_output(
             decoder_enforced=status.decoder_enforced,
             fallback_used=status.fallback_used,
             fallback_reason=status.fallback_reason,
+            grammar_relaxations=list(status.grammar_relaxations),
             parsed_output=parsed_output,
             validation=validation,
         )
@@ -189,6 +195,7 @@ def analyze_structured_output(
         decoder_enforced=status.decoder_enforced,
         fallback_used=status.fallback_used,
         fallback_reason=status.fallback_reason,
+        grammar_relaxations=list(status.grammar_relaxations),
         validation=validation,
     )
 

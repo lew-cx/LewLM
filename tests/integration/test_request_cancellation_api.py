@@ -85,10 +85,27 @@ def test_the_acknowledgement_reports_that_the_request_stopped(client: TestClient
 def test_a_request_that_completed_first_is_reported_as_completed(client: TestClient) -> None:
     generated = _generate_document(client, handle="req-done")
     assert generated.status_code == 200, generated.text
+    assert generated.json()["request_id"] == "req-done"
+    assert generated.json()["metadata"]["request_id"] == "req-done"
 
     acknowledged = client.post("/v1/requests/req-done/cancel", headers=ORCHESTRATOR)
 
     assert acknowledged.json()["state"] == "completed"
+
+
+def test_responses_preserves_the_callers_request_handle(client: TestClient) -> None:
+    manifests = client.post("/v1/models/scan", json={}).json()["manifests"]
+    model_id = next(item["model_id"] for item in manifests if item["format_type"] == "gguf")
+    generated = client.post(
+        "/v1/responses",
+        headers={**ORCHESTRATOR, "x-request-id": "req-response"},
+        json={"model": model_id, "input": "Return a short status.", "max_output_tokens": 16},
+    )
+
+    assert generated.status_code == 200, generated.text
+    assert generated.headers["x-request-id"] == "req-response"
+    assert generated.json()["id"] == "req-response"
+    assert generated.json()["metadata"]["request_id"] == "req-response"
 
 
 def test_application_id_is_observability_metadata_not_authorization(client: TestClient) -> None:

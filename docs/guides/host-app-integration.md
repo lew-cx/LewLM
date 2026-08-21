@@ -76,6 +76,7 @@ To know what a contract will get *before* spending a generation, read `structure
 Read the response-side `structured_output` block when you need stable enforcement, fallback, and validation metadata:
 
 - `enforcement` and `decoder_enforced` tell you whether LewLM actually enforced the contract or fell back to prompt guidance
+- `grammar_relaxations` names bounds too large for the decoder's grammar parser, which LewLM enforced through `validation` after generation instead
 - `validation` reports grammar enforcement state plus JSON parse or schema-validation results
 - `parsed_output` surfaces the parsed JSON value when LewLM could decode it successfully
 

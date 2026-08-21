@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-import json
 import math
 from collections.abc import AsyncIterator, Sequence
 from importlib import import_module
@@ -35,9 +34,11 @@ from lewlm.core.contracts import (
     runtime_performance_feature_report,
 )
 from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import InvalidRequestError
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
+from lewlm.runtime.llamacpp import grammar as grammar_support
 from lewlm.runtime.prefix_cache import longest_token_prefix
 from lewlm.structured_output import (
     GrammarResponseFormat,
@@ -588,8 +589,9 @@ class LlamaCppRuntime(ManagedTextRuntime):
         request.metadata["structured_output_runtime"] = status.model_dump(mode="json")
         if not status.decoder_enforced:
             return {}
+        vocab = grammar_support.vocab_pointer(client)
         if isinstance(contract, JSONSchemaResponseFormat):
-            grammar, fallback_reason = self._json_schema_grammar(contract)
+            grammar, fallback_reason, relaxed_bounds = self._json_schema_grammar(contract, vocab=vocab)
             if grammar is None:
                 request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
                     runtime=self.name,
@@ -600,9 +602,17 @@ class LlamaCppRuntime(ManagedTextRuntime):
                     fallback_reason=fallback_reason,
                 ).model_dump(mode="json")
                 return {}
+            request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+                runtime=self.name,
+                mode="json_schema",
+                enforcement="decode_time",
+                decoder_enforced=True,
+                fallback_used=False,
+                grammar_relaxations=[bound.describe() for bound in relaxed_bounds],
+            ).model_dump(mode="json")
             return {"grammar": grammar}
         if capability["grammar"]:
-            grammar, fallback_reason = self._grammar_from_string(contract.grammar)
+            grammar, fallback_reason = self._grammar_from_string(contract.grammar, vocab=vocab)
             if grammar is None:
                 request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
                     runtime=self.name,
@@ -633,6 +643,33 @@ class LlamaCppRuntime(ManagedTextRuntime):
             contract=contract,
             capability=self._runtime_structured_output_capability(),
         )
+
+    def validate_structured_output(
+        self,
+        contract: StructuredOutputRequest | None,
+        *,
+        model_id: str | None = None,
+    ) -> None:
+        """Compile the contract now, so a refusal is answerable.
+
+        The same compilation runs again at generation time against the loaded
+        model's vocabulary, which is the stronger check. This one exists because
+        it happens before a streaming response has started, where an error
+        envelope can still be returned.
+        """
+
+        if contract is None or contract.type == "text":
+            return None
+        capability = self._runtime_structured_output_capability()
+        client = self._clients.get(model_id) if model_id is not None else None
+        vocab = grammar_support.vocab_pointer(client) if client is not None else None
+        if isinstance(contract, JSONSchemaResponseFormat):
+            if capability["json_schema"]:
+                self._json_schema_grammar(contract, vocab=vocab)
+            return None
+        if capability["grammar"] and contract.syntax.casefold() in {"ebnf", "gbnf"}:
+            self._grammar_from_string(contract.grammar, vocab=vocab)
+        return None
 
     def _structured_output_status(
         self,
@@ -721,40 +758,76 @@ class LlamaCppRuntime(ManagedTextRuntime):
         }
 
     @staticmethod
-    def _grammar_class() -> Any | None:
+    def _llama_cpp_module() -> Any | None:
         try:
-            llama_cpp = import_module("llama_cpp")
+            return import_module("llama_cpp")
         except ImportError:
             return None
-        return getattr(llama_cpp, "LlamaGrammar", None)
 
     @classmethod
-    def _json_schema_grammar(cls, contract: JSONSchemaResponseFormat) -> tuple[Any | None, str]:
-        grammar_class = cls._grammar_class()
-        factory = getattr(grammar_class, "from_json_schema", None)
-        if not callable(factory):
+    def _json_schema_grammar(
+        cls,
+        contract: JSONSchemaResponseFormat,
+        *,
+        vocab: Any = None,
+    ) -> tuple[Any | None, str, tuple[grammar_support.RelaxedBound, ...]]:
+        module = cls._llama_cpp_module()
+        if module is None:
             return (
                 None,
-                "Installed llama.cpp bindings do not expose JSON-schema grammar compilation for decode-time constrained decoding.",
+                "llama-cpp-python is not installed or unavailable on this host.",
+                (),
             )
         try:
-            return factory(json.dumps(contract.schema_payload, sort_keys=True), verbose=False), ""
+            compiled = grammar_support.compile_json_schema_grammar(
+                contract.schema_payload,
+                llama_cpp=module,
+                vocab=vocab,
+            )
+        except grammar_support.GrammarUnsupportedError as exc:
+            # A grammar llama.cpp will not parse is a caller error, and it must
+            # not become a decoder crash: the bindings hand a null sampler
+            # straight into the sampling chain.
+            raise InvalidRequestError(
+                f"{exc} Reduce the bounds or nesting of the requested `response_format` schema.",
+                details={"response_format": "json_schema", **exc.details},
+            ) from exc
+        except grammar_support.GrammarUnverifiableError as exc:
+            return (None, str(exc), ())
         except (TypeError, ValueError) as exc:
             return (
                 None,
                 "Installed llama.cpp bindings rejected the requested JSON schema for decode-time constrained decoding: "
                 f"{exc}",
+                (),
             )
+        grammar, reason = cls._grammar_from_string(compiled.text, vocab=vocab, preflighted=True)
+        return grammar, reason, compiled.relaxed_bounds
 
     @classmethod
-    def _grammar_from_string(cls, grammar: str) -> tuple[Any | None, str]:
-        grammar_class = cls._grammar_class()
+    def _grammar_from_string(
+        cls,
+        grammar: str,
+        *,
+        vocab: Any = None,
+        preflighted: bool = False,
+    ) -> tuple[Any | None, str]:
+        module = cls._llama_cpp_module()
+        grammar_class = getattr(module, "LlamaGrammar", None)
         factory = getattr(grammar_class, "from_string", None)
         if not callable(factory):
             return (
                 None,
                 "Installed llama.cpp bindings do not expose grammar-based decode-time constrained decoding.",
             )
+        if not preflighted:
+            try:
+                grammar_support.preflight_grammar(grammar, llama_cpp=module, vocab=vocab)
+            except grammar_support.GrammarUnsupportedError as exc:
+                raise InvalidRequestError(
+                    f"{exc} Reduce the number of repetitions or the rule complexity of the requested grammar.",
+                    details={"response_format": "grammar", **exc.details},
+                ) from exc
         try:
             return factory(grammar, verbose=False), ""
         except (TypeError, ValueError) as exc:

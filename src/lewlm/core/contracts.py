@@ -1790,6 +1790,13 @@ class RuntimeContract(Protocol):
         contract: StructuredOutputRequest | None,
     ) -> StructuredOutputRuntimeStatus | None: ...
 
+    def validate_structured_output(
+        self,
+        contract: StructuredOutputRequest | None,
+        *,
+        model_id: str | None = None,
+    ) -> None: ...
+
     def supports_continuous_batching(self, capability: CapabilityName) -> bool: ...
 
     def supports_chunked_prefill(self, capability: CapabilityName) -> bool: ...

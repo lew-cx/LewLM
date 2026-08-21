@@ -28,6 +28,17 @@ Both routes also accept a host-app-facing `response_format` contract.
 - `type: "json_schema"` records a JSON-schema request
 - `type: "grammar"` records a grammar request
 - `structured_output` on the response reports whether LewLM enforced the contract at decode time, whether it had to fall back to prompt guidance, and what JSON/grammar validation state LewLM observed
+- `structured_output.grammar_relaxations` lists bounds the decoder could not be constrained to, as `properties.summary.maxLength (5000)`
+
+A grammar-based decoder compiles a bounded string or array into one rule per
+permitted item, and llama.cpp refuses a grammar past its own complexity
+ceiling. A `maxLength` in the thousands — what a generator emits for any bounded
+string — is well past it. LewLM keeps the bounds it compiles inside that
+ceiling and reports the ones it left out in `grammar_relaxations`: the
+surrounding structure is still enforced at decode time, and the omitted bound is
+still enforced by `structured_output.validation` after generation. A contract
+the decoder cannot be constrained to at all is refused as `invalid_request`
+naming the offending grammar rule.
 
 On Linux and Windows, the packaged llama.cpp/GGUF path is the first-class non-Apple route that can report `enforcement: "decode_time"` for structured output. Non-enforcing routes keep the same public shape, but they report `enforcement: "prompt_guided"` with `fallback_used: true` instead of implying decoder enforcement.
 

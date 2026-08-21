@@ -83,7 +83,7 @@ from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace, PromptCompiler, PromptOverrideRecord
 from lewlm.routing.service import ModelRouter
-from lewlm.runtime.cancellation import raise_if_request_cancelled
+from lewlm.runtime.cancellation import current_cancellation_token, raise_if_request_cancelled
 from lewlm.runtime.catalog import RuntimeCatalog
 from lewlm.runtime.request_context import application_id_var, client_instance_id_var
 from lewlm.runtime.residency import ModelResidencyManager
@@ -445,7 +445,8 @@ class ChatOrchestrator:
         capability: CapabilityName,
         routed_target: tuple[ModelManifest, RuntimeContract, RoutingDecision] | None = None,
     ) -> _ChatInvocationContext:
-        request_id = str(uuid4())
+        cancellation_token = current_cancellation_token()
+        request_id = cancellation_token.request_id if cancellation_token is not None else str(uuid4())
         created_at = int(utc_now().timestamp())
         structured_output_requested = prompt_request is not None and prompt_request.requests_structured_output()
         if routed_target is None:
@@ -499,6 +500,9 @@ class ChatOrchestrator:
             name=prompt_trace.output_contract.name,
             strict=prompt_trace.output_contract.strict,
         )
+        # Before the response starts, so a contract the runtime cannot honour is
+        # an error envelope rather than a stream that stops after zero bytes.
+        runtime.validate_structured_output(structured_output_request, model_id=manifest.model_id)
         structured_output_runtime = runtime.structured_output_runtime_status(structured_output_request)
         request = GenerateRequest(
             model_id=manifest.model_id,
