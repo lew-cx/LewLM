@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
+import json
 import os
 import platform
 import shutil
@@ -15,6 +17,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.conversion.checkpoint import (
+    checkpoint_normalization_warnings,
+    inspect_checkpoint_layout,
+    normalize_checkpoint_bundle,
+)
 from lewlm.conversion.jang import is_jang_bundle, missing_jang_dependencies, normalize_jang_bundle
 from lewlm.conversion.models import (
     ConversionCompatibilityReport,
@@ -97,6 +104,115 @@ class ConversionBackend(Protocol):
     ) -> ConversionExecutionResult: ...
 
 
+SEMANTIC_MODALITIES = frozenset({ModelModality.EMBEDDING, ModelModality.RERANK})
+
+
+def _source_model_type(manifest: ModelManifest) -> str:
+    """Read the bundle's declared `model_type`, which is what converters key on."""
+
+    config_path = Path(manifest.source_path).expanduser() / "config.json"
+    try:
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return manifest.architecture_family
+    model_type = config_data.get("model_type")
+    return str(model_type) if isinstance(model_type, str) and model_type else manifest.architecture_family
+
+
+def _mlx_lm_supports_model_type(model_type: str) -> bool:
+    """Whether the installed mlx-lm ships a builder for this architecture.
+
+    mlx-lm resolves `model_type` to a module under `mlx_lm.models`, so the presence
+    of that module is exactly the condition its converter checks before loading.
+    """
+
+    if not model_type:
+        return False
+    try:
+        package_spec = importlib.util.find_spec("mlx_lm")
+    except (ImportError, AttributeError, ValueError):
+        package_spec = None
+    if package_spec is None or not package_spec.submodule_search_locations:
+        return False
+    package_root = Path(next(iter(package_spec.submodule_search_locations)))
+    resolved = _static_mlx_model_remapping(package_root).get(model_type, model_type)
+    models_root = package_root / "models"
+    return (models_root / f"{resolved}.py").is_file() or (models_root / resolved / "__init__.py").is_file()
+
+
+def _static_mlx_model_remapping(package_root: Path) -> dict[str, str]:
+    """Read mlx-lm's architecture aliases without importing its Metal runtime."""
+
+    try:
+        module = ast.parse((package_root / "utils.py").read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return {}
+    for statement in module.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "MODEL_REMAPPING" for target in statement.targets):
+            continue
+        try:
+            value = ast.literal_eval(statement.value)
+        except (ValueError, TypeError):
+            return {}
+        if isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()):
+            return value
+    return {}
+
+
+def _is_semantic_model(manifest: ModelManifest) -> bool:
+    return bool(SEMANTIC_MODALITIES & set(manifest.modality))
+
+
+def _is_semantic_decoder_model(manifest: ModelManifest) -> bool:
+    """Whether an embedding/rerank bundle wraps a decoder the causal-LM exporters build.
+
+    Embedding and reranking models are frequently published as a sentence-transformers
+    wrapper around an ordinary decoder. Those convert on the same paths as any other
+    decoder, so gating them out by modality alone strands them with no target at all.
+    """
+
+    if not _is_semantic_model(manifest):
+        return False
+    return inspect_checkpoint_layout(Path(manifest.source_path)).is_decoder
+
+
+def _prepare_conversion_source(
+    *,
+    manifest: ModelManifest,
+    work_dir: Path,
+    logs: list[str],
+) -> tuple[Path, dict[str, Any]]:
+    """Materialize a source bundle in the layout every exporter expects.
+
+    JANG packing and sentence-transformers backbone layouts are independent, so the
+    two normalizations chain: a JANG-packed bundle is unpacked first and the result
+    is then checked for the backbone layout.
+    """
+
+    source_path = Path(manifest.source_path).expanduser()
+    # Converters run with `cwd` set to the work directory, and mlx-lm treats a
+    # relative path that does not resolve there as a Hugging Face repo id. Keeping
+    # normalization output absolute means the exporter reads the local bundle.
+    normalization_root = work_dir.expanduser().resolve()
+    metadata: dict[str, Any] = {}
+    if is_jang_bundle(source_path):
+        normalized_jang = normalize_jang_bundle(source_path, normalization_root / "jang-normalized-hf")
+        source_path = normalized_jang.source_path
+        logs.extend(normalized_jang.logs)
+        metadata = {"source_preprocessing": "jang_normalization", **normalized_jang.metadata}
+    if inspect_checkpoint_layout(source_path).needs_normalization:
+        normalized_backbone = normalize_checkpoint_bundle(
+            source_path,
+            normalization_root / "backbone-normalized-hf",
+        )
+        source_path = normalized_backbone.source_path
+        logs.extend(normalized_backbone.logs)
+        metadata = {**metadata, **normalized_backbone.metadata}
+    return source_path.resolve(), metadata
+
+
 class LlamaCppConversionBackend:
     """Export compatible Hugging Face bundles to GGUF with llama.cpp tools."""
 
@@ -146,6 +262,7 @@ class LlamaCppConversionBackend:
             warnings.append(
                 "Source bundle uses JANG-packed safetensors; LewLM will normalize it to standard HF safetensors before GGUF export."
             )
+        warnings.extend(checkpoint_normalization_warnings(inspect_checkpoint_layout(source_path)))
         if ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality:
             warnings.append(
                 "GGUF conversion is reported as a text-capable artifact first; multimodal/mmproj runtime support remains probe-gated."
@@ -371,17 +488,12 @@ class LlamaCppConversionBackend:
         final_filename = self._output_filename(manifest=manifest, policy=policy, profile=resolved_profile)
         final_path = output_path / final_filename
         intermediate_path = final_path if quantization_type is None else work_dir / f"{final_path.stem}-{outtype}.gguf"
-        conversion_source_path = Path(manifest.source_path)
         logs: list[str] = []
-        source_metadata: dict[str, Any] = {}
-        if is_jang_bundle(conversion_source_path):
-            normalized = normalize_jang_bundle(conversion_source_path, work_dir / "jang-normalized-hf")
-            conversion_source_path = normalized.source_path
-            logs.extend(normalized.logs)
-            source_metadata = {
-                "source_preprocessing": "jang_normalization",
-                **normalized.metadata,
-            }
+        conversion_source_path, source_metadata = _prepare_conversion_source(
+            manifest=manifest,
+            work_dir=work_dir,
+            logs=logs,
+        )
         converter_command = [
             *converter.command,
             str(conversion_source_path),
@@ -822,13 +934,22 @@ class MLXConversionBackend:
                 layered_output=len(artifact_plans) > 1,
                 artifact_plans=artifact_plans,
             )
-        if ModelModality.TEXT not in manifest.modality and ModelModality.VISION not in manifest.modality:
+        if (
+            ModelModality.TEXT not in manifest.modality
+            and ModelModality.VISION not in manifest.modality
+            and not _is_semantic_decoder_model(manifest)
+        ):
             return ConversionCompatibilityReport(
                 model_id=manifest.model_id,
                 source_format=manifest.format_type,
                 backend_name=primary_backend.name,
                 can_convert=False,
-                reason="This conversion pipeline currently supports text- or vision-capable models only.",
+                reason=(
+                    "This conversion pipeline supports text- or vision-capable models and embedding/reranking "
+                    "models built on a decoder backbone; this source exposes none of those."
+                    if _is_semantic_model(manifest)
+                    else "This conversion pipeline currently supports text- or vision-capable models only."
+                ),
                 cache_key=cache_key,
                 output_path=str(output_path),
                 requested_profile=requested_profile,
@@ -855,6 +976,10 @@ class MLXConversionBackend:
                 layered_output=len(artifact_plans) > 1,
                 artifact_plans=artifact_plans,
             )
+        warnings.extend(checkpoint_normalization_warnings(inspect_checkpoint_layout(Path(manifest.source_path))))
+        dropped_text_artifact = self._dropped_text_artifact_warning(manifest)
+        if dropped_text_artifact is not None:
+            warnings.append(dropped_text_artifact)
         if custom_bits is not None and policy != ConversionPolicy.CUSTOM_BITS:
             warnings.append("Custom bits were provided without selecting the `custom_bits` policy.")
         if not profile_support.supported:
@@ -959,13 +1084,21 @@ class MLXConversionBackend:
             requested_profile=quantization_profile,
         )
         conversion_plans = self._conversion_plans(manifest, output_path=output_path, resolved_profile=resolved_profile)
+        logs: list[str] = []
+        conversion_source_path, source_metadata = _prepare_conversion_source(
+            manifest=manifest,
+            work_dir=work_dir,
+            logs=logs,
+        )
         if len(conversion_plans) == 1 and conversion_plans[0].relative_output_path in {"", "."}:
-            logs = self._run_conversion_command(
-                conversion_backend=conversion_plans[0].backend,
-                manifest=manifest,
-                output_path=output_path,
-                work_dir=work_dir,
-                resolved_profile=resolved_profile,
+            logs.extend(
+                self._run_conversion_command(
+                    conversion_backend=conversion_plans[0].backend,
+                    source_path=conversion_source_path,
+                    output_path=output_path,
+                    work_dir=work_dir,
+                    resolved_profile=resolved_profile,
+                ),
             )
             return ConversionExecutionResult(
                 output_path=output_path,
@@ -980,12 +1113,12 @@ class MLXConversionBackend:
                         modality=conversion_plans[0].modality,
                         runtime_affinity=conversion_plans[0].runtime_affinity,
                         derived_from=conversion_plans[0].derived_from,
+                        metadata=dict(source_metadata),
                     ),
                 ),
             )
 
         output_path.mkdir(parents=True, exist_ok=True)
-        logs: list[str] = []
         artifacts: list[ConversionExecutionArtifact] = []
         for plan in conversion_plans:
             artifact_output_path = output_path / plan.relative_output_path
@@ -993,7 +1126,7 @@ class MLXConversionBackend:
             logs.extend(
                 self._run_conversion_command(
                     conversion_backend=plan.backend,
-                    manifest=manifest,
+                    source_path=conversion_source_path,
                     output_path=artifact_output_path,
                     work_dir=work_dir,
                     resolved_profile=resolved_profile,
@@ -1009,6 +1142,7 @@ class MLXConversionBackend:
                     modality=plan.modality,
                     runtime_affinity=plan.runtime_affinity,
                     derived_from=plan.derived_from,
+                    metadata=dict(source_metadata),
                 ),
             )
         return ConversionExecutionResult(output_path=output_path, logs=logs, artifacts=tuple(artifacts))
@@ -1071,8 +1205,7 @@ class MLXConversionBackend:
             ),
         ]
 
-    @staticmethod
-    def _supports_dual_artifacts(manifest: ModelManifest) -> bool:
+    def _supports_dual_artifacts(self, manifest: ModelManifest) -> bool:
         supported_families = {"gemma", "gemma4", "qwen", "qwen2", "qwen2vl"}
         architecture_family = manifest.architecture_family.casefold().replace("-", "").replace("_", "")
         return (
@@ -1080,26 +1213,64 @@ class MLXConversionBackend:
             and ModelModality.TEXT in manifest.modality
             and ModelModality.VISION in manifest.modality
             and architecture_family in supported_families
+            and self._text_artifact_supported(manifest)
+        )
+
+    @staticmethod
+    def _text_artifact_supported(manifest: ModelManifest) -> bool:
+        """Whether mlx-lm can build the text half of a paired conversion.
+
+        mlx-lm and mlx-vlm keep independent architecture registries, so a multimodal
+        family mlx-vlm handles is not necessarily one mlx-lm can build a text tower
+        for. Planning a text artifact it cannot produce fails the whole job, losing
+        the multimodal artifact that would otherwise have converted cleanly.
+        """
+
+        if importlib.util.find_spec("mlx_lm") is None:
+            # mlx-lm is absent entirely, so the paired plan is kept and the report
+            # names the missing package instead of silently dropping an artifact.
+            return True
+        return _mlx_lm_supports_model_type(_source_model_type(manifest))
+
+    def _dropped_text_artifact_warning(self, manifest: ModelManifest) -> str | None:
+        """Explain a paired plan that collapsed to multimodal only."""
+
+        architecture_family = manifest.architecture_family.casefold().replace("-", "").replace("_", "")
+        if architecture_family not in {"gemma", "gemma4", "qwen", "qwen2", "qwen2vl"}:
+            return None
+        if manifest.format_type != ModelFormat.HUGGINGFACE:
+            return None
+        if ModelModality.TEXT not in manifest.modality or ModelModality.VISION not in manifest.modality:
+            return None
+        if self._text_artifact_supported(manifest):
+            return None
+        model_type = _source_model_type(manifest)
+        return (
+            f"The installed mlx-lm has no builder for `{model_type}`, so LewLM will produce the multimodal MLX "
+            "artifact only; it serves text and vision, and the paired text-only artifact returns when mlx-lm "
+            "adds this architecture."
         )
 
     def _run_conversion_command(
         self,
         *,
         conversion_backend: "_MLXConverterTarget",
-        manifest: ModelManifest,
+        source_path: Path,
         output_path: Path,
         work_dir: Path,
         resolved_profile: QuantizationProfile,
     ) -> list[str]:
+        # The command runs with `cwd` set to the work directory, so both paths are
+        # made absolute to keep them pointing where the caller meant.
         command = [
             sys.executable,
             "-m",
             conversion_backend.module_name,
             "convert",
             "--hf-path",
-            manifest.source_path,
+            str(source_path),
             "--mlx-path",
-            str(output_path),
+            str(output_path.expanduser().resolve()),
         ]
         if self._profile_uses_4bit_quantization(resolved_profile):
             command.append("-q")
@@ -1307,12 +1478,15 @@ class OnnxGenAIConversionBackend:
                 reason="The ONNX Runtime GenAI model builder supports Hugging Face-style source bundles.",
                 output_path=str(output_path),
             )
-        if ModelModality.TEXT not in manifest.modality:
+        if ModelModality.TEXT not in manifest.modality and not _is_semantic_decoder_model(manifest):
             return ConversionCompatibilityReport(
                 **common,
                 can_convert=False,
                 reason=(
-                    "The ONNX Runtime GenAI model builder targets text generation models; this source does not "
+                    "The ONNX Runtime GenAI model builder targets decoder models; this embedding/reranking source "
+                    "is not built on a decoder backbone."
+                    if _is_semantic_model(manifest)
+                    else "The ONNX Runtime GenAI model builder targets text generation models; this source does not "
                     "expose a text modality."
                 ),
                 output_path=str(output_path),
@@ -1377,7 +1551,12 @@ class OnnxGenAIConversionBackend:
         output_path.mkdir(parents=True, exist_ok=True)
         cache_dir = work_dir / "onnx-builder-cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        source_path = Path(manifest.source_path).expanduser()
+        preparation_logs: list[str] = []
+        source_path, source_metadata = _prepare_conversion_source(
+            manifest=manifest,
+            work_dir=work_dir,
+            logs=preparation_logs,
+        )
         command = [
             sys.executable,
             "-m",
@@ -1393,11 +1572,14 @@ class OnnxGenAIConversionBackend:
             "-c",
             str(cache_dir),
         ]
-        logs = self._run_command(
-            command,
-            cwd=work_dir,
-            failure_message="onnxruntime-genai HF-to-ONNX build failed.",
-        )
+        logs = [
+            *preparation_logs,
+            *self._run_command(
+                command,
+                cwd=work_dir,
+                failure_message="onnxruntime-genai HF-to-ONNX build failed.",
+            ),
+        ]
         if not any(output_path.glob("*.onnx")):
             raise ConversionError(
                 "ONNX Runtime GenAI build completed without producing an .onnx model.",
@@ -1418,6 +1600,7 @@ class OnnxGenAIConversionBackend:
                     runtime_affinity=artifact.runtime_affinity,
                     metadata={
                         **artifact.metadata,
+                        **source_metadata,
                         "precision": precision,
                         "execution_provider": execution_provider,
                     },

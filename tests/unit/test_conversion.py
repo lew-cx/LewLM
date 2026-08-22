@@ -756,6 +756,9 @@ def test_mlx_conversion_backend_preserves_dual_artifact_plan_for_discovered_shar
     backend = MLXConversionBackend()
     monkeypatch.setattr(backend, "availability_reason", lambda: None)
     monkeypatch.setattr(backend, "_conversion_backend_available", lambda _backend: True)
+    # Pairing also requires mlx-lm to ship a builder for the architecture; this test
+    # covers the plan taken when the whole toolchain supports the family.
+    monkeypatch.setattr(backend, "_text_artifact_supported", lambda _manifest: True)
 
     report = backend.compatibility_report(
         manifest,

@@ -923,17 +923,17 @@ class ConversionService:
     ) -> None:
         if not output_path.is_dir():
             return
-        artifact_metadata = (
-            dict(compatibility.artifact_plans[0].metadata)
-            if len(compatibility.artifact_plans) == 1
-            else {}
-        )
+        single_plan = compatibility.artifact_plans[0] if len(compatibility.artifact_plans) == 1 else None
+        artifact_metadata = dict(single_plan.metadata) if single_plan is not None else {}
+        artifact_modality = tuple(single_plan.modality) if single_plan is not None else ()
         metadata = ConversionOutputMetadata(
             source_display_name=source_manifest.display_name,
             source_model_id=source_manifest.model_id,
             display_name=f"{source_manifest.display_name} (converted)",
             artifact_role=ModelArtifactRole.STANDALONE,
             artifact_family_id=compatibility.cache_key,
+            modality=artifact_modality or source_manifest.modality,
+            audio_roles=source_manifest.audio_roles,
             metadata={
                 **artifact_metadata,
                 "backend_name": compatibility.backend_name,

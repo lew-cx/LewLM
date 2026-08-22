@@ -90,8 +90,20 @@ AUDIO_SPEECH_KEYWORDS = {
     "xtts",
 }
 VISION_KEYWORDS = {"fuyu", "idefics", "llava", "moondream", "pixtral", "qwen2-vl", "vision", "vl"}
-EMBEDDING_KEYWORDS = {"bge", "e5", "embed", "embedding", "gte"}
-RERANK_KEYWORDS = {"rerank", "reranker"}
+EMBEDDING_KEYWORDS = {"bge", "e5", "embed", "embedding", "gte", "minilm", "mxbai", "nomic-embed", "stella"}
+RERANK_KEYWORDS = {"cross-encoder", "crossencoder", "rerank", "reranker"}
+# Sentence-transformers describes its module graph in these files. They name what
+# the bundle actually serves, so they classify a semantic model even when its
+# directory has been renamed to something that matches no keyword at all.
+SENTENCE_TRANSFORMERS_FILENAMES = (
+    "modules.json",
+    "config_sentence_transformers.json",
+    "sentence_bert_config.json",
+)
+# A cross-encoder scores query/document pairs, so its module graph ends in a
+# scoring head rather than the pooling/normalize stack an embedding model uses.
+RERANK_MODULE_MARKERS = ("crossencoder", "cross_encoder", "logitscore", "logit_score")
+EMBEDDING_MODULE_MARKERS = ("pooling", "normalize", "dense", "asym")
 IDENTIFIER_KEYS = (
     "model_type",
     "architectures",
@@ -294,6 +306,8 @@ def _build_converted_gguf_manifest(path: Path, *, conversion_output: ConversionO
                 artifact_role=conversion_output.artifact_role,
             ),
             "display_name": conversion_output.display_name,
+            "modality": tuple(conversion_output.modality) or base_manifest.modality,
+            "audio_roles": tuple(conversion_output.audio_roles) or base_manifest.audio_roles,
             "artifact_role": conversion_output.artifact_role,
             "artifact_family_id": conversion_output.artifact_family_id,
             "metadata": {
@@ -332,6 +346,10 @@ def _build_directory_manifest(
         config_data=config_data,
         processor_data=processor_data,
     )
+    if conversion_output is not None and conversion_output.modality:
+        # Conversion recorded what this artifact serves; the output directory no
+        # longer holds the evidence to re-derive it.
+        modalities = tuple(conversion_output.modality)
     audio_roles = _infer_audio_roles(
         path=path,
         file_names=file_names,
@@ -339,6 +357,8 @@ def _build_directory_manifest(
         processor_data=processor_data,
         modalities=modalities,
     )
+    if conversion_output is not None and conversion_output.audio_roles and ModelModality.AUDIO in modalities:
+        audio_roles = tuple(conversion_output.audio_roles)
     runtime_affinity = _frontier_runtime_affinity(
         base_affinity=_infer_runtime_affinity(format_type=format_type, modalities=modalities),
         architecture_subtype=architecture_subtype,
@@ -532,10 +552,15 @@ def _infer_modalities(
 ) -> tuple[ModelModality, ...]:
     searchable_text = " ".join(_model_identifiers(path=path, file_names=file_names, config_data=config_data, processor_data=processor_data))
     modalities: list[ModelModality] = []
-    if any(keyword in searchable_text for keyword in EMBEDDING_KEYWORDS):
-        modalities.append(ModelModality.EMBEDDING)
-    if any(keyword in searchable_text for keyword in RERANK_KEYWORDS):
-        modalities.append(ModelModality.RERANK)
+    semantic_role = _infer_semantic_role(path=path, file_names=file_names, config_data=config_data)
+    if semantic_role is not None:
+        # The bundle declares what it serves, which beats guessing from its name.
+        modalities.append(semantic_role)
+    else:
+        if any(keyword in searchable_text for keyword in EMBEDDING_KEYWORDS):
+            modalities.append(ModelModality.EMBEDDING)
+        if any(keyword in searchable_text for keyword in RERANK_KEYWORDS):
+            modalities.append(ModelModality.RERANK)
     if any(keyword in searchable_text for keyword in AUDIO_KEYWORDS):
         modalities.append(ModelModality.AUDIO)
     if "vision_config" in config_data or any(keyword in searchable_text for keyword in VISION_KEYWORDS):
@@ -546,6 +571,71 @@ def _infer_modalities(
     if ModelModality.TEXT in unique_modalities and len(unique_modalities) > 1:
         unique_modalities.append(ModelModality.MULTIMODAL)
     return tuple(unique_modalities)
+
+
+def _infer_semantic_role(
+    *,
+    path: Path,
+    file_names: set[str],
+    config_data: dict[str, Any],
+) -> ModelModality | None:
+    """Classify a bundle as an embedding or reranking model from its own metadata.
+
+    Reads the sentence-transformers module graph and the declared architecture
+    rather than the directory name, so a locally renamed bundle still lands on
+    the right conversion and serving path. Returns None when nothing in the
+    bundle claims a semantic role, leaving the caller to fall back to keywords.
+    """
+
+    normalized_names = {name.casefold() for name in file_names}
+    architectures = " ".join(
+        entry.casefold() for entry in config_data.get("architectures", []) if isinstance(entry, str)
+    )
+    # A single-label sequence-classification head is the classic cross-encoder
+    # reranker shape, and it names itself without any sentence-transformers file.
+    if "forsequenceclassification" in architectures:
+        labels = config_data.get("num_labels")
+        id2label = config_data.get("id2label")
+        label_count = labels if isinstance(labels, int) else (len(id2label) if isinstance(id2label, dict) else None)
+        if label_count == 1:
+            return ModelModality.RERANK
+    if not any(name in normalized_names for name in SENTENCE_TRANSFORMERS_FILENAMES):
+        return None
+    st_config = _load_json(path / "config_sentence_transformers.json")
+    if str(st_config.get("model_type") or "").casefold() == "crossencoder":
+        return ModelModality.RERANK
+    modules_text = _sentence_transformers_modules_text(path)
+    if any(marker in modules_text for marker in RERANK_MODULE_MARKERS):
+        return ModelModality.RERANK
+    if any(marker in modules_text for marker in EMBEDDING_MODULE_MARKERS):
+        return ModelModality.EMBEDDING
+    if "sentence_bert_config.json" in normalized_names or st_config:
+        # A sentence-transformers bundle with no scoring head embeds by default.
+        return ModelModality.EMBEDDING
+    return None
+
+
+def _sentence_transformers_modules_text(path: Path) -> str:
+    """Flatten `modules.json` into searchable text naming each module type."""
+
+    modules_path = path / "modules.json"
+    if not modules_path.exists():
+        return ""
+    try:
+        payload = json.loads(modules_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, list):
+        return ""
+    parts: list[str] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("type", "path", "name"):
+            value = entry.get(key)
+            if isinstance(value, str):
+                parts.append(value.casefold())
+    return " ".join(parts)
 
 
 def _infer_audio_roles(

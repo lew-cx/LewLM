@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lewlm.core.contracts import (
+    AudioCapabilityRole,
     ConversionTarget,
     ModelFormat,
     ModelArtifactRole,
@@ -159,6 +160,13 @@ class ConversionOutputMetadata(BaseModel):
     display_name: str
     artifact_role: ModelArtifactRole = ModelArtifactRole.STANDALONE
     artifact_family_id: str | None = None
+    # What the converted artifact serves. A converted bundle no longer carries the
+    # sentence-transformers files or processor configs discovery classifies from, so
+    # an embedding or rerank artifact would otherwise be rediscovered as plain text
+    # and never satisfy the capability it was converted for. Empty on metadata
+    # written by older versions, which falls back to inference.
+    modality: tuple[ModelModality, ...] = Field(default_factory=tuple)
+    audio_roles: tuple[AudioCapabilityRole, ...] = Field(default_factory=tuple)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
