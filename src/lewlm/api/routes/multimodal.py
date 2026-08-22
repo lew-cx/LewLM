@@ -148,6 +148,7 @@ async def retrieve_context(payload: RetrievalContextRequest, request: Request) -
         use_rerank=payload.use_rerank,
         embedding_model_id=payload.embedding_model,
         rerank_model_id=payload.rerank_model,
+        request_id=request.state.request_id,
     )
     return RetrievalContextResponse(
         request_id=execution.request_id,

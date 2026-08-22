@@ -1027,6 +1027,7 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
         )
         retrieval_response = client.post(
             "/v1/retrieval/context",
+            headers={"x-request-id": "retrieval-handle-1"},
             json={
                 "embedding_model": embedding_model_id,
                 "rerank_model": rerank_model_id,
@@ -1114,7 +1115,8 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
     assert [item["index"] for item in rerank_response.json()["results"]] == [0, 2]
 
     assert retrieval_response.status_code == 200
-    assert retrieval_response.json()["request_id"]
+    assert retrieval_response.headers["x-request-id"] == "retrieval-handle-1"
+    assert retrieval_response.json()["request_id"] == "retrieval-handle-1"
     assert retrieval_response.json()["created"] > 0
     assert retrieval_response.json()["strategy"] == "hybrid"
     assert retrieval_response.json()["candidate_count"] == 3
@@ -1122,6 +1124,8 @@ def test_multimodal_endpoints_support_embeddings_rerank_and_audio(
     assert [item["chunk"]["chunk_id"] for item in retrieval_response.json()["items"]] == ["chunk-3", "chunk-1"]
     assert retrieval_response.json()["embedding_stage"]["model"] == embedding_model_id
     assert retrieval_response.json()["rerank_stage"]["model"] == rerank_model_id
+    assert retrieval_response.json()["embedding_stage"]["request_id"] != "retrieval-handle-1"
+    assert retrieval_response.json()["rerank_stage"]["request_id"] != "retrieval-handle-1"
     assert retrieval_response.json()["metadata"]["model"]["resolved_model_id"] == rerank_model_id
     assert retrieval_response.json()["metadata"]["timing"]["total_milliseconds"] >= 0
 

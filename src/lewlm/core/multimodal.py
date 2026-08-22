@@ -557,6 +557,7 @@ class MultimodalOrchestrator:
         use_rerank: bool = True,
         embedding_model_id: str | None = None,
         rerank_model_id: str | None = None,
+        request_id: str | None = None,
     ) -> RetrievalContextExecution:
         if not candidate_chunks:
             raise ConfigurationError(
@@ -572,7 +573,7 @@ class MultimodalOrchestrator:
             )
         _validate_candidate_identity(candidate_chunks, candidate_sources)
 
-        request_id = str(uuid4())
+        request_id = request_id or str(uuid4())
         created_at = int(utc_now().timestamp())
         documents = [chunk.text for chunk in candidate_chunks]
         candidate_sources = list(candidate_sources or ())
