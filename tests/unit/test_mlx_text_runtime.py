@@ -5,6 +5,7 @@ import platform
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from lewlm.config.settings import LewLMSettings
@@ -90,6 +91,115 @@ def test_mlx_text_runtime_supports_embeddings_and_rerank(monkeypatch) -> None:
     assert embedding_response.usage["prompt_tokens"] >= 2
     assert rerank_response.results[0].document == "a bit longer"
     assert rerank_response.results[0].index == 1
+
+
+def test_mlx_text_runtime_runs_qwen3_semantics_through_loaded_model(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeBackbone:
+        def __init__(self) -> None:
+            self.seen_sequence_lengths: list[int] = []
+
+        def __call__(self, tokens):
+            batch_size, sequence_length = tokens.shape
+            self.seen_sequence_lengths.append(sequence_length)
+            return np.tile(np.asarray([[[3.0, 4.0]]]), (batch_size, sequence_length, 1))
+
+    class FakeQwen3Model:
+        def __init__(self) -> None:
+            self.model = FakeBackbone()
+
+        def __call__(self, tokens):
+            logits = np.zeros((tokens.shape[0], tokens.shape[1], 3), dtype=float)
+            relevant = 2 in tokens
+            logits[:, -1, 1] = 3.0 if relevant else -3.0
+            return logits
+
+    class FakeSemanticTokenizer(FakeTokenizer):
+        def encode(self, text: str, **kwargs) -> list[int]:
+            if text == "yes":
+                return [1]
+            if text == "no":
+                return [0]
+            if text == "long embedding input":
+                return list(range(20))
+            return [2] if "MATCH" in text else [3]
+
+        def convert_tokens_to_ids(self, token: str) -> int:
+            return {"no": 0, "yes": 1}[token]
+
+    fake_model = FakeQwen3Model()
+    fake_tokenizer = FakeSemanticTokenizer()
+    fake_mlx_lm = SimpleNamespace(load=lambda path: (fake_model, fake_tokenizer))
+    fake_mx = SimpleNamespace(array=np.asarray, linalg=np.linalg, eval=lambda *values: None)
+
+    def fake_import(name: str):
+        if name == "mlx_lm":
+            return fake_mlx_lm
+        if name == "mlx.core":
+            return fake_mx
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.mlx_text.runtime.import_module", fake_import)
+    bundle = tmp_path / "qwen3-semantic"
+    bundle.mkdir()
+    (bundle / "config.json").write_text('{"model_type":"qwen3"}', encoding="utf-8")
+    runtime = MLXTextRuntime()
+    manifest = _manifest(
+        source_path=str(bundle),
+        modality=(ModelModality.EMBEDDING, ModelModality.RERANK),
+    ).model_copy(update={"context_length": 4})
+
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.EMBEDDINGS) is True
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.RERANK) is True
+    asyncio.run(runtime.load_model(manifest))
+
+    assert runtime.supports_capability(CapabilityName.EMBEDDINGS) is True
+    assert runtime.supports_capability(CapabilityName.RERANK) is True
+    embedding_response = asyncio.run(
+        runtime.embed(
+            EmbeddingRequest(
+                model_id=manifest.model_id,
+                inputs=["alpha", "beta", "long embedding input"],
+            ),
+        ),
+    )
+    rerank_response = asyncio.run(
+        runtime.rerank(
+            RerankRequest(
+                model_id=manifest.model_id,
+                query="alpha",
+                documents=["irrelevant", "MATCH"],
+                top_n=1,
+            ),
+        ),
+    )
+
+    assert [item.embedding for item in embedding_response.data] == [[0.6, 0.8], [0.6, 0.8], [0.6, 0.8]]
+    assert fake_model.model.seen_sequence_lengths == [1, 1, manifest.context_length]
+    assert rerank_response.results[0].index == 1
+    assert rerank_response.results[0].document == "MATCH"
+    assert rerank_response.results[0].relevance_score > 0.9
+
+
+def test_mlx_text_runtime_does_not_advertise_unknown_semantic_model_family(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_module = SimpleNamespace(load=lambda path: (object(), FakeTokenizer()))
+    monkeypatch.setattr("lewlm.runtime.mlx_text.runtime.import_module", lambda name: fake_module)
+    bundle = tmp_path / "unknown-semantic"
+    bundle.mkdir()
+    (bundle / "config.json").write_text('{"model_type":"unknown_semantic"}', encoding="utf-8")
+    runtime = MLXTextRuntime()
+    manifest = _manifest(source_path=str(bundle), modality=(ModelModality.EMBEDDING,))
+
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.EMBEDDINGS) is False
+    assert "no executable `embeddings` path" in runtime.manifest_capability_reason(
+        manifest,
+        CapabilityName.EMBEDDINGS,
+    )
 
 
 def test_mlx_text_runtime_supports_real_mlx_load_signature_and_sampling(monkeypatch) -> None:

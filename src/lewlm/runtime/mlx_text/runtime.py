@@ -38,7 +38,7 @@ from lewlm.core.contracts import (
     SpeculationMode,
     runtime_performance_feature_report,
 )
-from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import ConfigurationError, NotImplementedLewLMError
 from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
 from lewlm.runtime.metal import MLXAccelerationTracker
@@ -1039,10 +1039,68 @@ class MLXTextRuntime(ManagedTextRuntime):
             return resolve_backend_callable(module, ("generate", "chat", "generate_text"), required=False) is not None
         if capability == CapabilityName.STREAMING:
             return resolve_backend_callable(module, ("generate_stream", "stream_generate"), required=False) is not None
+        if capability in {CapabilityName.EMBEDDINGS, CapabilityName.RERANK}:
+            if _resolve_semantic_callable(module, capability) is not None:
+                return True
+            return any(
+                self._loaded_client_supports_semantic_capability(model_id, capability)
+                for model_id in self.loaded_model_ids
+            )
+        return False
+
+    def supports_manifest_capability(self, manifest: ModelManifest, capability: CapabilityName) -> bool:
+        """Keep semantic readiness on the exact path request routing will execute."""
+
+        if not self.supports_manifest(manifest):
+            return False
+        required_modality = {
+            CapabilityName.EMBEDDINGS: ModelModality.EMBEDDING,
+            CapabilityName.RERANK: ModelModality.RERANK,
+        }.get(capability)
+        if required_modality is None:
+            return super().supports_manifest_capability(manifest, capability)
+        if required_modality not in manifest.modality:
+            return False
+        if manifest.model_id in self._clients:
+            return self._loaded_client_supports_semantic_capability(manifest.model_id, capability)
+        # The packaged semantic implementation is deliberately scoped to Qwen3.
+        # Other model families must expose an explicit backend or model entrypoint
+        # before LewLM advertises them as ready.
+        return _is_qwen3_manifest(manifest)
+
+    def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None:
+        if self.supports_manifest_capability(manifest, capability):
+            return None
+        if capability in {CapabilityName.EMBEDDINGS, CapabilityName.RERANK}:
+            required_modality = (
+                ModelModality.EMBEDDING if capability == CapabilityName.EMBEDDINGS else ModelModality.RERANK
+            )
+            if required_modality not in manifest.modality:
+                return f"model does not advertise the `{required_modality.value}` modality"
+            return (
+                f"{self.name} has no executable `{capability.value}` path for this model; "
+                "packaged model-forward semantic execution currently supports Qwen3 bundles"
+            )
+        return super().manifest_capability_reason(manifest, capability)
+
+    def _loaded_client_supports_semantic_capability(
+        self,
+        model_id: str,
+        capability: CapabilityName,
+    ) -> bool:
+        model, tokenizer = self._client_components(model_id)
+        module = import_module("mlx_lm")
+        if _resolve_semantic_callable(module, capability) is not None:
+            return True
+        if _resolve_semantic_callable(model, capability) is not None:
+            return True
+        manifest = self._loaded_manifests.get(model_id)
+        if manifest is None or not _is_qwen3_manifest(manifest) or tokenizer is None:
+            return False
         if capability == CapabilityName.EMBEDDINGS:
-            return _resolve_semantic_callable(module, capability) is not None
+            return callable(_resolve_hidden_state_backbone(model))
         if capability == CapabilityName.RERANK:
-            return _resolve_semantic_callable(module, capability) is not None
+            return callable(model) and _token_id(tokenizer, "yes") is not None and _token_id(tokenizer, "no") is not None
         return False
 
     def supports_continuous_batching(self, capability: CapabilityName) -> bool:
@@ -1432,19 +1490,34 @@ class MLXTextRuntime(ManagedTextRuntime):
         module = import_module("mlx_lm")
         embed = _resolve_semantic_callable(module, CapabilityName.EMBEDDINGS)
         model, tokenizer = self._client_components(request.model_id)
-        result = invoke_with_signature(
-            embed,
-            {
-                "client": {"model": model, "tokenizer": tokenizer},
-                "model": model,
-                "tokenizer": tokenizer,
-                "inputs": request.inputs,
-                "texts": request.inputs,
-                "sentences": request.inputs,
-                "documents": request.inputs,
-            },
-            capability=CapabilityName.EMBEDDINGS.value,
-        )
+        embed = embed or _resolve_semantic_callable(model, CapabilityName.EMBEDDINGS)
+        if embed is not None:
+            result = invoke_with_signature(
+                embed,
+                {
+                    "client": {"model": model, "tokenizer": tokenizer},
+                    "model": model,
+                    "tokenizer": tokenizer,
+                    "inputs": request.inputs,
+                    "texts": request.inputs,
+                    "sentences": request.inputs,
+                    "documents": request.inputs,
+                },
+                capability=CapabilityName.EMBEDDINGS.value,
+            )
+        elif self._loaded_client_supports_semantic_capability(request.model_id, CapabilityName.EMBEDDINGS):
+            manifest = self._loaded_manifests[request.model_id]
+            result = _qwen3_embeddings(
+                model=model,
+                tokenizer=tokenizer,
+                inputs=request.inputs,
+                max_length=manifest.context_length or 8192,
+            )
+        else:
+            raise NotImplementedLewLMError(
+                "The loaded MLX model does not expose a supported embeddings execution path.",
+                details={"runtime": self.name, "model_id": request.model_id},
+            )
         return _embedding_response_from_result(result, request)
 
     async def rerank(self, request: RerankRequest) -> RerankResponse:
@@ -1454,20 +1527,36 @@ class MLXTextRuntime(ManagedTextRuntime):
         module = import_module("mlx_lm")
         rerank = _resolve_semantic_callable(module, CapabilityName.RERANK)
         model, tokenizer = self._client_components(request.model_id)
-        result = invoke_with_signature(
-            rerank,
-            {
-                "client": {"model": model, "tokenizer": tokenizer},
-                "model": model,
-                "tokenizer": tokenizer,
-                "query": request.query,
-                "documents": request.documents,
-                "inputs": request.documents,
-                "texts": request.documents,
-                "top_n": request.top_n,
-            },
-            capability=CapabilityName.RERANK.value,
-        )
+        rerank = rerank or _resolve_semantic_callable(model, CapabilityName.RERANK)
+        if rerank is not None:
+            result = invoke_with_signature(
+                rerank,
+                {
+                    "client": {"model": model, "tokenizer": tokenizer},
+                    "model": model,
+                    "tokenizer": tokenizer,
+                    "query": request.query,
+                    "documents": request.documents,
+                    "inputs": request.documents,
+                    "texts": request.documents,
+                    "top_n": request.top_n,
+                },
+                capability=CapabilityName.RERANK.value,
+            )
+        elif self._loaded_client_supports_semantic_capability(request.model_id, CapabilityName.RERANK):
+            manifest = self._loaded_manifests[request.model_id]
+            result = _qwen3_rerank_scores(
+                model=model,
+                tokenizer=tokenizer,
+                query=request.query,
+                documents=request.documents,
+                max_length=min(manifest.context_length or 8192, 8192),
+            )
+        else:
+            raise NotImplementedLewLMError(
+                "The loaded MLX model does not expose a supported rerank execution path.",
+                details={"runtime": self.name, "model_id": request.model_id},
+            )
         return _rerank_response_from_result(result, request)
 
     def _tokenize(self, text: str) -> list[int]:
@@ -2976,6 +3065,180 @@ def _resolve_semantic_callable(module: Any, capability: CapabilityName):
             required=False,
         )
     return None
+
+
+def _is_qwen3_manifest(manifest: ModelManifest) -> bool:
+    config = _load_manifest_config(manifest.source_path)
+    model_type = str(config.get("model_type") or manifest.architecture_family)
+    return model_type.casefold().replace("-", "").replace("_", "") == "qwen3"
+
+
+def _resolve_hidden_state_backbone(model: Any):
+    """Return the decoder body that produces hidden states instead of LM logits."""
+
+    for name in ("model", "transformer"):
+        candidate = getattr(model, name, None)
+        if callable(candidate):
+            return candidate
+    return None
+
+
+def _tokenizer_encode(
+    tokenizer: Any,
+    text: str,
+    *,
+    add_special_tokens: bool,
+    max_length: int | None = None,
+) -> list[int]:
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        raise NotImplementedLewLMError(
+            "The loaded MLX tokenizer does not expose an encode method required for semantic execution.",
+        )
+    encode_options: dict[str, Any] = {"add_special_tokens": add_special_tokens}
+    if max_length is not None:
+        if max_length <= 0:
+            raise NotImplementedLewLMError(
+                "The loaded MLX model reports an invalid context length for semantic execution.",
+                details={"max_length": max_length},
+            )
+        encode_options.update({"truncation": True, "max_length": max_length})
+    try:
+        encoded = encode(text, **encode_options)
+    except TypeError:
+        try:
+            encoded = encode(text, add_special_tokens=add_special_tokens)
+        except TypeError:
+            encoded = encode(text)
+    if hasattr(encoded, "tolist"):
+        encoded = encoded.tolist()
+    if not isinstance(encoded, Sequence) or isinstance(encoded, (str, bytes, bytearray)):
+        raise NotImplementedLewLMError(
+            "The loaded MLX tokenizer returned an unsupported token payload for semantic execution.",
+        )
+    token_ids = [int(token) for token in encoded]
+    if max_length is not None and len(token_ids) > max_length:
+        token_ids = token_ids[:max_length]
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        if add_special_tokens and isinstance(eos_token_id, int) and int(encoded[-1]) == eos_token_id:
+            token_ids[-1] = eos_token_id
+    return token_ids
+
+
+def _token_id(tokenizer: Any, token: str) -> int | None:
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if callable(convert):
+        token_id = convert(token)
+        if isinstance(token_id, int) and token_id >= 0:
+            return token_id
+    with suppress(NotImplementedLewLMError):
+        token_ids = _tokenizer_encode(tokenizer, token, add_special_tokens=False)
+        if token_ids:
+            return token_ids[0]
+    return None
+
+
+def _qwen3_embeddings(
+    *,
+    model: Any,
+    tokenizer: Any,
+    inputs: Sequence[str],
+    max_length: int,
+) -> list[list[float]]:
+    """Run Qwen3's documented last-token, L2-normalized embedding path in MLX."""
+
+    backbone = _resolve_hidden_state_backbone(model)
+    if backbone is None:
+        raise NotImplementedLewLMError(
+            "The loaded Qwen3 MLX model does not expose its hidden-state backbone.",
+        )
+    mx = import_module("mlx.core")
+    vectors: list[list[float]] = []
+    for text in inputs:
+        token_ids = _tokenizer_encode(
+            tokenizer,
+            text,
+            add_special_tokens=True,
+            max_length=max_length,
+        )
+        if not token_ids:
+            raise NotImplementedLewLMError("The MLX tokenizer produced no tokens for an embedding input.")
+        hidden_states = backbone(mx.array([token_ids]))
+        vector = hidden_states[0, -1, :]
+        float32 = getattr(mx, "float32", None)
+        if float32 is not None:
+            vector = vector.astype(float32)
+        norm = mx.linalg.norm(vector)
+        normalized = vector / norm
+        evaluate = getattr(mx, "eval", None)
+        if callable(evaluate):
+            evaluate(normalized)
+        vectors.append([float(value) for value in normalized.tolist()])
+    return vectors
+
+
+_QWEN3_RERANK_INSTRUCTION = "Given a web search query, retrieve relevant passages that answer the query"
+_QWEN3_RERANK_PREFIX = (
+    '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct '
+    'provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
+)
+_QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def _qwen3_rerank_scores(
+    *,
+    model: Any,
+    tokenizer: Any,
+    query: str,
+    documents: Sequence[str],
+    max_length: int,
+) -> list[dict[str, int | float]]:
+    """Score query/document pairs from Qwen3's final yes/no token logits."""
+
+    true_token_id = _token_id(tokenizer, "yes")
+    false_token_id = _token_id(tokenizer, "no")
+    if true_token_id is None or false_token_id is None:
+        raise NotImplementedLewLMError(
+            "The loaded Qwen3 reranker tokenizer does not define the required yes/no score tokens.",
+        )
+    prefix_tokens = _tokenizer_encode(tokenizer, _QWEN3_RERANK_PREFIX, add_special_tokens=False)
+    suffix_tokens = _tokenizer_encode(tokenizer, _QWEN3_RERANK_SUFFIX, add_special_tokens=False)
+    available_pair_tokens = max_length - len(prefix_tokens) - len(suffix_tokens)
+    if available_pair_tokens <= 0:
+        raise NotImplementedLewLMError(
+            "The loaded Qwen3 reranker context is too small for its required scoring template.",
+        )
+
+    mx = import_module("mlx.core")
+    scores: list[dict[str, int | float]] = []
+    for index, document in enumerate(documents):
+        pair = (
+            f"<Instruct>: {_QWEN3_RERANK_INSTRUCTION}\n"
+            f"<Query>: {query}\n"
+            f"<Document>: {document}"
+        )
+        pair_tokens = _tokenizer_encode(tokenizer, pair, add_special_tokens=False)[:available_pair_tokens]
+        input_tokens = prefix_tokens + pair_tokens + suffix_tokens
+        logits = model(mx.array([input_tokens]))
+        final_logits = logits[0, -1, :]
+        true_logit = final_logits[true_token_id]
+        false_logit = final_logits[false_token_id]
+        evaluate = getattr(mx, "eval", None)
+        if callable(evaluate):
+            evaluate(true_logit, false_logit)
+        difference = _array_scalar(true_logit) - _array_scalar(false_logit)
+        if difference >= 0:
+            score = 1.0 / (1.0 + math.exp(-difference))
+        else:
+            exponential = math.exp(difference)
+            score = exponential / (1.0 + exponential)
+        scores.append({"index": index, "relevance_score": score})
+    return scores
+
+
+def _array_scalar(value: Any) -> float:
+    item = getattr(value, "item", None)
+    return float(item() if callable(item) else value)
 
 
 def _mlx_text_generation_options(
