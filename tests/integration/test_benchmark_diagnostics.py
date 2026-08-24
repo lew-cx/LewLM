@@ -1138,7 +1138,7 @@ def test_cli_benchmark_compare_direct_diagnostics_surface_profile_metrics(
     monkeypatch.setattr("lewlm.cli.main._convert_manifest_for_benchmark", fake_convert)
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda model_manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda model_manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": model_manifest.model_id,
             "display_name": model_manifest.display_name,
             "runtime": "mlx_lm_direct",

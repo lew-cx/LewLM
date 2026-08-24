@@ -802,6 +802,104 @@ def test_llamacpp_runtime_normalizes_model_path_and_reports_runtime_load(monkeyp
     assert request.metadata["runtime_load"]["prefix_cache"]["supported"] is True
 
 
+def test_llamacpp_runtime_bounds_reserved_context_at_the_configured_ceiling(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """llama.cpp reserves its KV cache for the whole of `n_ctx` when the model loads.
+
+    A manifest that honestly records a 131k window would otherwise turn into a
+    multi-gigabyte allocation before the first prompt arrives.
+    """
+
+    captured: dict[str, object] = {}
+
+    class FakeLlama:
+        cache = None
+
+        def __init__(self, *, model_path: str, n_ctx: int, verbose: bool) -> None:
+            captured["n_ctx"] = n_ctx
+
+        def create_chat_completion(self, **kwargs):
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+            }
+
+        def tokenize(self, payload: bytes) -> list[int]:
+            return [1, 2, 3, 4]
+
+        def detokenize(self, tokens: list[int]) -> bytes:
+            return bytes(tokens)
+
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(Llama=FakeLlama)
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", fake_import)
+
+    settings = LewLMSettings(data_dir=tmp_path / "state", llamacpp_max_context_tokens=16_384)
+    runtime = LlamaCppRuntime(settings=settings)
+    manifest = _manifest().model_copy(update={"context_length": 131_072})
+
+    assert runtime.serving_context_tokens(manifest) == 16_384
+
+    asyncio.run(runtime.load_model(manifest))
+    assert captured["n_ctx"] == 16_384
+
+    request = GenerateRequest(
+        model_id=manifest.model_id,
+        messages=[GenerateMessage(role="user", content="hello")],
+        max_tokens=16,
+        temperature=0.0,
+    )
+    asyncio.run(runtime.generate(request))
+    assert request.metadata["runtime_load"]["context_window"] == {
+        "manifest_context_tokens": 131_072,
+        "served_context_tokens": 16_384,
+        "ceiling_tokens": 16_384,
+    }
+
+
+def test_llamacpp_runtime_serves_the_full_window_when_the_ceiling_is_unset(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeLlama:
+        cache = None
+
+        def __init__(self, *, model_path: str, n_ctx: int, verbose: bool) -> None:
+            captured["n_ctx"] = n_ctx
+
+    def fake_import(name: str):
+        if name == "llama_cpp":
+            return SimpleNamespace(Llama=FakeLlama)
+        raise ImportError(name)
+
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.import_module", fake_import)
+
+    settings = LewLMSettings(data_dir=tmp_path / "state", llamacpp_max_context_tokens=None)
+    runtime = LlamaCppRuntime(settings=settings)
+    manifest = _manifest().model_copy(update={"context_length": 131_072})
+
+    assert runtime.serving_context_tokens(manifest) == 131_072
+    asyncio.run(runtime.load_model(manifest))
+    assert captured["n_ctx"] == 131_072
+
+
+def test_llamacpp_runtime_reports_no_served_context_for_an_unmeasured_model(tmp_path: Path) -> None:
+    """A model whose window was never recorded stays unknown rather than becoming the fallback."""
+
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    manifest = _manifest().model_copy(update={"context_length": None})
+
+    assert runtime.serving_context_tokens(manifest) is None
+    assert runtime._resolved_context_tokens(manifest) == 4096
+
+
 def test_llamacpp_runtime_accepts_prefill_serving_profile_before_model_load(monkeypatch, tmp_path: Path) -> None:
     class FakeLlama:
         def __init__(self, *, model_path: str, n_ctx: int, verbose: bool, n_batch: int) -> None:

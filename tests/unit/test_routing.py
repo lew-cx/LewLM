@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from conftest import FakeLlamaCppRuntime, FakeMLXAudioRuntime, FakeMLXSemanticRuntime
 from lewlm.core.contracts import (
     ArchitectureSubtype,
@@ -22,6 +24,7 @@ from lewlm.core.contracts import (
     RuntimeSupportPath,
     ValidationState,
 )
+from lewlm.core.errors import RoutingError
 from lewlm.routing.service import ModelRouter
 from lewlm.runtime.catalog import RuntimeCatalog
 from lewlm.runtime.experimental import FrontierExperimentalRuntime
@@ -72,6 +75,110 @@ def test_model_router_prefers_context_fitting_candidate(
     assert runtime.name == "fake_mlx_semantic"
     assert "context fit" in decision.reason
     assert any("context length is unknown" in item for item in decision.alternatives)
+
+
+def test_unknown_context_refusal_names_the_limit_it_was_measured_against(
+    temp_settings,
+    monkeypatch,
+) -> None:
+    """A refusal has to say what the estimate was compared to, not just its size."""
+
+    router = ModelRouter(
+        model_registry=_StaticRegistry(
+            [
+                _manifest(
+                    model_id="unknown-context",
+                    display_name="unknown-context",
+                    estimated_memory_mb=256,
+                    context_length=None,
+                ),
+            ],
+        ),
+        runtime_catalog=RuntimeCatalog({RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime()}),
+        settings=temp_settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 8_192)
+
+    with pytest.raises(RoutingError) as excinfo:
+        router.route_chat(None, messages=[GenerateMessage(role="user", content="x" * 40_000)], max_tokens=64)
+
+    details = excinfo.value.details
+    assert details["unknown_context_token_limit"] == 4_096
+    assert any("4096-token limit" in item for item in details["alternatives"])
+    assert any("LEWLM_UNKNOWN_CONTEXT_TOKEN_LIMIT" in item for item in details["alternatives"])
+
+
+def test_unknown_context_limit_is_configurable(temp_settings, monkeypatch) -> None:
+    manifests = [
+        _manifest(
+            model_id="unknown-context",
+            display_name="unknown-context",
+            estimated_memory_mb=256,
+            context_length=None,
+        ),
+    ]
+    settings = temp_settings.with_updates(unknown_context_token_limit=32_768)
+    router = ModelRouter(
+        model_registry=_StaticRegistry(manifests),
+        runtime_catalog=RuntimeCatalog({RuntimeAffinity.LLAMACPP: FakeLlamaCppRuntime()}),
+        settings=settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 8_192)
+
+    manifest, _, _ = router.route_chat(
+        None,
+        messages=[GenerateMessage(role="user", content="x" * 40_000)],
+        max_tokens=64,
+    )
+
+    assert manifest.model_id == "unknown-context"
+
+
+def test_routing_admits_only_the_context_the_runtime_will_serve(temp_settings, monkeypatch) -> None:
+    """A model advertising more than its runtime will reserve is judged on the smaller number."""
+
+    class _BoundedContextRuntime(FakeLlamaCppRuntime):
+        name = "bounded_llamacpp"
+
+        def serving_context_tokens(self, manifest: ModelManifest) -> int | None:
+            if manifest.context_length is None:
+                return None
+            return min(manifest.context_length, 16_384)
+
+    router = ModelRouter(
+        model_registry=_StaticRegistry(
+            [
+                _manifest(
+                    model_id="long-advertised",
+                    display_name="long-advertised",
+                    estimated_memory_mb=256,
+                    context_length=131_072,
+                ),
+            ],
+        ),
+        runtime_catalog=RuntimeCatalog({RuntimeAffinity.LLAMACPP: _BoundedContextRuntime()}),
+        settings=temp_settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 8_192)
+
+    manifest, _, decision = router.route_chat(
+        None,
+        messages=[GenerateMessage(role="user", content="x" * 20_000)],
+        max_tokens=64,
+    )
+    assert manifest.model_id == "long-advertised"
+    assert "context fit 5064/16384 tokens" in decision.reason
+
+    with pytest.raises(RoutingError) as excinfo:
+        router.route_chat(
+            None,
+            messages=[GenerateMessage(role="user", content="x" * 20_000)],
+            max_tokens=20_000,
+        )
+
+    alternatives = excinfo.value.details["alternatives"]
+    assert any("served context length 16384" in item for item in alternatives)
+    assert any("model advertises 131072" in item for item in alternatives)
 
 
 def test_model_router_respects_memory_budget_for_automatic_selection(temp_settings, monkeypatch) -> None:

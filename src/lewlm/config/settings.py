@@ -122,6 +122,16 @@ class LewLMSettings(BaseSettings):
     llamacpp_quantize_path: Path | None = None
     onnx_genai_conversion_execution_provider: Literal["cpu", "cuda", "dml"] = "cpu"
     runtime_policy: Literal["keep_warm", "balanced", "aggressive_unload"] = "balanced"
+    # A manifest publishes the window a model was trained with; this is the
+    # window LewLM is willing to serve from it. llama.cpp reserves its KV cache
+    # for the whole of `n_ctx` at load, so a model advertising 131k tokens is a
+    # multi-gigabyte allocation before a single prompt arrives. Set to `None` to
+    # serve whatever each model advertises.
+    llamacpp_max_context_tokens: int | None = 16_384
+    # How large an estimated request LewLM will route to a model whose context
+    # length it never recorded. The estimate is prompt plus `max_tokens`, so this
+    # is the point past which an unmeasured model stops being a safe guess.
+    unknown_context_token_limit: int = 4_096
     kv_cache_page_size: int = 256
     kv_cache_max_pages: int | None = 64
     # Off by default: a quantized KV cache constrains which runtimes and builds
@@ -461,6 +471,8 @@ class LewLMSettings(BaseSettings):
             ),
             "onnx_genai_conversion_execution_provider": self.onnx_genai_conversion_execution_provider,
             "runtime_policy": self.runtime_policy,
+            "llamacpp_max_context_tokens": self.llamacpp_max_context_tokens,
+            "unknown_context_token_limit": self.unknown_context_token_limit,
             "kv_cache_page_size": self.kv_cache_page_size,
             "kv_cache_max_pages": self.kv_cache_max_pages,
             "kv_cache_quantization_bits": self.kv_cache_quantization_bits,

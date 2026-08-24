@@ -76,6 +76,8 @@ Built-in feature pack names: `documents`.
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `LEWLM_RUNTIME_POLICY` | `balanced` | keep-warm vs unload policy |
+| `LEWLM_LLAMACPP_MAX_CONTEXT_TOKENS` | `16384` | largest context window llama.cpp is asked to reserve, whatever a model advertises; llama.cpp allocates its KV cache for the whole of `n_ctx` at load, so a 131k-token model would cost gigabytes before the first prompt. Unset to serve each model's full advertised window. Routing admits only what this leaves servable |
+| `LEWLM_UNKNOWN_CONTEXT_TOKEN_LIMIT` | `4096` | largest estimated request routed to a model whose context length LewLM never recorded; the estimate is the prompt plus `max_tokens`, and the bound is reported as `unknown_context_token_limit` on the routing error |
 | `LEWLM_MODEL_DRAIN_TIMEOUT_SECONDS` | `30` | synchronous and default asynchronous drain timeout |
 | `LEWLM_KV_CACHE_PAGE_SIZE` | `256` | paged KV sizing |
 | `LEWLM_KV_CACHE_MAX_PAGES` | `64` | maximum KV pages |

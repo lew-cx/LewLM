@@ -12,6 +12,9 @@ from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_c
 from lewlm.runtime.mlx_vision.runtime import load_mlx_vlm_backend_client
 
 
+_FALLBACK_CONTEXT_TOKENS = 4096
+
+
 @dataclass(slots=True)
 class _LoadedMLXTextClient:
     model: Any
@@ -30,10 +33,21 @@ def benchmark_direct_chat_manifest(
     prompt: str,
     max_tokens: int = 128,
     warmup_run_count: int = 1,
+    context_tokens: int | None = None,
 ) -> dict[str, Any]:
+    """Time a backend called directly, with no LewLM runtime in the path.
+
+    `context_tokens` bounds the context window the baseline reserves. It is
+    supplied by the caller rather than read from settings so this module stays
+    a plain backend harness, and it matters because llama.cpp reserves its KV
+    cache for the whole window: a baseline that used a model's full advertised
+    context would be measuring a different allocation than the managed run it is
+    compared against.
+    """
+
     messages = (GenerateMessage(role="user", content=prompt),)
     load_started = time.perf_counter()
-    runner = _direct_runner_for_manifest(manifest)
+    runner = _direct_runner_for_manifest(manifest, context_tokens=context_tokens)
     cold_load_seconds = round(time.perf_counter() - load_started, 4)
     try:
         cold_result = runner.run(messages=messages, max_tokens=max_tokens)
@@ -87,9 +101,9 @@ def benchmark_direct_chat_manifest(
     }
 
 
-def _direct_runner_for_manifest(manifest: ModelManifest) -> "_DirectRunner":
+def _direct_runner_for_manifest(manifest: ModelManifest, *, context_tokens: int | None = None) -> "_DirectRunner":
     if manifest.format_type == ModelFormat.GGUF:
-        return _DirectLlamaCppRunner(manifest)
+        return _DirectLlamaCppRunner(manifest, context_tokens=context_tokens)
     if RuntimeAffinity.MLX_VISION in manifest.runtime_affinity:
         return _DirectMLXVisionRunner(manifest)
     return _DirectMLXTextRunner(manifest)
@@ -111,12 +125,13 @@ class _DirectRunner:
 class _DirectLlamaCppRunner(_DirectRunner):
     runtime_name = "llama_cpp_direct"
 
-    def __init__(self, manifest: ModelManifest) -> None:
+    def __init__(self, manifest: ModelManifest, *, context_tokens: int | None = None) -> None:
         llama_cpp = import_module("llama_cpp")
         llama_class = getattr(llama_cpp, "Llama")
+        advertised = manifest.context_length or _FALLBACK_CONTEXT_TOKENS
         self._client = llama_class(
             model_path=manifest.source_path,
-            n_ctx=manifest.context_length or 4096,
+            n_ctx=min(advertised, context_tokens) if context_tokens is not None else advertised,
             verbose=False,
         )
 

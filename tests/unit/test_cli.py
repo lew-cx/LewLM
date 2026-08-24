@@ -828,7 +828,7 @@ def test_cli_benchmark_compare_direct_emits_json_payload(
 
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "llama_cpp_direct",
@@ -881,7 +881,7 @@ def test_cli_benchmark_compare_direct_prints_human_summary(
 
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "llama_cpp_direct",
@@ -1144,7 +1144,7 @@ def test_cli_benchmark_compare_direct_surfaces_scheduler_and_residency_evidence(
 
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count=1: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count=1, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "llama_cpp_direct",
@@ -1296,7 +1296,7 @@ def test_cli_benchmark_compare_direct_convert_missing_emits_conversion_payload(
     monkeypatch.setattr("lewlm.cli.main._convert_manifest_for_benchmark", fake_convert)
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "mlx_lm_direct",
@@ -1372,7 +1372,7 @@ def test_cli_benchmark_compare_direct_all_ignores_cached_conversion_artifacts(
 
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "llama_cpp_direct",
@@ -1455,7 +1455,7 @@ def test_cli_benchmark_compare_direct_all_human_emits_progress(
     monkeypatch.setattr("lewlm.cli.main._convert_manifest_for_benchmark", fake_convert)
     monkeypatch.setattr(
         "lewlm.cli.main.benchmark_direct_chat_manifest",
-        lambda manifest, *, prompt, max_tokens, warmup_run_count: {
+        lambda manifest, *, prompt, max_tokens, warmup_run_count, context_tokens=None: {
             "model_id": manifest.model_id,
             "display_name": manifest.display_name,
             "runtime": "mlx_lm_direct",

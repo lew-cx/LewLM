@@ -1961,6 +1961,7 @@ def _run_direct_benchmark_suite(
                     manifest=benchmark_manifest,
                     prompt=prompt,
                     warmup_run_count=args.warmup_runs,
+                    context_tokens=services.settings.llamacpp_max_context_tokens,
                 )
                 if progress is not None:
                     progress(f"[{run_position}/{total_runs}] running LewLM-managed benchmark: {benchmark_manifest.display_name}")
@@ -2637,6 +2638,7 @@ def _run_direct_benchmark_once(
     manifest: Any,
     prompt: str,
     warmup_run_count: int,
+    context_tokens: int | None = None,
 ) -> dict[str, Any]:
     try:
         result = benchmark_direct_chat_manifest(
@@ -2644,6 +2646,7 @@ def _run_direct_benchmark_once(
             prompt=prompt,
             max_tokens=_CLI_CHAT_BENCHMARK_MAX_TOKENS,
             warmup_run_count=warmup_run_count,
+            context_tokens=context_tokens,
         )
     except ModuleNotFoundError as exc:
         return {

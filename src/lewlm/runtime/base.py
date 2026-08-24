@@ -123,6 +123,17 @@ class ManagedRuntime(ABC):
             and any(modality in self.supported_modalities for modality in manifest.modality)
         )
 
+    def serving_context_tokens(self, manifest: ModelManifest) -> int | None:
+        """Return the context window this runtime would actually serve.
+
+        A manifest publishes the window a model was trained with, which is not
+        always the window a runtime can afford to reserve for it. Runtimes that
+        bound it say so here, so routing admits exactly what generation can
+        honour instead of the larger number the model advertises.
+        """
+
+        return manifest.context_length
+
     async def load_model(self, manifest: ModelManifest) -> None:
         self._ensure_available()
         self._ensure_supported_manifest(manifest)

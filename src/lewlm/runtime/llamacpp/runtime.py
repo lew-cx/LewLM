@@ -52,6 +52,10 @@ _LLAMA_PREFILL_UBATCH_PARAMETERS = ("n_ubatch", "ubatch_size", "prompt_ubatch_si
 _LLAMA_KV_CACHE_TYPE_PARAMETERS = ("type_k", "type_v")
 _LLAMA_FLASH_ATTENTION_PARAMETER = "flash_attn"
 _LLAMA_GPU_OFFLOAD_PARAMETER = "n_gpu_layers"
+# What `n_ctx` falls back to for a model whose context window LewLM never
+# recorded. Matches llama.cpp's own conservative default rather than guessing
+# upward on a model nothing has measured.
+_LLAMA_FALLBACK_CONTEXT_TOKENS = 4096
 _KV_CACHE_QUANTIZATION_TYPE_CONSTANTS: dict[int, tuple[str, str]] = {
     16: ("GGML_TYPE_F16", "f16"),
     8: ("GGML_TYPE_Q8_0", "q8_0"),
@@ -134,6 +138,25 @@ class LlamaCppRuntime(ManagedTextRuntime):
             return str(semantic_surface.get("reason"))
         return None
 
+    def serving_context_tokens(self, manifest: ModelManifest) -> int | None:
+        """Bound the advertised window by what LewLM will reserve a KV cache for.
+
+        llama.cpp allocates its KV cache for the whole of `n_ctx` when the model
+        loads, so a manifest advertising 131k tokens would cost gigabytes before
+        the first prompt. `llamacpp_max_context_tokens` is that bound; routing
+        reads it here so it never admits a request the load could not serve.
+        """
+
+        ceiling = self._settings.llamacpp_max_context_tokens
+        if manifest.context_length is None:
+            return None
+        if ceiling is None:
+            return manifest.context_length
+        return min(manifest.context_length, ceiling)
+
+    def _resolved_context_tokens(self, manifest: ModelManifest) -> int:
+        return self.serving_context_tokens(manifest) or _LLAMA_FALLBACK_CONTEXT_TOKENS
+
     def _check_environment(self) -> tuple[bool, str | None]:
         try:
             import_module("llama_cpp")
@@ -155,7 +178,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
         )
         kwargs: dict[str, Any] = {
             "model_path": effective_model_path,
-            "n_ctx": manifest.context_length or 4096,
+            "n_ctx": self._resolved_context_tokens(manifest),
             "verbose": False,
             **load_options,
         }
@@ -1350,6 +1373,11 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 option_name
                 for option_name in {"model_path", "n_ctx", "verbose", *load_options}
             ),
+            "context_window": {
+                "manifest_context_tokens": manifest.context_length,
+                "served_context_tokens": self._resolved_context_tokens(manifest),
+                "ceiling_tokens": self._settings.llamacpp_max_context_tokens,
+            },
             "performance_controls": {
                 control_name: str(payload.get("effective"))
                 for control_name, payload in control_snapshot.items()

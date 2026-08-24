@@ -1104,6 +1104,10 @@ class ModelRouter:
                 "requested_model_id": requested_model_id,
                 "required_modalities": [modality.value for modality in required_modalities],
                 "estimated_context_tokens": requested_context_tokens,
+                # The estimate alone never says what it was measured against, so
+                # the bound that applies to a model with no recorded context
+                # length travels with it.
+                "unknown_context_token_limit": self.settings.unknown_context_token_limit,
                 "alternatives": list(alternatives or []),
                 "fallback_guidance": self._fallback_guidance(
                     capability=capability,
@@ -1128,6 +1132,7 @@ class ModelRouter:
         details.setdefault("requested_model_id", requested_model_id)
         details.setdefault("required_modalities", [modality.value for modality in required_modalities])
         details.setdefault("estimated_context_tokens", requested_context_tokens)
+        details.setdefault("unknown_context_token_limit", self.settings.unknown_context_token_limit)
         details["fallback_guidance"] = self._fallback_guidance(
             capability=capability,
             requested_model_id=requested_model_id,
@@ -1184,29 +1189,45 @@ class ModelRouter:
         policy = self.settings.runtime_policy
 
         if requested_context_tokens is not None:
-            if manifest.context_length is None:
-                if requested_context_tokens >= 4_096:
+            # The runtime, not the manifest, decides what it will actually
+            # serve, so a model advertising more than a runtime will reserve is
+            # scored against the smaller number rather than the published one.
+            served_context_tokens = runtime.serving_context_tokens(manifest)
+            if served_context_tokens is None:
+                unknown_limit = self.settings.unknown_context_token_limit
+                if requested_context_tokens >= unknown_limit:
                     return (
                         None,
                         (
-                            f"{manifest.model_id}: context length is unknown for an estimated request size of "
-                            f"{requested_context_tokens} tokens."
+                            f"{manifest.model_id}: context length is unknown, and the estimated request size of "
+                            f"{requested_context_tokens} tokens is at or above the {unknown_limit}-token limit "
+                            "LewLM routes to an unmeasured model "
+                            "(`LEWLM_UNKNOWN_CONTEXT_TOKEN_LIMIT`)."
                         ),
                     )
                 score -= 2.0
                 reasons.append("context length unknown")
-            elif manifest.context_length < requested_context_tokens:
+            elif served_context_tokens < requested_context_tokens:
+                served_note = (
+                    f"context length {served_context_tokens}"
+                    if manifest.context_length == served_context_tokens
+                    else (
+                        f"served context length {served_context_tokens} "
+                        f"(model advertises {manifest.context_length}, bounded by "
+                        f"`{runtime.name}`'s configured ceiling)"
+                    )
+                )
                 return (
                     None,
                     (
-                        f"{manifest.model_id}: context length {manifest.context_length} is below the estimated "
+                        f"{manifest.model_id}: {served_note} is below the estimated "
                         f"request size of {requested_context_tokens} tokens."
                     ),
                 )
             else:
-                headroom = manifest.context_length - requested_context_tokens
+                headroom = served_context_tokens - requested_context_tokens
                 score += min(20.0, headroom / 1024)
-                reasons.append(f"context fit {requested_context_tokens}/{manifest.context_length} tokens")
+                reasons.append(f"context fit {requested_context_tokens}/{served_context_tokens} tokens")
 
         memory_budget_mb = self._memory_budget_mb()
         routing_memory_mb = self._routing_memory_estimate_mb(manifest)
@@ -1361,8 +1382,9 @@ class ModelRouter:
         notes = [
             f"using explicitly requested model `{manifest.model_id}` via {self._runtime_label(runtime)} for `{capability.value}`"
         ]
-        if requested_context_tokens is not None and manifest.context_length is not None:
-            notes.append(f"context fit {requested_context_tokens}/{manifest.context_length} tokens")
+        served_context_tokens = runtime.serving_context_tokens(manifest)
+        if requested_context_tokens is not None and served_context_tokens is not None:
+            notes.append(f"context fit {requested_context_tokens}/{served_context_tokens} tokens")
         if manifest.estimated_memory_mb is not None:
             budget = self._memory_budget_mb()
             routing_memory_mb = self._routing_memory_estimate_mb(manifest)
