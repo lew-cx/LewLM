@@ -37,6 +37,7 @@ from lewlm.core.contracts import (
     ValidationState,
     quantization_profile_label,
 )
+from lewlm.registry.gguf_header import read_gguf_header_facts
 from lewlm.runtime.experimental import extract_architecture_metadata, infer_architecture_subtype
 
 
@@ -262,6 +263,10 @@ def _build_gguf_manifest(path: Path) -> ModelManifest:
     architecture_family = _infer_architecture_from_name(display_name)
     architecture_subtype = infer_architecture_subtype(name=display_name, config_data={})
     estimated_memory_mb = ceil(path.stat().st_size / (1024 * 1024))
+    # A GGUF file carries no `config.json`, so the context window has to come
+    # from the file's own metadata header or the manifest publishes `null` and
+    # routing has to refuse anything it cannot bound.
+    header_facts = read_gguf_header_facts(path)
     validation = ModelValidationResult(
         status=ValidationState.VALID,
         message="GGUF model file discovered and ready for llama.cpp compatibility checks.",
@@ -281,6 +286,7 @@ def _build_gguf_manifest(path: Path) -> ModelManifest:
             architecture_subtype=architecture_subtype,
             modalities=(ModelModality.TEXT,),
         ),
+        context_length=header_facts.context_length,
         estimated_memory_mb=estimated_memory_mb,
         conversion_status=ConversionStatus.RUNNABLE,
         fingerprint=fingerprint,
@@ -288,6 +294,8 @@ def _build_gguf_manifest(path: Path) -> ModelManifest:
         metadata={
             "source_kind": "file",
             "size_bytes": path.stat().st_size,
+            "context_length_source": "gguf_header" if header_facts.context_length is not None else "unknown",
+            **({"gguf_architecture": header_facts.architecture} if header_facts.architecture else {}),
             **extract_architecture_metadata(
                 name=display_name,
                 config_data={},

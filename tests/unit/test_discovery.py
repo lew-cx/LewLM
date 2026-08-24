@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import struct
 
 from lewlm.conversion.models import (
     CONVERSION_OUTPUT_METADATA_FILENAME,
@@ -43,6 +44,52 @@ def test_converted_model_id_builder_uses_readable_suffixes() -> None:
     assert _build_converted_model_id("Gemma 4 / 31B IT", artifact_role=ModelArtifactRole.TEXT_RUNNABLE) == (
         "gemma-4-31b-it_converted_text"
     )
+
+
+def test_discovery_records_the_context_length_a_gguf_file_declares(tmp_path: Path) -> None:
+    """A GGUF file has no `config.json`, so its own header is the only place to read this.
+
+    Leaving it `null` is what makes routing refuse anything it cannot bound.
+    """
+
+    root = tmp_path / "models"
+    root.mkdir()
+    _write_gguf_stub(root / "gemma-4-e4b-q8_0.gguf", architecture="gemma4", context_length=131_072)
+
+    manifests = discover_models([root])
+
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest.format_type == ModelFormat.GGUF
+    assert manifest.context_length == 131_072
+    assert manifest.metadata["context_length_source"] == "gguf_header"
+    assert manifest.metadata["gguf_architecture"] == "gemma4"
+
+
+def test_discovery_leaves_context_length_unknown_for_an_unreadable_gguf(tmp_path: Path) -> None:
+    root = tmp_path / "models"
+    root.mkdir()
+    (root / "mystery.gguf").write_bytes(b"not really a gguf file")
+
+    manifest = discover_models([root])[0]
+
+    assert manifest.context_length is None
+    assert manifest.metadata["context_length_source"] == "unknown"
+    assert "gguf_architecture" not in manifest.metadata
+
+
+def _write_gguf_stub(path: Path, *, architecture: str, context_length: int) -> None:
+    """Write the smallest GGUF header that declares an architecture and a context length."""
+
+    def encoded_string(value: str) -> bytes:
+        payload = value.encode("utf-8")
+        return struct.pack("<Q", len(payload)) + payload
+
+    header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", 2)
+    header += encoded_string("general.architecture") + struct.pack("<I", 8) + encoded_string(architecture)
+    header += encoded_string(f"{architecture}.context_length") + struct.pack("<I", 4)
+    header += struct.pack("<I", context_length)
+    path.write_bytes(header)
 
 
 def test_discovery_reads_bom_prefixed_conversion_output_metadata_for_gguf(tmp_path: Path) -> None:
