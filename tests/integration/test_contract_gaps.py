@@ -497,3 +497,69 @@ def test_capabilities_report_what_a_response_format_will_actually_get(client) ->
     for mode in ("json_schema", "grammar"):
         assert set(support[mode]) >= {"enforcement", "decoder_enforced", "fallback_used"}
         assert (mode in support["decode_time_modes"]) == support[mode]["decoder_enforced"]
+
+
+# --- the event stream can be narrowed at the server (G13) ---------------------
+
+
+def test_event_stream_filters_are_advertised_in_the_openapi_document(client) -> None:
+    """A filter a client cannot discover from the schema is a filter it will not use."""
+
+    parameters = {
+        item["name"]: item
+        for item in client.get("/v1/openapi.json").json()["paths"]["/v1/events"]["get"]["parameters"]
+    }
+    assert set(parameters) >= {"types", "scope", "request_id", "model_id"}
+    # The closed sets are named in the schema, so codegen produces a union
+    # rather than a bare string a caller has to guess the members of.
+    assert "token.delta" in parameters["types"]["schema"]["items"]["enum"]
+    assert parameters["scope"]["schema"]["items"]["enum"] == ["system", "request", "job"]
+    assert all(parameters[name]["description"] for name in ("types", "scope", "request_id", "model_id"))
+
+
+def test_websocket_event_stream_delivers_only_the_requested_types(client) -> None:
+    model_id = _gguf_model_id(client)
+
+    with client.websocket_connect("/v1/events?types=request.completed") as websocket:
+        client.post(
+            "/v1/chat/completions",
+            json={"model": model_id, "messages": [{"role": "user", "content": "hi"}], "stream": True},
+        )
+        # Without filtering this is a token delta, because a streamed generation
+        # emits one per token before the request ever completes.
+        assert websocket.receive_json()["type"] == "request.completed"
+
+
+def test_websocket_event_stream_accepts_comma_separated_and_repeated_filters(client) -> None:
+    model_id = _gguf_model_id(client)
+
+    with client.websocket_connect("/v1/events?types=request.accepted,request.completed&scope=request") as websocket:
+        client.post(
+            "/v1/chat/completions",
+            json={"model": model_id, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        delivered = {websocket.receive_json()["type"] for _ in range(2)}
+
+    assert delivered == {"request.accepted", "request.completed"}
+
+
+def test_event_stream_refuses_a_filter_value_that_names_nothing(client) -> None:
+    """Ignoring an unknown type would return an empty stream that looks like a quiet server."""
+
+    response = client.get("/v1/events?types=token.deltas")
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert error["details"]["fields"] == [
+        {"field": "types", "message": "`token.deltas` is not a known type value.", "type": "enum"},
+    ]
+
+
+def test_websocket_event_stream_refuses_a_bad_filter_before_accepting(client) -> None:
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with client.websocket_connect("/v1/events?scope=galaxy"):
+            pass
+
+    assert refused.value.code == 1008
+    assert refused.value.reason == "invalid_request"

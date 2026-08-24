@@ -116,6 +116,10 @@ These surfaces are owned by the `documents` feature pack. When that pack is disa
 | `GET` | `/v1/events` | SSE event stream |
 | `WS` | `/v1/events` | WebSocket event stream |
 
+Both surfaces accept the same filters as query parameters: `types`, `scope`, `request_id` and `model_id`. Each may be repeated or comma-separated, values within one parameter are alternatives, and the parameters combine — `?types=token.delta&request_id=req-1` is one request's tokens and nothing else. Filtering is applied before an event is queued for the connection, so an excluded event is never serialized or sent. A value that names no known event type or scope is refused with `invalid_request` (422 on SSE, close code `1008` before the WebSocket handshake is accepted) rather than silently ignored, because an ignored filter returns an empty stream that looks exactly like a quiet server.
+
+Replay is not available: a reconnecting client resumes from the moment it reconnects, and `Last-Event-ID` is not honoured.
+
 The WebSocket handshake is guarded like every other route. When `api_key_required` is set, send the key as an `x-api-key` header or, from a browser that cannot set handshake headers, as a `lewlm.api-key.<key>` entry in `Sec-WebSocket-Protocol`. The key is never echoed back as the accepted subprotocol. An unauthenticated handshake is closed with code `1008` before it is accepted, and a rate-limited one with `1013`.
 
 ### Cluster

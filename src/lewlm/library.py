@@ -39,6 +39,7 @@ from lewlm.documents.render.service import GeneratedDocumentArtifact
 from lewlm.documents.skills.models import BuiltInSkillDescriptor
 from lewlm.documents.skills.models import DocumentTransformRequest
 from lewlm.events.bus import EventSubscription
+from lewlm.events.filters import EventFilter
 from lewlm.history.models import SessionContextPolicy, SessionDetail, SessionExportBundle, SessionRecord
 from lewlm.install_profiles import summarize_install_profiles
 from lewlm.pack_registry import PackRegistry
@@ -683,10 +684,14 @@ class LewLM:
             async_name="LewLM.runtime_stats",
         )
 
-    def subscribe_events(self) -> EventSubscription:
-        """Subscribe to the in-process event bus from an active asyncio loop."""
+    def subscribe_events(self, event_filter: EventFilter | None = None) -> EventSubscription:
+        """Subscribe to the in-process event bus from an active asyncio loop.
 
-        return self.services.event_bus.subscribe()
+        An `EventFilter` narrows the subscription at the bus, so events it
+        excludes are never queued for this subscriber.
+        """
+
+        return self.services.event_bus.subscribe(event_filter)
 
     def close(self) -> None:
         """Release long-lived worker resources owned by this facade."""

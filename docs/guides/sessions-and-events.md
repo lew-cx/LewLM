@@ -61,6 +61,50 @@ Each emitted event now includes shared top-level fields when LewLM can resolve t
 
 For chat and streaming request events, the `payload` also includes a `serving` object with the current serving-core view for that request: active phase, queue residency so far, runtime adapter kind, streaming ownership, and any cancellation request LewLM has observed.
 
+## Narrowing the stream
+
+Both HTTP surfaces accept the same filters as query parameters, and the Python
+facade takes the same filter as an object:
+
+| Parameter | Narrows by |
+| --- | --- |
+| `types` | event type, e.g. `token.delta` |
+| `scope` | `system`, `request`, or `job` |
+| `request_id` | the request that produced the event |
+| `model_id` | the model the event is about |
+
+Each may be repeated or comma-separated. Values within one parameter are
+alternatives; the parameters combine.
+
+```text
+GET /v1/events?types=token.delta,request.completed&request_id=req-1
+```
+
+```python
+from lewlm.events.filters import EventFilter
+from lewlm.events.schema import EventType
+
+subscription = lewlm.subscribe_events(
+    EventFilter(types=frozenset({EventType.TOKEN_DELTA}), request_ids=frozenset({"req-1"})),
+)
+```
+
+The filter is applied on the bus, before an event is queued for the subscriber,
+so an excluded event is never queued, serialized, or sent — a filtered
+subscriber's queue stays shallow while an unfiltered one grows. A streamed
+generation emits one `token.delta` per token to every listener, so this is the
+difference between a busy host and an unusable one for a client that only wants
+lifecycle events.
+
+A value naming no known event type or scope is refused with `invalid_request`
+rather than ignored: an ignored filter returns an empty stream that is
+indistinguishable from a quiet server. SSE answers 422; the WebSocket closes
+`1008` before accepting the handshake.
+
+Replay is not available. A reconnecting client resumes from the moment it
+reconnects, and `Last-Event-ID` is not honoured, so a client that must present a
+continuous timeline has to say that its window has a gap.
+
 ## Event categories
 
 Current event families include:
