@@ -41,6 +41,21 @@ _WEIGHT_SUFFIXES = (".safetensors",)
 _DECODER_ARCHITECTURE_MARKERS = ("forcausallm", "forconditionalgeneration", "lmheadmodel")
 
 
+def _is_weight_shard(name: str) -> bool:
+    """Report whether a directory entry is a real safetensors shard.
+
+    The suffix alone is not enough. A bundle copied off macOS carries an
+    AppleDouble sidecar for every file it contains -- `._model.safetensors`
+    beside `model.safetensors` -- and those match the suffix while holding
+    resource-fork metadata, not tensors. Reading one as a shard fails on its
+    header length, which is exactly the migration path LewLM's non-Apple hosts
+    are on. No genuine shard name begins with a dot, so leading-dot entries are
+    excluded outright rather than only the AppleDouble prefix.
+    """
+
+    return name.endswith(_WEIGHT_SUFFIXES) and not name.startswith(".")
+
+
 @dataclass(slots=True)
 class CheckpointLayout:
     """What a bundle's weights actually look like on disk."""
@@ -228,9 +243,7 @@ def _read_tensor_inventory(source_path: Path) -> tuple[tuple[str, ...], tuple[st
         names = tuple(str(name) for name in weight_map)
         shards = _validated_index_shard_names(source_path, weight_map)
         return names, shards, True
-    shards = tuple(
-        sorted(entry.name for entry in source_path.iterdir() if entry.name.endswith(_WEIGHT_SUFFIXES))
-    )
+    shards = tuple(sorted(entry.name for entry in source_path.iterdir() if _is_weight_shard(entry.name)))
     names: list[str] = []
     for shard_name in shards:
         try:
@@ -292,9 +305,7 @@ def _prefix_backbone_tensor(name: str) -> str:
 def _weight_file_names(source_path: Path, layout: CheckpointLayout) -> tuple[str, ...]:
     if layout.shard_names:
         return tuple(name for name in layout.shard_names if (source_path / name).exists())
-    return tuple(
-        sorted(entry.name for entry in source_path.iterdir() if entry.name.endswith(_WEIGHT_SUFFIXES))
-    )
+    return tuple(sorted(entry.name for entry in source_path.iterdir() if _is_weight_shard(entry.name)))
 
 
 def _read_safetensors_header(path: Path) -> tuple[dict[str, Any], int]:

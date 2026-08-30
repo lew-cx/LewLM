@@ -561,3 +561,43 @@ class TestPairedArtifactPlanning:
         assert [plan.artifact_key for plan in report.artifact_plans] == ["multimodal", "text"]
         assert report.layered_output is True
         assert not any("no builder" in warning for warning in report.warnings)
+
+
+class TestAppleDoubleSidecars:
+    """Bundles copied off macOS carry `._*` sidecars beside every real file.
+
+    They match the `.safetensors` suffix but hold resource-fork metadata, so
+    reading one as a shard fails on its declared header length. Non-Apple hosts
+    are exactly the ones receiving such copies, so discovery has to skip them.
+    """
+
+    @staticmethod
+    def _add_appledouble_sidecars(root: Path) -> None:
+        for entry in list(root.iterdir()):
+            # AppleDouble headers start with the magic 0x00051607; as a
+            # little-endian u64 that is a nonsense safetensors header length.
+            (root / f"._{entry.name}").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 4092)
+
+    def test_layout_inspection_ignores_sidecar_shards(self, tmp_path: Path) -> None:
+        root = _backbone_bundle(tmp_path / "embedding")
+        self._add_appledouble_sidecars(root)
+
+        layout = inspect_checkpoint_layout(root)
+
+        assert layout.shard_names == ("model.safetensors",)
+        assert "embed_tokens.weight" in layout.tensor_names
+
+    def test_normalization_skips_sidecar_shards(self, tmp_path: Path) -> None:
+        root = _backbone_bundle(tmp_path / "embedding")
+        _sentence_transformers_metadata(root, rerank=False)
+        self._add_appledouble_sidecars(root)
+
+        result = normalize_checkpoint_bundle(root, tmp_path / "normalized")
+
+        assert result.normalized is True
+        normalized_shards = sorted(
+            path.name for path in result.source_path.iterdir() if path.name.endswith(".safetensors")
+        )
+        assert normalized_shards == ["model.safetensors"]
+        tensors = _read_safetensors(result.source_path / "model.safetensors")
+        assert all(name.startswith("model.") for name in tensors)
