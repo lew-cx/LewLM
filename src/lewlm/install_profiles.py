@@ -115,6 +115,10 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
     gguf_missing = _missing_modules(("llama_cpp",))
     onnx_genai_missing = _missing_modules(("onnxruntime_genai",))
     llamacpp_build = detect_llamacpp_build_flavor() if not gguf_missing else None
+    # Installed and loadable are different questions: the packaged wheel loads its
+    # native library at import time, and a host can refuse that long after pip
+    # succeeded. Readiness has to answer the second one.
+    gguf_unloadable = llamacpp_build is not None and llamacpp_build.detection_state == "unavailable"
     documents_missing = _missing_modules(("openpyxl", "PIL", "pytesseract", "pypdf", "docx", "reportlab", "weasyprint"))
     external_enabled = bool(getattr(settings, "external_accelerator_enabled", False))
     external_base_url = getattr(settings, "external_accelerator_base_url", None)
@@ -187,7 +191,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             extras=["llamacpp"],
             install_spec=".[llamacpp]",
             installed=not gguf_missing,
-            ready=gguf_host_supported and not gguf_missing,
+            ready=gguf_host_supported and not gguf_missing and not gguf_unloadable,
             summary=(
                 "Cross-platform packaged GGUF runtime profile backed by llama.cpp; "
                 "LewLM's first-class non-Apple runtime family for chat, embeddings, and packaged rerank fallback."
@@ -341,6 +345,8 @@ def _backend_distribution_version(distribution: str) -> str | None:
 def _llamacpp_build_notes(build: LlamaCppBuildFlavor | None, *, system: str) -> list[str]:
     if build is None or not build.installed:
         return []
+    if build.detection_state == "unavailable":
+        return [build.reason]
     notes: list[str] = []
     if build.gpu_offload_supported is True:
         hint_label = ", ".join(build.accelerator_hints) if build.accelerator_hints else "backend did not name a specific accelerator"

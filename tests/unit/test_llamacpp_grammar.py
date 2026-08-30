@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from lewlm.runtime.llamacpp import grammar as grammar_support
+from lewlm.runtime.llamacpp.import_guard import load_llama_cpp
 
 
 def test_relax_schema_bounds_drops_only_the_oversized_bounds() -> None:
@@ -92,7 +93,10 @@ def test_preflight_frees_the_sampler_it_parsed_with() -> None:
 def test_installed_bindings_compile_a_generator_written_schema() -> None:
     """The schema shape that killed the server: bounded strings from a code generator."""
 
-    llama_cpp = pytest.importorskip("llama_cpp")
+    imported = load_llama_cpp()
+    if imported.module is None:
+        pytest.skip(imported.reason or "llama-cpp-python is not installed on this host.")
+    llama_cpp = imported.module
     schema = {
         "type": "object",
         "properties": {f"field_{index}": {"type": "string", "maxLength": 5000} for index in range(7)},

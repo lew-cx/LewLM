@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from lewlm.runtime.llamacpp.import_guard import load_llama_cpp
+
 _MLX_DRAFT_PARAMETERS = ("draft_model", "draft", "draft_client")
 
 
@@ -83,14 +85,21 @@ def _disabled_probes(profile: str, backend: str, features: tuple[str, ...]) -> l
     ]
 
 
-def _not_importable(profile: str, backend: str, features: tuple[str, ...]) -> list[BackendFeatureProbe]:
+def _not_importable(
+    profile: str,
+    backend: str,
+    features: tuple[str, ...],
+    *,
+    detail: str | None = None,
+) -> list[BackendFeatureProbe]:
     return [
         BackendFeatureProbe(
             profile=profile,
             backend=backend,
             feature=feature,
             present=None,
-            detail=(
+            detail=detail
+            or (
                 f"`{backend}` is not importable on this host; "
                 "feature presence stays unprobed until the matching extra is installed."
             ),
@@ -129,10 +138,10 @@ def _llamacpp_feature_probes() -> list[BackendFeatureProbe]:
         "kv_offload_controls",
         "decode_time_grammar_enforcement",
     )
-    try:
-        llama_cpp = import_module("llama_cpp")
-    except ImportError:
-        return _not_importable(profile, backend, features)
+    imported = load_llama_cpp(import_module)
+    if imported.module is None:
+        return _not_importable(profile, backend, features, detail=imported.reason)
+    llama_cpp = imported.module
 
     probes: list[BackendFeatureProbe] = []
     llama_class = getattr(llama_cpp, "Llama", None)

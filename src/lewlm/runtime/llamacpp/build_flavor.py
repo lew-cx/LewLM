@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from lewlm.runtime.llamacpp.import_guard import load_llama_cpp
+
 _ACCELERATOR_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cuda", ("CUDA",)),
     ("rocm", ("ROCM", "HIP")),
@@ -44,17 +46,18 @@ class LlamaCppBuildFlavor(BaseModel):
 def detect_llamacpp_build_flavor() -> LlamaCppBuildFlavor:
     """Inspect the installed llama-cpp-python build without loading a model."""
 
-    try:
-        llama_cpp = import_module("llama_cpp")
-    except ImportError:
+    imported = load_llama_cpp(import_module)
+    if imported.module is None:
         return LlamaCppBuildFlavor(
-            installed=False,
+            installed=imported.installed,
             detection_state="unavailable",
-            reason=(
+            reason=imported.reason
+            or (
                 "llama-cpp-python is not installed on this host; "
                 "build-flavor detection stays unavailable until the `llamacpp` extra is installed."
             ),
         )
+    llama_cpp = imported.module
 
     partial_reasons: list[str] = []
 

@@ -33,6 +33,27 @@ def _stub_installed_modules(monkeypatch, installed: set[str]) -> None:
     )
 
 
+def _stub_loadable_llamacpp_build(monkeypatch) -> None:
+    """Pin the build flavor so a test reads its simulated host, not the real one.
+
+    `_missing_modules` only answers whether the package is on disk. Readiness
+    also asks whether its native library loads, and without this stub that
+    second question is answered by whichever machine runs the test.
+    """
+
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_llamacpp_build_flavor",
+        lambda: LlamaCppBuildFlavor(
+            installed=True,
+            gpu_offload_supported=False,
+            accelerator_hints=[],
+            system_info="AVX = 1",
+            detection_state="detected",
+            reason="llama.cpp build flavor detected from the installed backend's own reporting APIs.",
+        ),
+    )
+
+
 def test_install_profiles_prefer_mlx_on_apple_silicon(monkeypatch) -> None:
     monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Darwin")
     monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "arm64")
@@ -87,6 +108,7 @@ def test_install_profiles_prefer_gguf_on_linux_hosts(monkeypatch) -> None:
         return ["openpyxl"]
 
     monkeypatch.setattr("lewlm.install_profiles._missing_modules", fake_missing_modules)
+    _stub_loadable_llamacpp_build(monkeypatch)
 
     summary = summarize_install_profiles()
     profiles = {profile.profile: profile for profile in summary.profiles}
@@ -194,6 +216,7 @@ def test_install_profiles_platform_matrix_is_host_proof(
             "llama_cpp",
         },
     )
+    _stub_loadable_llamacpp_build(monkeypatch)
 
     summary = summarize_install_profiles(settings)
     profiles = {profile.profile: profile for profile in summary.profiles}
@@ -391,6 +414,33 @@ def test_backend_inventory_keeps_version_claims_honest_without_metadata(monkeypa
     assert llama_entry.version is None
     assert "no version metadata" in llama_entry.detail
     assert "without a version claim" in llama_entry.detail
+
+
+def test_install_profiles_do_not_report_a_blocked_gguf_backend_as_ready(monkeypatch) -> None:
+    set_host_platform(monkeypatch, system="Windows", machine="AMD64")
+    _stub_installed_modules(monkeypatch, installed={"llama_cpp"})
+    blocked_reason = (
+        "llama-cpp-python is installed, but its native llama.cpp library could not be loaded on "
+        "this host: Failed to load shared library 'llama.dll': [WinError 4551] An Application "
+        "Control policy has blocked this file."
+    )
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_llamacpp_build_flavor",
+        lambda: LlamaCppBuildFlavor(
+            installed=True,
+            detection_state="unavailable",
+            reason=blocked_reason,
+        ),
+    )
+
+    summary = summarize_install_profiles()
+    gguf = next(profile for profile in summary.profiles if profile.profile == "gguf_fallback_backend")
+
+    # Present on disk, so `installed` stays true; nothing can load, so `ready`
+    # must not claim otherwise.
+    assert gguf.installed is True
+    assert gguf.ready is False
+    assert any("An Application Control policy has blocked this file" in note for note in gguf.notes)
 
 
 def test_install_profiles_surface_llamacpp_build_flavor_when_installed(monkeypatch) -> None:

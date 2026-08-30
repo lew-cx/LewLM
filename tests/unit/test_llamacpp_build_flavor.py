@@ -21,6 +21,27 @@ def test_build_flavor_is_unavailable_when_backend_is_missing(monkeypatch) -> Non
     assert "not installed" in flavor.reason
 
 
+def _blocked_import(name: str):
+    raise RuntimeError(
+        "Failed to load shared library 'llama.dll': "
+        "[WinError 4551] An Application Control policy has blocked this file",
+    )
+
+
+def test_build_flavor_reports_a_blocked_library_as_installed_but_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.build_flavor.import_module", _blocked_import)
+
+    flavor = detect_llamacpp_build_flavor()
+
+    # Installed is the honest answer here: the package is on disk, so this is
+    # not fixed by installing the extra again.
+    assert flavor.installed is True
+    assert flavor.detection_state == "unavailable"
+    assert flavor.gpu_offload_supported is None
+    assert "An Application Control policy has blocked this file" in flavor.reason
+    assert "not installed" not in flavor.reason
+
+
 def test_build_flavor_detects_cuda_build_from_backend_reporting(monkeypatch) -> None:
     fake_llama_cpp = SimpleNamespace(
         llama_supports_gpu_offload=lambda: True,

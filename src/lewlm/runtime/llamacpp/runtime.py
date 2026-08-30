@@ -39,6 +39,7 @@ from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
 from lewlm.runtime.llamacpp import grammar as grammar_support
+from lewlm.runtime.llamacpp.import_guard import load_llama_cpp
 from lewlm.runtime.prefix_cache import longest_token_prefix
 from lewlm.structured_output import (
     GrammarResponseFormat,
@@ -158,13 +159,14 @@ class LlamaCppRuntime(ManagedTextRuntime):
         return self.serving_context_tokens(manifest) or _LLAMA_FALLBACK_CONTEXT_TOKENS
 
     def _check_environment(self) -> tuple[bool, str | None]:
-        try:
-            import_module("llama_cpp")
-        except ImportError:
-            if platform.system() == "Windows":
-                return False, _windows_llamacpp_unavailable_reason()
-            return False, "llama-cpp-python is not installed. Install the `llamacpp` extra or another compatible llama-cpp-python build."
-        return True, None
+        imported = load_llama_cpp(import_module)
+        if imported.module is not None:
+            return True, None
+        if imported.reason is not None:
+            return False, imported.reason
+        if platform.system() == "Windows":
+            return False, _windows_llamacpp_unavailable_reason()
+        return False, "llama-cpp-python is not installed. Install the `llamacpp` extra or another compatible llama-cpp-python build."
 
     async def _load_model(self, manifest: ModelManifest) -> None:
         llama_cpp = import_module("llama_cpp")
@@ -584,15 +586,16 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 "grammar_reason": "llama-cpp-python is not installed or unavailable on this host.",
                 "json_schema_reason": "llama-cpp-python is not installed or unavailable on this host.",
             }
-        try:
-            llama_cpp = import_module("llama_cpp")
-        except ImportError:
+        imported = load_llama_cpp(import_module)
+        if imported.module is None:
+            reason = imported.reason or "llama-cpp-python is not installed or unavailable on this host."
             return {
                 "grammar": False,
                 "json_schema": False,
-                "grammar_reason": "llama-cpp-python is not installed or unavailable on this host.",
-                "json_schema_reason": "llama-cpp-python is not installed or unavailable on this host.",
+                "grammar_reason": reason,
+                "json_schema_reason": reason,
             }
+        llama_cpp = imported.module
         llama_class = getattr(llama_cpp, "Llama", None)
         if llama_class is None:
             return {
@@ -752,11 +755,11 @@ class LlamaCppRuntime(ManagedTextRuntime):
         if not supports_grammar_parameter:
             reason = "Installed llama.cpp chat completions do not expose a `grammar` parameter for decode-time constrained decoding."
             return {"grammar": False, "json_schema": False, "grammar_reason": reason, "json_schema_reason": reason}
-        try:
-            llama_cpp = import_module("llama_cpp")
-        except ImportError:
-            reason = "llama-cpp-python is not installed or unavailable on this host."
+        imported = load_llama_cpp(import_module)
+        if imported.module is None:
+            reason = imported.reason or "llama-cpp-python is not installed or unavailable on this host."
             return {"grammar": False, "json_schema": False, "grammar_reason": reason, "json_schema_reason": reason}
+        llama_cpp = imported.module
         grammar_class = getattr(llama_cpp, "LlamaGrammar", None)
         if grammar_class is None:
             reason = "Installed llama.cpp bindings do not expose `LlamaGrammar` for decode-time constrained decoding."
@@ -782,10 +785,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
 
     @staticmethod
     def _llama_cpp_module() -> Any | None:
-        try:
-            return import_module("llama_cpp")
-        except ImportError:
-            return None
+        return load_llama_cpp(import_module).module
 
     @classmethod
     def _json_schema_grammar(

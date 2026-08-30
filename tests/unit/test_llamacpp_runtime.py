@@ -31,6 +31,57 @@ from lewlm.storage.metadata import MetadataStore
 from lewlm.runtime.llamacpp.runtime import LlamaCppRuntime, _InstrumentedLlamaRamCache
 
 
+def test_llamacpp_runtime_reports_a_blocked_library_instead_of_an_install_hint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("lewlm.runtime.llamacpp.runtime.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(
+            RuntimeError(
+                "Failed to load shared library 'llama.dll': "
+                "[WinError 4551] An Application Control policy has blocked this file",
+            ),
+        ),
+    )
+
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+
+    assert runtime.is_available() is False
+    reason = runtime.availability_reason()
+    assert reason is not None
+    assert "An Application Control policy has blocked this file" in reason
+    # The install advice would be wrong here — the package is already present.
+    assert "Microsoft C++ Build Tools" not in reason
+
+
+async def test_llamacpp_runtime_health_check_survives_a_blocked_library(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # This is the /v1/runtime/stats path: health_snapshot() -> health_check() ->
+    # performance_feature_snapshot(). A blocked library used to escape here as an
+    # unhandled error and 500 the endpoint.
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: (_ for _ in ()).throw(
+            RuntimeError(
+                "Failed to load shared library 'llama.dll': "
+                "[WinError 4551] An Application Control policy has blocked this file",
+            ),
+        ),
+    )
+
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+
+    snapshot = await runtime.health_check()
+
+    assert snapshot["available"] is False
+    assert snapshot["readiness_state"] == "runtime_unavailable"
+    assert "An Application Control policy has blocked this file" in snapshot["availability_reason"]
+
+
 def test_llamacpp_runtime_reports_actionable_windows_install_reason_when_backend_is_missing(
     monkeypatch,
     tmp_path: Path,
