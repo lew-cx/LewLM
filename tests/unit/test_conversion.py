@@ -1272,3 +1272,30 @@ def test_conversion_service_removes_discoverable_but_nonrunnable_orphaned_cache(
     assert artifact is None
     assert recorded_artifacts == []
     assert not output_dir.exists()
+
+
+def test_failed_conversion_records_backend_error_details(
+    temp_settings: LewLMSettings,
+    monkeypatch,
+) -> None:
+    """A failed export keeps the tool's own output, not just a generic sentence."""
+
+    from lewlm.conversion.service import _conversion_error_details
+
+    details = _conversion_error_details(
+        ConversionError(
+            "llama.cpp HF-to-GGUF export failed.",
+            details={"returncode": 1, "logs": ["FileNotFoundError: 1_Pooling/config.json"]},
+        ),
+    )
+
+    assert details is not None
+    assert details["returncode"] == 1
+    assert "1_Pooling" in details["logs"][0]
+
+
+def test_error_without_details_adds_nothing() -> None:
+    from lewlm.conversion.service import _conversion_error_details
+
+    assert _conversion_error_details(ValueError("plain")) is None
+    assert _conversion_error_details(ConversionError("no details")) is None

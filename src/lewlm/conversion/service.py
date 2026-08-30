@@ -9,6 +9,7 @@ import platform
 import shutil
 import tarfile
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
@@ -553,11 +554,17 @@ class ConversionService:
                 )
         except Exception as exc:
             duration_seconds = round(time.perf_counter() - started, 4)
+            # A backend failure carries the tool's own output in `details`
+            # (return code, last log lines). Recording only `str(exc)` reduces
+            # every export failure to the same sentence and leaves the operator
+            # with nothing to act on, so the detail is kept alongside it.
+            error_details = _conversion_error_details(exc)
             self._complete_job(
                 job_id,
                 status=JobStatus.FAILED,
                 payload_updates={
                     "error": str(exc),
+                    **({"error_details": error_details} if error_details else {}),
                     "duration_seconds": duration_seconds,
                 },
             )
@@ -1330,3 +1337,12 @@ def _optimization_profiles_for_target(target_id: str) -> list[str]:
     if target_id == "onnx_genai":
         return ["fp16", "int8", "int4", "directml_auto"]
     return []
+
+
+def _conversion_error_details(exc: BaseException) -> dict[str, object] | None:
+    """Return a JSON-safe copy of a LewLM error's `details`, when it has any."""
+
+    details = getattr(exc, "details", None)
+    if not isinstance(details, Mapping) or not details:
+        return None
+    return {str(key): value for key, value in details.items()}
