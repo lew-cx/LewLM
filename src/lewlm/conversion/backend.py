@@ -119,6 +119,46 @@ def _source_model_type(manifest: ModelManifest) -> str:
     return str(model_type) if isinstance(model_type, str) and model_type else manifest.architecture_family
 
 
+def _llamacpp_converter_architectures(repo_root: Path | None) -> frozenset[str] | None:
+    """Architecture names the local llama.cpp converter can export as text GGUF.
+
+    `convert_hf_to_gguf.py` dispatches on `config.json`'s `architectures[0]`, and
+    its `conversion` package declares the mapping as a module-level dict literal.
+    Reading it with `ast` answers "can this bundle convert?" without importing
+    the converter -- that import pulls in torch, transformers, and gguf, and
+    would run third-party module code just to plan a job.
+
+    Returns ``None`` when the mapping cannot be read, which is a different answer
+    from "empty": callers keep reporting the tool as unverified rather than
+    claiming the architecture is unsupported.
+    """
+
+    if repo_root is None:
+        return None
+    registry_path = repo_root / "conversion" / "__init__.py"
+    try:
+        source = registry_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in module.body:
+        targets = (
+            [node.target] if isinstance(node, ast.AnnAssign) else list(getattr(node, "targets", []))
+        )
+        if not any(isinstance(t, ast.Name) and t.id == "TEXT_MODEL_MAP" for t in targets):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            return None
+        return frozenset(
+            key.value for key in value.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        )
+    return None
+
+
 def _mlx_lm_supports_model_type(model_type: str) -> bool:
     """Whether the installed mlx-lm ships a builder for this architecture.
 
@@ -262,7 +302,8 @@ class LlamaCppConversionBackend:
             warnings.append(
                 "Source bundle uses JANG-packed safetensors; LewLM will normalize it to standard HF safetensors before GGUF export."
             )
-        warnings.extend(checkpoint_normalization_warnings(inspect_checkpoint_layout(source_path)))
+        source_layout = inspect_checkpoint_layout(source_path)
+        warnings.extend(checkpoint_normalization_warnings(source_layout))
         if ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality:
             warnings.append(
                 "GGUF conversion is reported as a text-capable artifact first; multimodal/mmproj runtime support remains probe-gated."
@@ -300,24 +341,56 @@ class LlamaCppConversionBackend:
                 artifact_plans=artifact_plans,
             )
         if (ModelModality.VISION in manifest.modality or ModelModality.MULTIMODAL in manifest.modality) and not jang_source:
-            return ConversionCompatibilityReport(
-                model_id=manifest.model_id,
-                source_format=manifest.format_type,
-                target_format=ModelFormat.GGUF.value,
-                backend_name=self.name,
-                can_convert=False,
-                reason=(
-                    "LewLM's packaged GGUF conversion path currently supports text and semantic Hugging Face "
-                    "bundles; vision/multimodal sources still need a model-specific exporter or bridge-backed runtime."
-                ),
-                cache_key=cache_key,
-                output_path=str(output_path),
-                quantization_mode=quantization_mode,
-                requested_profile=requested_profile,
-                resolved_profile=resolved_profile,
-                profile_support=[profile_support],
-                artifact_plans=artifact_plans,
-            )
+            # A multimodal bundle is not automatically unconvertible: llama.cpp
+            # exports the text tower of many such architectures. Ask the local
+            # converter which ones it actually handles instead of refusing the
+            # whole class. When no converter is resolvable, fall through so the
+            # existing missing-converter report answers, rather than blaming the
+            # modality for a missing tool.
+            converter_tool = self._converter_tool(settings)
+            if converter_tool is not None:
+                supported_architectures = _llamacpp_converter_architectures(converter_tool.cwd)
+                source_architectures = source_layout.architectures
+                exportable = next(
+                    (
+                        architecture
+                        for architecture in source_architectures
+                        if supported_architectures is not None and architecture in supported_architectures
+                    ),
+                    None,
+                )
+                if exportable is None:
+                    declared = ", ".join(source_architectures) or "unknown"
+                    reason = (
+                        f"The local llama.cpp converter declares no text exporter for architecture `{declared}`; "
+                        "this multimodal bundle needs a model-specific exporter or a bridge-backed runtime."
+                        if supported_architectures is not None
+                        else (
+                            "LewLM could not read the llama.cpp converter's architecture registry "
+                            f"(`{converter_tool.display_name}`), so it cannot confirm a text exporter for "
+                            f"architecture `{declared}`."
+                        )
+                    )
+                    return ConversionCompatibilityReport(
+                        model_id=manifest.model_id,
+                        source_format=manifest.format_type,
+                        target_format=ModelFormat.GGUF.value,
+                        backend_name=self.name,
+                        can_convert=False,
+                        reason=reason,
+                        cache_key=cache_key,
+                        output_path=str(output_path),
+                        quantization_mode=quantization_mode,
+                        requested_profile=requested_profile,
+                        resolved_profile=resolved_profile,
+                        profile_support=[profile_support],
+                        artifact_plans=artifact_plans,
+                        warnings=warnings,
+                    )
+                warnings.append(
+                    f"Exporting the text tower of `{exportable}` only. Vision and audio towers are dropped: LewLM "
+                    "does not yet emit an mmproj artifact, and no packaged non-Apple runtime consumes one."
+                )
         if (
             ModelModality.TEXT not in manifest.modality
             and ModelModality.EMBEDDING not in manifest.modality

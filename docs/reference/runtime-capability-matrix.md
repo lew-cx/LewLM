@@ -50,6 +50,8 @@ Evidence ownership uses `lewlm_owned`, `backend_native`, `bridge_verified`, `fal
 
 Conversion target planning is exposed through `lewlm convert --plan` and `POST /v1/lewlm/conversions/plan`. GGUF/llama.cpp remains the default non-Apple conversion path, while HF-to-ONNX Runtime GenAI conversion is executable via the `onnxruntime-genai` model builder when the `onnx_genai` extra is installed (reported with state `available`); without it, the ONNX target is reported as `requires_install` rather than as a fake conversion claim.
 
+A vision or audio source is not refused as a class on the GGUF path. llama.cpp exports the **text tower** of many multimodal architectures, so LewLM reads the local converter's own architecture registry and converts when that architecture is declared, emitting a text-only artifact and warning that the other towers are dropped. When the architecture is absent the refusal names it; when the registry cannot be read the report says so instead of claiming the architecture is unsupported. LewLM does not yet emit an `mmproj` artifact, and no packaged non-Apple runtime consumes one, so this does not widen the vision or audio parity claims above.
+
 ## Full parity acceptance matrix
 
 | Feature class | Public-surface contract | Apple packaged path | Non-Apple packaged path | Bridge path | Fallback / unsupported boundary | Evidence and readiness |

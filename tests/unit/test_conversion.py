@@ -1299,3 +1299,128 @@ def test_error_without_details_adds_nothing() -> None:
 
     assert _conversion_error_details(ValueError("plain")) is None
     assert _conversion_error_details(ConversionError("no details")) is None
+
+
+class TestMultimodalGgufExport:
+    """A multimodal bundle converts when the local converter declares its architecture.
+
+    llama.cpp exports the text tower of many vision/audio architectures, so
+    refusing the whole modality class turned convertible models away. The
+    decision now comes from the converter's own registry.
+    """
+
+    @staticmethod
+    def _llamacpp_checkout(root: Path, *, architectures: tuple[str, ...]) -> Path:
+        """Build the minimum llama.cpp layout the tool resolver recognises."""
+
+        checkout = root / "llama.cpp"
+        (checkout / "gguf-py").mkdir(parents=True)
+        conversion_pkg = checkout / "conversion"
+        conversion_pkg.mkdir()
+        entries = "\n".join(f'    "{name}": "gemma",' for name in architectures)
+        (conversion_pkg / "__init__.py").write_text(
+            f"TEXT_MODEL_MAP: dict[str, str] = {{\n{entries}\n}}\n",
+            encoding="utf-8",
+        )
+        (checkout / "convert_hf_to_gguf.py").write_text("# converter", encoding="utf-8")
+        return checkout
+
+    @staticmethod
+    def _multimodal_source(root: Path, *, architecture: str) -> Path:
+        source = root / "gemma-multimodal"
+        source.mkdir()
+        (source / "config.json").write_text(
+            json.dumps({"architectures": [architecture], "model_type": "gemma4_unified"}),
+            encoding="utf-8",
+        )
+        return source
+
+    def _report(self, source: Path, settings: LewLMSettings, tmp_path: Path):
+        return LlamaCppConversionBackend().compatibility_report(
+            _manifest(
+                source,
+                model_id="gemma-multimodal",
+                format_type=ModelFormat.HUGGINGFACE,
+                modality=(ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+            ),
+            settings=settings,
+            policy=ConversionPolicy.BALANCED,
+            custom_bits=None,
+            quantization_profile=None,
+            cache_key="cache",
+            output_path=tmp_path / "out",
+        )
+
+    def test_declared_architecture_converts_as_a_text_artifact(
+        self,
+        temp_settings: LewLMSettings,
+        tmp_path: Path,
+    ) -> None:
+        checkout = self._llamacpp_checkout(tmp_path, architectures=("Gemma4UnifiedForConditionalGeneration",))
+        quantizer = tmp_path / "llama-quantize"
+        quantizer.write_text("quantizer", encoding="utf-8")
+        settings = temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=checkout / "convert_hf_to_gguf.py",
+            llamacpp_quantize_path=quantizer,
+        )
+        source = self._multimodal_source(tmp_path, architecture="Gemma4UnifiedForConditionalGeneration")
+
+        report = self._report(source, settings, tmp_path)
+
+        assert report.can_convert is True
+        assert [plan.modality for plan in report.artifact_plans] == [(ModelModality.TEXT,)]
+        assert any("text tower of `Gemma4UnifiedForConditionalGeneration`" in w for w in report.warnings)
+        # Dropping the other towers has to be stated, not implied.
+        assert any("Vision and audio towers are dropped" in w for w in report.warnings)
+
+    def test_undeclared_architecture_is_refused_by_name(
+        self,
+        temp_settings: LewLMSettings,
+        tmp_path: Path,
+    ) -> None:
+        checkout = self._llamacpp_checkout(tmp_path, architectures=("Gemma3ForConditionalGeneration",))
+        settings = temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=checkout / "convert_hf_to_gguf.py",
+        )
+        source = self._multimodal_source(tmp_path, architecture="SomeUnknownForConditionalGeneration")
+
+        report = self._report(source, settings, tmp_path)
+
+        assert report.can_convert is False
+        assert "SomeUnknownForConditionalGeneration" in report.reason
+        assert "no text exporter" in report.reason
+
+    def test_unreadable_registry_reports_unverified_not_unsupported(
+        self,
+        temp_settings: LewLMSettings,
+        tmp_path: Path,
+    ) -> None:
+        """A converter outside a checkout cannot answer; that is not a refusal on merit."""
+
+        bare_converter = tmp_path / "convert_hf_to_gguf.py"
+        bare_converter.write_text("# converter", encoding="utf-8")
+        settings = temp_settings.with_updates(llamacpp_convert_hf_to_gguf_path=bare_converter)
+        source = self._multimodal_source(tmp_path, architecture="Gemma4UnifiedForConditionalGeneration")
+
+        report = self._report(source, settings, tmp_path)
+
+        assert report.can_convert is False
+        assert "could not read" in report.reason.casefold()
+        assert "Gemma4UnifiedForConditionalGeneration" in report.reason
+
+    def test_missing_converter_still_reports_the_missing_tool(
+        self,
+        temp_settings: LewLMSettings,
+        tmp_path: Path,
+    ) -> None:
+        """Absent tooling must not be reported as a modality problem."""
+
+        settings = temp_settings.with_updates(
+            llamacpp_convert_hf_to_gguf_path=tmp_path / "absent" / "convert_hf_to_gguf.py",
+        )
+        source = self._multimodal_source(tmp_path, architecture="Gemma4UnifiedForConditionalGeneration")
+
+        report = self._report(source, settings, tmp_path)
+
+        assert report.can_convert is False
+        assert "was not found" in report.reason
