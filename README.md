@@ -79,6 +79,20 @@ Release artifacts now carry the same closure contract. `release-manifest.json` i
 
 ## Install
 
+**Pick your host first — the two paths are genuinely different.**
+
+| Host | Path | Why |
+| --- | --- | --- |
+| macOS on Apple Silicon | native install with `.[mlx]` | MLX needs Metal, which containers cannot reach |
+| Linux / Windows | **Docker** (see [below](#docker-the-promoted-path-on-non-apple-hosts)) | the image is where a GPU-capable llama.cpp build and the HF→GGUF conversion tools are already assembled |
+
+A native install on Linux and Windows stays supported and is documented in full
+below, but it leaves two things for you to supply that the image already has: a
+llama.cpp build compiled for your GPU, and llama.cpp's `convert_hf_to_gguf.py`
+plus `llama-quantize`, which `lewlm convert` shells out to and which the
+`llama-cpp-python` wheel does not ship. `lewlm doctor` reports which of the two
+shapes it is running in and tailors its guidance accordingly.
+
 ```bash
 git clone https://github.com/Lewted/LewLM.git
 cd LewLM
@@ -127,25 +141,33 @@ The new `.[onnx_genai]` profile is LewLM's Windows-native ONNX/DirectML path for
 
 `lewlm doctor` and `GET /v1/health` expose an `install_profiles` summary so you can confirm which profile is active on the current host, plus `recommended_feature_paths` for the current host's default operator routes. `lewlm doctor` and `GET /v1/runtime/stats` also report detected host memory when available, or an explicit unavailability reason when the host probe cannot determine it.
 
-### Docker (recommended for portable, cross-platform runs)
+### Docker: the promoted path on non-Apple hosts
 
-Docker is the most consistent way to run LewLM across operating systems, and the cleanest fix if your host cannot load a prebuilt `llama-cpp-python` wheel — including the Windows `0xc000001d` (`STATUS_ILLEGAL_INSTRUCTION`) crash on `llama.dll`. The image compiles llama.cpp with `GGML_NATIVE=OFF`, so the backend does not require CPU instructions your host might lack.
+On Linux and Windows the image is where LewLM's packaged runtime family actually comes together. It carries a portable llama.cpp build (`GGML_NATIVE=OFF`, the fix for the Windows `0xc000001d` / `STATUS_ILLEGAL_INSTRUCTION` crash on `llama.dll`), a CUDA build on NVIDIA hosts without needing a CUDA toolkit or C++ compiler on the host, and the two llama.cpp tools `lewlm convert` shells out to — so conversion is executable rather than reporting `requires_install`.
 
 ```bash
-docker build -t lewlm:cpu .                                   # portable CPU image
-docker run -d -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cpu  # reuse host models in ~/.lewlm
-curl -s http://127.0.0.1:8080/v1/health                       # confirm readiness
+cp .env.example .env                          # set LEWLM_DOCKER_MODELS_DIR to your model tree
+docker compose up --build                     # CPU
+docker compose --profile gpu up --build lewlm-cuda   # NVIDIA
+curl -s http://127.0.0.1:8080/v1/health       # confirm readiness
 ```
 
-NVIDIA GPUs use `Dockerfile.cuda` (`docker compose --profile gpu up --build lewlm-cuda`). Apple MLX is **not** containerizable — run MLX natively on macOS. See [docs/operations/docker.md](docs/operations/docker.md) for GPU builds, bind mounts, build args, and the full container support matrix.
+Converting inside the container:
+
+```bash
+docker compose exec lewlm lewlm scan
+docker compose exec lewlm lewlm convert <model-id> --authorize model_conversion
+```
+
+Apple MLX is **not** containerizable — run MLX natively on macOS. See [docs/operations/docker.md](docs/operations/docker.md) for GPU builds, `.env` settings, bind mounts, build args, and the full container support matrix.
 
 ## Recommended feature paths by platform
 
 | Platform | Chat | Semantic text | Vision | Audio | Structured output |
 | --- | --- | --- | --- | --- | --- |
 | macOS | Apple MLX on Apple Silicon; GGUF on non-MLX Macs | Apple MLX on Apple Silicon; external bridge on non-MLX Macs | Apple MLX vision on Apple Silicon; external bridge on non-MLX Macs | Apple MLX audio on Apple Silicon; external bridge on non-MLX Macs | GGUF/llama.cpp when you need decode-time enforcement; MLX remains prompt-guided fallback |
-| Linux | GGUF/llama.cpp packaged default | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
-| Windows | GGUF/llama.cpp packaged default; ONNX GenAI/DirectML is probe-gated candidate work | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
+| Linux | GGUF/llama.cpp packaged default, promoted through the Docker image | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
+| Windows | GGUF/llama.cpp packaged default, promoted through the Docker image; ONNX GenAI/DirectML is probe-gated candidate work | GGUF/llama.cpp packaged default for embedding-capable semantic models; bridge remains optional | external accelerator bridge with OpenAI-style image content blocks | external accelerator bridge with compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints; bridge-only audio parity | GGUF/llama.cpp packaged default |
 
 `semantic text` covers embeddings and rerank, and `structured output` here means requests that need decode-time JSON-schema or grammar enforcement. On non-Apple hosts, GGUF keeps the packaged semantic default while the bridge remains explicit adapter guidance when another local server owns semantic execution, and `lewlm doctor` plus `GET /v1/health` surface the current-host mapping directly.
 

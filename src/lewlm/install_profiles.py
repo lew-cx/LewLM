@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from lewlm.container import ContainerStatus, detect_container
 from lewlm.core.contracts import RuntimeSupportPath, StandardsAcceptanceContract, build_standards_acceptance_contract
 from lewlm.documents.ingest.ocr import detect_ocr_backend
 from lewlm.runtime.feature_probes import BackendFeatureProbe, probe_backend_features
@@ -84,6 +85,7 @@ class InstallProfileSummary(BaseModel):
     backend_inventory: list[BackendModuleStatus] = Field(default_factory=list)
     backend_feature_probes: list[BackendFeatureProbe] = Field(default_factory=list)
     llamacpp_build: LlamaCppBuildFlavor | None = None
+    container: ContainerStatus | None = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -111,6 +113,8 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
     gguf_host_supported = system in {"Darwin", "Linux", "Windows"}
     host_label = f"{system} {machine}".strip()
 
+    container = detect_container()
+
     mlx_missing = _missing_modules(("mlx", "mlx_lm", "mlx_vlm", "mlx_audio"))
     gguf_missing = _missing_modules(("llama_cpp",))
     onnx_genai_missing = _missing_modules(("onnxruntime_genai",))
@@ -134,9 +138,22 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
     if apple_silicon_host:
         summary_notes.append("This Apple Silicon host can use MLX as LewLM's first-class local runtime profile.")
     elif gguf_host_supported:
-        summary_notes.append(
-            f"{host_label} should use the cross-platform GGUF profile as LewLM's first-class non-Apple runtime family.",
-        )
+        # Docker is the promoted deployment on non-Apple hosts: the image is where a
+        # GPU-capable llama.cpp build and the HF-to-GGUF conversion tools are already
+        # assembled. Native installs stay supported, but the operator supplies both.
+        if container.in_container:
+            summary_notes.append(
+                f"{host_label} is running LewLM's container image, the promoted deployment on non-Apple hosts. "
+                "It packages the cross-platform GGUF profile as LewLM's first-class non-Apple runtime family "
+                "together with the llama.cpp HF-to-GGUF conversion tools.",
+            )
+        else:
+            summary_notes.append(
+                f"{host_label} should run LewLM through the shipped container image, which packages the "
+                "cross-platform GGUF profile as LewLM's first-class non-Apple runtime family together with the "
+                "llama.cpp HF-to-GGUF conversion tools. A native install stays supported, but leaves the "
+                "GPU-capable llama.cpp build and the conversion tools for you to provide.",
+            )
         summary_notes.append(
             "External accelerators remain the supported bridge path for compatible loopback-only local servers, including NVIDIA-oriented operators, and do not replace the packaged GGUF/llama.cpp default when it is available. Non-Apple audio transcription and speech still use this bridge path, while semantic GGUF models can stay packaged on the llama.cpp path.",
         )
@@ -327,6 +344,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             enabled=getattr(settings, "backend_feature_probes_enabled", False),
         ),
         llamacpp_build=llamacpp_build,
+        container=container,
         notes=summary_notes,
     )
 
@@ -360,8 +378,9 @@ def _llamacpp_build_notes(build: LlamaCppBuildFlavor | None, *, system: str) -> 
         )
         if system in {"Linux", "Windows"}:
             notes.append(
-                "For local GPU acceleration, install a llama-cpp-python build compiled with CUDA on NVIDIA hosts "
-                "or Vulkan as the vendor-neutral option; LewLM keeps reporting whatever the installed build actually exposes.",
+                "For local GPU acceleration, the shipped CUDA container image (`Dockerfile.cuda`) is the promoted path "
+                "on NVIDIA hosts; natively, install a llama-cpp-python build compiled with CUDA, or Vulkan as the "
+                "vendor-neutral option. LewLM keeps reporting whatever the installed build actually exposes.",
             )
     else:
         notes.append(

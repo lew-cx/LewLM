@@ -808,6 +808,12 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
         print(f"parser sandbox: {'enabled' if settings.parser_sandbox_enabled else 'disabled'}")
         print(f"conversion sandbox: {'enabled' if settings.conversion_sandbox_enabled else 'disabled'}")
         install_profiles = payload["install_profiles"]
+        container = install_profiles.get("container")
+        if isinstance(container, dict):
+            if container.get("in_container"):
+                print(f"deployment: container ({container.get('runtime') or 'unknown'} markers detected)")
+            else:
+                print("deployment: native host (no container markers detected)")
         print("active install profiles: " + ", ".join(install_profiles["active_profile_ids"]))
         recommended_profile = install_profiles.get("recommended_profile_id")
         if isinstance(recommended_profile, str) and recommended_profile:

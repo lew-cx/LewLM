@@ -236,5 +236,6 @@ For that path, `runtime_support_strategy.paths[].performance_core_evidence` is t
 - `external_accelerator` is a bridge to another local server, not proof that LewLM owns or bundles that server.
 - `external_accelerator` only claims vision, audio, embeddings, or rerank when the configured local server satisfies the matching compatibility probe.
 - `external_accelerator` does not currently claim MLX-owned encoder caching, MLX-level multimodal telemetry parity, or adapter-contract speculation controls.
-- NVIDIA-oriented Linux/Windows operators should think of the external accelerator path as loopback bridge guidance first and packaged parity second.
+- NVIDIA-oriented Linux/Windows operators should reach for the packaged `llamacpp` path in LewLM's CUDA container image (`Dockerfile.cuda`) first; that keeps execution on the packaged support path. The external accelerator path stays loopback bridge guidance for topologies where another local server already owns execution, and remains bridge guidance rather than packaged parity.
+- Containerisation is a deployment shape, not a support path. Running in the image does not upgrade any `support_path` value; it is how a non-Apple host obtains a GPU-capable llama.cpp build and the llama.cpp conversion tools. `install_profiles.container` reports the shape so guidance can differ without capability claims differing.
 - The frontier and distributed runtimes should be treated as experimental surfaces, not default production backends.

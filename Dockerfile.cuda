@@ -2,8 +2,10 @@
 #
 # LewLM CUDA runtime image (NVIDIA GPU acceleration).
 #
-# Builds llama.cpp with the CUDA backend and pulls a CUDA build of torch. Run
-# with the NVIDIA Container Toolkit:
+# This is the promoted path for LewLM on non-Apple NVIDIA hosts. It builds
+# llama.cpp with the CUDA backend, pulls a CUDA build of torch, and carries the
+# llama.cpp conversion tools so `lewlm convert` is executable in the image.
+# Run with the NVIDIA Container Toolkit:
 #
 #   docker build -f Dockerfile.cuda -t lewlm:cuda .
 #   docker run --gpus all -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cuda
@@ -13,9 +15,77 @@
 #    new GPUs (e.g. Blackwell / RTX 50-series, compute capability 12.0) build
 #    with a recent CUDA base image and --build-arg CUDA_ARCHITECTURES=120.
 #  - The CUDA toolkit/devel image is large; the resulting image is multi-GB.
+#  - The base image must carry Python >= 3.11 to satisfy `requires-python`.
+#    The ubuntu22.04 CUDA images ship Python 3.10, so these default to
+#    ubuntu24.04 (Python 3.12); keep that floor when overriding the tags.
 
-ARG CUDA_DEVEL_IMAGE=12.6.2-devel-ubuntu22.04
-ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu22.04
+ARG CUDA_DEVEL_IMAGE=12.6.2-devel-ubuntu24.04
+ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu24.04
+
+# llama.cpp revision used for the conversion tools. Pinned so image builds are
+# reproducible and so the GGUF files written here track a known llama.cpp.
+ARG LLAMA_CPP_REF=b10698
+
+# `enabled` (default) builds the conversion tools; `disabled` skips that build
+# for lean CI images. When disabled, LewLM reports the configured converter as
+# not found rather than silently dropping the capability.
+ARG CONVERSION_TOOLS=enabled
+
+###############################################################################
+# llama.cpp conversion tools: HF->GGUF converter + GGUF quantizer             #
+###############################################################################
+# Quantization is CPU work, so this builds without the CUDA backend even though
+# it shares the CUDA base -- matching the base keeps the binary's glibc and
+# libstdc++ aligned with the runtime stage.
+FROM nvidia/cuda:${CUDA_DEVEL_IMAGE} AS llamacpp-tools-enabled
+
+ARG LLAMA_CPP_REF
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" \
+        https://github.com/ggml-org/llama.cpp.git /src/llama.cpp
+
+WORKDIR /src/llama.cpp
+
+RUN cmake -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_NATIVE=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DLLAMA_BUILD_COMMON=ON \
+        -DLLAMA_BUILD_TOOLS=ON \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_SERVER=OFF \
+        -DLLAMA_BUILD_APP=OFF \
+        -DLLAMA_BUILD_UI=OFF \
+        -DLLAMA_OPENSSL=OFF \
+    && cmake --build build --target llama-quantize -j "$(nproc)"
+
+# `convert_hf_to_gguf.py` imports `conversion` and self-inserts `gguf-py` on
+# sys.path relative to its own location, so all three have to stay siblings.
+# LewLM's tool resolver recognises that layout and runs the converter with the
+# directory as its working root.
+RUN mkdir -p /opt/llamacpp-tools \
+    && cp convert_hf_to_gguf.py /opt/llamacpp-tools/ \
+    && cp -r gguf-py /opt/llamacpp-tools/gguf-py \
+    && cp -r conversion /opt/llamacpp-tools/conversion \
+    && install -Dm755 build/bin/llama-quantize /opt/llamacpp-tools/llama-quantize
+
+###############################################################################
+# Opt-out stage: an empty tool tree so the runtime COPY stays unconditional    #
+###############################################################################
+FROM nvidia/cuda:${CUDA_DEVEL_IMAGE} AS llamacpp-tools-disabled
+RUN mkdir -p /opt/llamacpp-tools
+
+FROM llamacpp-tools-${CONVERSION_TOOLS} AS llamacpp-tools
+
+###############################################################################
+# Builder: compile a CUDA llama-cpp-python + CUDA torch into a venv           #
+###############################################################################
 FROM nvidia/cuda:${CUDA_DEVEL_IMAGE} AS builder
 
 ARG EXTRAS="llamacpp,documents"
@@ -45,7 +115,7 @@ RUN pip install --upgrade pip \
     && pip install ".[${EXTRAS}]"
 
 ###############################################################################
-ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu22.04
+ARG CUDA_RUNTIME_IMAGE=12.6.2-runtime-ubuntu24.04
 FROM nvidia/cuda:${CUDA_RUNTIME_IMAGE} AS runtime
 # Keep CUDA_RUNTIME_IMAGE's CUDA version aligned with CUDA_DEVEL_IMAGE above.
 
@@ -59,6 +129,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=llamacpp-tools /opt/llamacpp-tools /opt/llamacpp-tools
 ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN useradd --create-home --uid 10001 lewlm \
@@ -71,7 +142,18 @@ ENV LEWLM_HOST=0.0.0.0 \
     LEWLM_DATA_DIR=/data \
     HOME=/home/lewlm \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    # Reported by `lewlm doctor` so guidance suits the deployment shape.
+    LEWLM_IN_CONTAINER=true \
+    # Without this a CUDA build still loads models CPU-only: the setting
+    # defaults to None, which asks llama.cpp for zero offloaded layers. -1
+    # offloads every layer; lower it for models that exceed your VRAM.
+    LEWLM_GPU_OFFLOAD_LAYERS=-1 \
+    # The conversion path shells out to these; both live in the image.
+    LEWLM_LLAMACPP_CONVERT_HF_TO_GGUF_PATH=/opt/llamacpp-tools/convert_hf_to_gguf.py \
+    LEWLM_LLAMACPP_QUANTIZE_PATH=/opt/llamacpp-tools/llama-quantize \
+    # The tool tree is read-only to this user; skip the bytecode write attempts.
+    PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 8080
 VOLUME ["/data"]

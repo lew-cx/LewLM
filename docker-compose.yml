@@ -1,4 +1,4 @@
-# LewLM via Docker Compose.
+# LewLM via Docker Compose -- the promoted way to run LewLM on non-Apple hosts.
 #
 # CPU (default):
 #   docker compose up --build
@@ -6,9 +6,21 @@
 # NVIDIA GPU:
 #   docker compose --profile gpu up --build lewlm-cuda
 #
-# Models + registry state persist in the named volume `lewlm-data` (mounted at
-# /data). To reuse models you already have on the host instead, replace the
-# volume with a bind mount, e.g.:  - "${HOME}/.lewlm:/data"
+# Settings come from a `.env` file next to this one; copy `.env.example` and
+# edit it. Every value below has a working default, so `docker compose up`
+# succeeds on a fresh clone without one.
+#
+# Registry state (metadata.sqlite3, cache, logs) lives in the named volume
+# `lewlm-data` at /data, which is a native Linux filesystem inside the VM --
+# SQLite is not reliable over a bind-mounted host filesystem. The model tree is
+# bind-mounted separately at /data/models, read-only, so an existing model
+# directory is served in place rather than copied. Docker resolves the deeper
+# mount first, so the two coexist.
+#
+# `lewlm convert` writes to /data/cache/conversions inside the named volume,
+# not into the model tree, so the read-only mount above does not block it.
+# Uncomment the conversions bind mount to land converted GGUFs on the host
+# instead.
 
 services:
   lewlm:
@@ -16,10 +28,14 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        EXTRAS: "llamacpp,documents"
+        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-llamacpp,documents}"
+        # Pinned llama.cpp revision for the bundled HF->GGUF conversion tools.
+        LLAMA_CPP_REF: "${LEWLM_DOCKER_LLAMA_CPP_REF:-b10698}"
+        # Set to `disabled` for a lean image without the conversion tools.
+        CONVERSION_TOOLS: "${LEWLM_DOCKER_CONVERSION_TOOLS:-enabled}"
     image: lewlm:cpu
     ports:
-      - "8080:8080"
+      - "${LEWLM_DOCKER_PORT:-8080}:8080"
     environment:
       LEWLM_HOST: "0.0.0.0"
       LEWLM_PORT: "8080"
@@ -30,6 +46,13 @@ services:
       # LEWLM_EXTERNAL_ACCELERATOR_BASE_URL: "http://host.docker.internal:1234"
     volumes:
       - lewlm-data:/data
+      - type: bind
+        source: ${LEWLM_DOCKER_MODELS_DIR:-./models}
+        target: /data/models
+        read_only: true
+      # - type: bind
+      #   source: ${LEWLM_DOCKER_CONVERSIONS_DIR:-./conversions}
+      #   target: /data/cache/conversions
     restart: unless-stopped
 
   lewlm-cuda:
@@ -38,16 +61,38 @@ services:
       context: .
       dockerfile: Dockerfile.cuda
       args:
-        EXTRAS: "llamacpp,documents"
+        # gguf_conversion shares every dependency with llamacpp, so it adds no
+        # image weight and makes `lewlm convert` available for the safetensors
+        # bundles on this host.
+        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-llamacpp,documents,gguf_conversion}"
+        LLAMA_CPP_REF: "${LEWLM_DOCKER_LLAMA_CPP_REF:-b10698}"
+        CONVERSION_TOOLS: "${LEWLM_DOCKER_CONVERSION_TOOLS:-enabled}"
+        # CUDA 12.6 has no sm_120 support and the Dockerfile's default arch list
+        # stops at Ada, so a Blackwell / RTX 50-series host must override both
+        # the base images and the architecture list. See `.env.example`.
+        CUDA_DEVEL_IMAGE: "${LEWLM_DOCKER_CUDA_DEVEL_IMAGE:-12.6.2-devel-ubuntu24.04}"
+        CUDA_RUNTIME_IMAGE: "${LEWLM_DOCKER_CUDA_RUNTIME_IMAGE:-12.6.2-runtime-ubuntu24.04}"
+        CUDA_ARCHITECTURES: "${LEWLM_DOCKER_CUDA_ARCHITECTURES:-75;80;86;89}"
     image: lewlm:cuda
     ports:
-      - "8080:8080"
+      - "${LEWLM_DOCKER_PORT:-8080}:8080"
     environment:
       LEWLM_HOST: "0.0.0.0"
       LEWLM_PORT: "8080"
       LEWLM_DATA_DIR: "/data"
+      # The image already defaults this to -1 (offload every layer). Lower it
+      # here if a model exceeds your VRAM; without any value, llama.cpp is
+      # asked for zero offloaded layers and the CUDA build runs CPU-only.
+      LEWLM_GPU_OFFLOAD_LAYERS: "${LEWLM_GPU_OFFLOAD_LAYERS:--1}"
     volumes:
       - lewlm-data:/data
+      - type: bind
+        source: ${LEWLM_DOCKER_MODELS_DIR:-./models}
+        target: /data/models
+        read_only: true
+      # - type: bind
+      #   source: ${LEWLM_DOCKER_CONVERSIONS_DIR:-./conversions}
+      #   target: /data/cache/conversions
     restart: unless-stopped
     deploy:
       resources:

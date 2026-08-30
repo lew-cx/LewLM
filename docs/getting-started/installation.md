@@ -2,6 +2,25 @@
 
 LewLM is packaged as a Python project. Start from a source checkout unless you specifically want to pin a Git reference from another project.
 
+## Choose a path first
+
+| Host | Path |
+| --- | --- |
+| macOS on Apple Silicon | native install with `.[mlx]` — MLX needs Metal, which containers cannot reach |
+| Linux / Windows | **Docker** — see [Running LewLM in Docker](../operations/docker.md) |
+
+On non-Apple hosts the container image is the promoted deployment. It already
+contains a llama.cpp build compiled for your GPU (CUDA, via `Dockerfile.cuda`)
+and llama.cpp's `convert_hf_to_gguf.py` plus `llama-quantize`, which
+`lewlm convert` shells out to. The `llama-cpp-python` wheel ships **neither**
+converter tool — it installs only the shared libraries — so a native install
+satisfies the converter's Python dependencies while leaving the converter
+itself absent, and `lewlm convert` reports `requires_install` until you supply
+it.
+
+The native instructions below remain fully supported; `lewlm doctor` reports
+which of the two shapes it is running in and tailors its guidance accordingly.
+
 ## Base setup
 
 ```bash

@@ -7,6 +7,7 @@ import pytest
 
 from conftest import set_host_platform
 from lewlm.config.settings import LewLMSettings
+from lewlm.container import ContainerStatus
 from lewlm.core.contracts import (
     ModelTargetPlatformReport,
     PerformanceCoreEvidenceFamily,
@@ -611,3 +612,80 @@ def test_install_profile_docs_cover_cross_platform_matrix() -> None:
         text = path.read_text(encoding="utf-8")
         for snippet in snippets:
             assert snippet in text, f"{snippet!r} missing from {path}"
+
+
+def _stub_container(monkeypatch, *, in_container: bool) -> None:
+    """Pin container residency so guidance is not decided by the test host."""
+
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_container",
+        lambda: ContainerStatus(
+            in_container=in_container,
+            runtime="docker" if in_container else None,
+            indicators=["`/.dockerenv` exists"] if in_container else [],
+            reason="pinned for test",
+        ),
+    )
+
+
+def test_non_apple_native_host_is_pointed_at_the_container_image(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Windows")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "AMD64")
+    _stub_installed_modules(monkeypatch, {"llama_cpp"})
+    _stub_loadable_llamacpp_build(monkeypatch)
+    _stub_container(monkeypatch, in_container=False)
+
+    summary = summarize_install_profiles()
+
+    assert summary.container is not None
+    assert summary.container.in_container is False
+    assert "should run LewLM through the shipped container image" in summary.notes[0]
+    # The existing non-Apple contract still has to read out of the same note.
+    assert "first-class non-Apple runtime family" in summary.notes[0]
+
+
+def test_non_apple_container_host_reports_it_is_already_on_the_promoted_path(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Linux")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "x86_64")
+    _stub_installed_modules(monkeypatch, {"llama_cpp"})
+    _stub_loadable_llamacpp_build(monkeypatch)
+    _stub_container(monkeypatch, in_container=True)
+
+    summary = summarize_install_profiles()
+
+    assert summary.container is not None
+    assert summary.container.in_container is True
+    assert summary.container.runtime == "docker"
+    assert "is running LewLM's container image" in summary.notes[0]
+    assert "first-class non-Apple runtime family" in summary.notes[0]
+    # The image is where the conversion tools live; that is the reason to say so.
+    assert "conversion tools" in summary.notes[0]
+
+
+def test_apple_silicon_guidance_is_left_alone(monkeypatch) -> None:
+    """MLX stays the Apple recommendation; Docker cannot reach Metal."""
+
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "arm64")
+    _stub_installed_modules(monkeypatch, {"mlx", "mlx_lm", "mlx_vlm", "mlx_audio"})
+    _stub_container(monkeypatch, in_container=False)
+
+    summary = summarize_install_profiles()
+
+    assert "first-class local runtime profile" in summary.notes[0]
+    assert not any("container image" in note for note in summary.notes)
+
+
+def test_cpu_only_llamacpp_build_points_at_the_cuda_image(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Linux")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "x86_64")
+    _stub_installed_modules(monkeypatch, {"llama_cpp"})
+    _stub_loadable_llamacpp_build(monkeypatch)
+    _stub_container(monkeypatch, in_container=False)
+
+    summary = summarize_install_profiles()
+    gguf = {profile.profile: profile for profile in summary.profiles}["gguf_fallback_backend"]
+
+    assert any("Dockerfile.cuda" in note for note in gguf.notes)
+    # The native escape hatches stay documented rather than being replaced.
+    assert any("Vulkan as the vendor-neutral option" in note for note in gguf.notes)
