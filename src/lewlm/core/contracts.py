@@ -340,6 +340,10 @@ class ModelScanSummary(BaseModel):
     unchanged_count: int
     removed_count: int
     manifests: list[ModelManifest]
+    # Operator-facing remarks about the scan itself: a source that could not be
+    # read, or models a policy deliberately left out. A scan that degrades has to
+    # say so somewhere, and counts alone cannot.
+    notes: list[str] = Field(default_factory=list)
     scanned_at: datetime = Field(default_factory=utc_now)
 
 

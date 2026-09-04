@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import UnionType
 from typing import Any, Literal, Self, Union, get_args, get_origin
+from urllib.parse import urlparse
 
 from pydantic import SecretStr, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,6 +13,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from lewlm._version import __version__
 from lewlm.core.contracts import ReasoningVisibility
 from lewlm.pack_registry import KNOWN_FEATURE_PACKS, KNOWN_RUNTIME_PACKS, canonicalize_pack_name
+
+# Hosts that resolve to this machine. Validating a configured endpoint against
+# this set keeps LewLM from dialing a remote server itself; it says nothing about
+# whether the local server behind the address relays the request onward.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Environment variables are always strings, so an operator has no way to spell
 # `None` for an optional setting without an explicit unset sentinel.
@@ -165,6 +171,19 @@ class LewLMSettings(BaseSettings):
     ] = "openai_compatible"
     external_accelerator_base_url: str | None = None
     external_accelerator_timeout_seconds: int = 10
+    # Ollama is a model *source*, not a LewLM-owned runtime. When enabled, discovery
+    # asks a locally installed Ollama daemon what it has and publishes those models
+    # as bridge-backed manifests; the existing external accelerator adapter executes
+    # them. LewLM never installs, launches, configures, or updates Ollama, and it
+    # never contacts the daemon at all while this is off.
+    ollama_discovery_enabled: bool = False
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_discovery_timeout_seconds: int = 5
+    # Ollama can serve models that it executes on its own cloud rather than on this
+    # host. Those are off-host execution, so they stay out of the registry unless an
+    # operator asks for them. LewLM holds no credentials for this: signing in is
+    # `ollama signin`, and the daemon owns the account relationship.
+    ollama_cloud_enabled: bool = False
     file_access_roots: tuple[Path, ...] = ()
     validation_manifest_paths: tuple[Path, ...] = ()
 
@@ -286,6 +305,24 @@ class LewLMSettings(BaseSettings):
             raise ValueError("moe_resident_expert_count must be at least 1.")
         if self.external_accelerator_timeout_seconds < 1:
             raise ValueError("external_accelerator_timeout_seconds must be at least 1.")
+        if self.ollama_discovery_timeout_seconds < 1:
+            raise ValueError("ollama_discovery_timeout_seconds must be at least 1.")
+        if self.ollama_discovery_enabled:
+            # Discovery publishes manifests the external accelerator adapter has to
+            # execute. Without that adapter the models would list and then refuse to
+            # run, so the dependency is refused up front rather than at request time.
+            if not self.external_accelerator_enabled:
+                raise ValueError(
+                    "ollama_discovery_enabled requires external_accelerator_enabled: LewLM discovers Ollama "
+                    "models but serves them through the external accelerator bridge.",
+                )
+            parsed_ollama = urlparse(self.ollama_base_url)
+            if parsed_ollama.scheme not in {"http", "https"}:
+                raise ValueError("ollama_base_url must use http or https.")
+            if parsed_ollama.hostname not in LOOPBACK_HOSTS:
+                raise ValueError("ollama_base_url must target a loopback-only local host.")
+        if self.ollama_cloud_enabled and not self.ollama_discovery_enabled:
+            raise ValueError("ollama_cloud_enabled requires ollama_discovery_enabled.")
         return self
 
     @computed_field(return_type=Path)
