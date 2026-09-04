@@ -5134,6 +5134,8 @@ def _print_scan_summary(summary: ModelScanSummary) -> None:
     for manifest in summary.manifests:
         modalities = ",".join(modality.value for modality in manifest.modality)
         print(f"- {manifest.display_name} [{manifest.format_type.value}/{modalities}] {manifest.source_path}")
+    for note in summary.notes:
+        print(f"note: {note}")
 
 
 def _print_inventory(inventory: ModelInventory) -> None:

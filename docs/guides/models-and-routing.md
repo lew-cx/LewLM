@@ -83,3 +83,66 @@ If a discovered model is not runnable yet, LewLM can:
 5. Benchmark or autotune if multiple profiles are viable.
 
 See [Runtime and capability matrix](../reference/runtime-capability-matrix.md) for the current backend table.
+
+## Fronting an Ollama install you already run
+
+LewLM can publish the models a local Ollama daemon already holds, so they appear in
+`lewlm list-models` alongside your local artifacts and are selected the same way — by model id.
+
+Ollama is a **model source here, not a LewLM runtime**. LewLM does not install, launch, configure,
+update, or supervise it; getting Ollama is yours to do, via the desktop client or the CLI. Discovery
+reads the daemon's inventory, and the existing external accelerator bridge executes the requests.
+No packaged Ollama runtime exists, and none is planned.
+
+```bash
+# You install and run Ollama yourself.
+ollama serve        # or just run the desktop client
+
+export LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true
+export LEWLM_EXTERNAL_ACCELERATOR_PROFILE=ollama_local
+export LEWLM_EXTERNAL_ACCELERATOR_BASE_URL=http://127.0.0.1:11434
+export LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS=90
+export LEWLM_OLLAMA_DISCOVERY_ENABLED=true
+
+lewlm scan && lewlm list-models
+```
+
+`lewlm scan` now reads `GET /api/tags` and registers one manifest per model, carrying the real
+context window, quantization, parameter size, and the capability-derived modality — so an embedding
+model arrives as an embedding model rather than as text. Each manifest declares only
+`external_accelerator` affinity, so routing sends it to the bridge with no ambiguity even on a host
+where MLX or llama.cpp is installed.
+
+After that, swapping between a local artifact and an Ollama-resident one is just changing the model
+id in the request. There is no separate switch, and nothing to restart.
+
+Pull a new model and rescan to pick it up:
+
+```bash
+ollama pull qwen3:8b
+lewlm scan
+```
+
+Turning `LEWLM_OLLAMA_DISCOVERY_ENABLED` off and rescanning retires every `ollama://` model. A daemon
+that is merely unreachable retires nothing — the scan says so in its `notes` and leaves the registry
+alone, because a component LewLM does not manage being down is not evidence your models are gone.
+
+### Ollama Cloud
+
+An Ollama daemon serves both models it runs here and models it relays to Ollama's cloud, over the
+same loopback address. LewLM classifies each model at discovery time and **leaves cloud-backed models
+out of the registry** unless you set `LEWLM_OLLAMA_CLOUD_ENABLED=true`; a scan reports what it
+skipped. Enabling it means prompts for those models leave the machine, which is why it is a separate,
+explicit decision rather than a consequence of enabling discovery.
+
+LewLM holds no cloud credentials and never talks to `ollama.com`. Signing in is `ollama signin`, and
+the daemon owns that relationship — exactly as it owns the runtime.
+
+See [Ollama model discovery](../reference/configuration.md#ollama-model-discovery) for the full
+settings table and the scan-reconciliation rules.
+
+### The `examples/ollama_bridge_shelf.py` script
+
+The shelf script predates built-in discovery and wrote placeholder files on disk so that a filesystem
+scan would find something. Built-in discovery supersedes it: it needs no files, no sync step, and no
+`_converted` suffix on model ids. The script remains for reference only.

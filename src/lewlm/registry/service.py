@@ -14,6 +14,7 @@ from lewlm.core.errors import ModelNotFoundError, ModelScanError
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.registry.discovery import discover_models
+from lewlm.registry.ollama_inventory import OllamaInventoryResult, discover_ollama_models, is_ollama_source
 from lewlm.security.audit import AuditLogger
 from lewlm.storage.metadata import MetadataStore
 
@@ -71,6 +72,9 @@ class ModelRegistry:
             manifest.source_path: manifest for manifest in self.metadata_store.list_model_manifests()
         }
         manifests = discover_models(resolved_roots)
+        ollama_result = self._discover_ollama_models()
+        if ollama_result is not None:
+            manifests.extend(ollama_result.manifests)
         discovered_sources = {manifest.source_path for manifest in manifests}
 
         new_count = 0
@@ -92,17 +96,26 @@ class ModelRegistry:
         stale_sources = [
             source_path
             for source_path in existing_by_source
-            if self._is_under_roots(Path(source_path), resolved_roots) and source_path not in discovered_sources
+            if not is_ollama_source(source_path)
+            and self._is_under_roots(Path(source_path), resolved_roots)
+            and source_path not in discovered_sources
         ]
+        stale_sources.extend(
+            self._stale_ollama_sources(existing_by_source, discovered_sources, ollama_result),
+        )
         self.metadata_store.replace_model_manifests(manifests, stale_source_paths=stale_sources)
+        scanned_roots = [str(root) for root in resolved_roots]
+        if ollama_result is not None:
+            scanned_roots.append(ollama_result.endpoint)
         summary = ModelScanSummary(
-            roots_scanned=tuple(str(root) for root in resolved_roots),
+            roots_scanned=tuple(scanned_roots),
             discovered_count=len(manifests),
             new_count=new_count,
             updated_count=updated_count,
             unchanged_count=unchanged_count,
             removed_count=len(stale_sources),
             manifests=manifests,
+            notes=self._ollama_scan_notes(ollama_result),
         )
         self.metadata_store.set_value("last_model_scan", summary.model_dump(mode="json"))
         self._emit_event(
@@ -129,6 +142,57 @@ class ModelRegistry:
             },
         )
         return summary
+
+    def _discover_ollama_models(self) -> OllamaInventoryResult | None:
+        """Read the operator's Ollama daemon, or `None` when discovery is off.
+
+        Off is the default, and while it is off LewLM never contacts the daemon.
+        """
+
+        if not self.settings.ollama_discovery_enabled:
+            return None
+        return discover_ollama_models(self.settings)
+
+    @staticmethod
+    def _ollama_scan_notes(ollama_result: OllamaInventoryResult | None) -> list[str]:
+        if ollama_result is None:
+            return []
+        if not ollama_result.succeeded:
+            # A daemon LewLM does not manage can be down for entirely ordinary
+            # reasons, so a failed read degrades the scan instead of failing it —
+            # but it must not do so silently.
+            return [f"Ollama discovery could not read {ollama_result.endpoint}: {ollama_result.error}"]
+        notes = [
+            f"Ollama discovery read {len(ollama_result.manifests)} model(s) from {ollama_result.endpoint}.",
+        ]
+        if ollama_result.skipped_cloud:
+            notes.append(
+                f"Skipped {len(ollama_result.skipped_cloud)} cloud-backed Ollama model(s) that execute "
+                f"off-host: {', '.join(ollama_result.skipped_cloud)}. "
+                "Set LEWLM_OLLAMA_CLOUD_ENABLED=true to include them.",
+            )
+        return notes
+
+    @staticmethod
+    def _stale_ollama_sources(
+        existing_by_source: dict[str, ModelManifest],
+        discovered_sources: set[str],
+        ollama_result: OllamaInventoryResult | None,
+    ) -> list[str]:
+        """Which registered Ollama models this scan should forget.
+
+        Discovery turned off retires the whole namespace, so clearing the flag
+        actually removes the models rather than stranding them. A failed read
+        retires nothing: an unreachable daemon is not evidence that the
+        operator's models are gone.
+        """
+
+        registered = [source for source in existing_by_source if is_ollama_source(source)]
+        if ollama_result is None:
+            return registered
+        if not ollama_result.succeeded:
+            return []
+        return [source for source in registered if source not in discovered_sources]
 
     def _resolve_roots(self, roots: list[Path] | tuple[Path, ...] | None) -> tuple[Path, ...]:
         requested_roots = tuple(Path(root).expanduser().resolve(strict=False) for root in (roots or self.settings.models_dir))

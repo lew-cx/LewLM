@@ -171,7 +171,7 @@ For portable performance-core reporting, runtime snapshots now tag the major tex
 | `sglang_local` | SGLang-style local server | cross-platform bridge hint for local servers that preserve compatible loopback semantic routes |
 | `tensorrt_llm_server` | TensorRT-LLM-style local server | NVIDIA-oriented bridge hint for compatible local servers; LewLM reports backend-native and partial preservation without claiming kernel ownership |
 | `openvino_model_server` | OpenVINO Model Server-style local server | Intel CPU/GPU/NPU-oriented bridge hint for compatible local servers; LewLM reports scheduler and graph/runtime optimization as bridge-owned |
-| `ollama_local` | Ollama-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows Ollama-style local deployment patterns |
+| `ollama_local` | Ollama-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows Ollama-style local deployment patterns; set `LEWLM_OLLAMA_DISCOVERY_ENABLED=true` to publish an operator-managed Ollama daemon's models as bridge-backed manifests; LewLM owns no Ollama runtime (see [fronting an Ollama install](../guides/models-and-routing.md#fronting-an-ollama-install-you-already-run)) |
 | `llamacpp_server` | llama.cpp-server-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows llama.cpp-server local deployment patterns |
 
 ## Routing considerations

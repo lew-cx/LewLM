@@ -126,6 +126,47 @@ guarantee that prompts stay on the machine.
 
 Use this path when LewLM should front a loopback-only OpenAI-compatible local server instead of importing a runtime package directly.
 
+## Ollama model discovery
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `LEWLM_OLLAMA_DISCOVERY_ENABLED` | `false` | publish a local Ollama daemon's models as LewLM manifests |
+| `LEWLM_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint to read |
+| `LEWLM_OLLAMA_DISCOVERY_TIMEOUT_SECONDS` | `5` | seconds to wait for the daemon |
+| `LEWLM_OLLAMA_CLOUD_ENABLED` | `false` | include Ollama models that execute off-host |
+
+Ollama is a **model source**, not a LewLM-owned runtime. LewLM does not install, launch, configure,
+update, or supervise it, and no packaged Ollama runtime exists. Obtaining Ollama is entirely yours —
+the desktop client or the CLI, whichever you prefer. When discovery is enabled, `lewlm scan` asks the
+daemon what it holds and registers each model as a manifest whose `source_path` is `ollama://<tag>`;
+the **external accelerator bridge** executes those requests, which is why
+`LEWLM_OLLAMA_DISCOVERY_ENABLED` requires `LEWLM_EXTERNAL_ACCELERATOR_ENABLED`.
+
+While `LEWLM_OLLAMA_DISCOVERY_ENABLED` is false — the default — LewLM never contacts the daemon.
+
+Scan behavior is deliberately asymmetric so that a component LewLM does not manage cannot cost you
+your registry:
+
+- turning the flag **off** retires the whole `ollama://` namespace on the next scan
+- a daemon that is **unreachable** retires nothing, and the scan reports the failure in its `notes`
+- a filesystem scan never touches `ollama://` manifests, and vice versa
+
+### Ollama Cloud
+
+An Ollama daemon can serve models it runs on this host and models it relays to Ollama's cloud. Both
+arrive over the same loopback endpoint, so LewLM classifies each model at discovery time from the
+native `/api/tags` record — a `remote_host`/`remote_model` field, or the `-cloud` naming convention.
+
+Cloud-backed models are **left out of the registry** unless `LEWLM_OLLAMA_CLOUD_ENABLED=true`, and a
+scan reports how many it skipped. Enabling it means prompts for those models leave the machine.
+LewLM holds no cloud credentials and never contacts `ollama.com`: signing in is `ollama signin`, and
+the daemon owns the account relationship entirely.
+
+Whether a given cloud model is reachable at all depends on the daemon advertising it, which is
+Ollama's decision rather than LewLM's.
+
+On Linux and Windows, including NVIDIA-backed local servers, this is the intended bridge path when you already run a compatible local endpoint. LewLM does not bundle that server, and this path remains bridge-only even when benchmarks are favorable, so keep the bridge/runtime distinction explicit in operator docs and deployments.
+
 ## File access, sandboxing, and persistence
 
 | Environment variable | Default | Purpose |
