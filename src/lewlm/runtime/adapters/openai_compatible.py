@@ -9,6 +9,7 @@ import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from secrets import token_hex
 import threading
+from time import monotonic
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -47,6 +48,10 @@ from lewlm.runtime.base import ManagedTextRuntime
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# How long a failed `/v1/models` read stays cached before it is retried. Long
+# enough that a down server does not cost a connection attempt per lookup,
+# short enough that a server started after LewLM becomes usable on its own.
+_DISCOVERY_FAILURE_RETRY_SECONDS = 5.0
 _SUPPORTED_SYSTEMS = ("Darwin", "Linux", "Windows")
 _SEMANTIC_ENDPOINTS = {
     CapabilityName.VISION: "/v1/chat/completions",
@@ -410,6 +415,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovered_model_ids: tuple[str, ...] | None = None
         self._discovered_model_records: tuple[dict[str, Any], ...] | None = None
         self._discovery_error: str | None = None
+        self._discovery_failed_at: float | None = None
         self._capability_support_cache: dict[CapabilityName, bool] = {}
         self._capability_reason_cache: dict[CapabilityName, str | None] = {}
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
@@ -866,8 +872,20 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 return resolved
         return None
 
+    def invalidate_discovery_cache(self) -> None:
+        """Forget the advertised model list so the next lookup re-reads `/v1/models`.
+
+        The external server owns its own inventory, so a model pulled or removed
+        after this process started is invisible until the cache is dropped.
+        """
+
+        self._discovered_model_ids = None
+        self._discovered_model_records = None
+        self._discovery_failed_at = None
+        self._discovery_error = None
+
     def _available_remote_models(self) -> tuple[str, ...]:
-        if self._discovered_model_ids is not None:
+        if self._discovered_model_ids is not None and not self._discovery_cache_is_stale_failure():
             return self._discovered_model_ids
         payload = self._request_json("GET", "/v1/models", None)
         data = payload.get("data")
@@ -883,8 +901,28 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                     model_ids.append(model_id)
         self._discovered_model_ids = tuple(model_ids)
         self._discovered_model_records = tuple(discovered_records)
+        self._discovery_failed_at = None
         self._discovery_error = None
         return self._discovered_model_ids
+
+    def _discovery_cache_is_stale_failure(self) -> bool:
+        """Whether the cached empty list came from a transport failure worth retrying.
+
+        A successful discovery is cached for the life of the process; a failed one
+        is not, or a server that starts after LewLM would stay unusable forever.
+        """
+
+        if self._discovery_failed_at is None:
+            return False
+        return (monotonic() - self._discovery_failed_at) >= _DISCOVERY_FAILURE_RETRY_SECONDS
+
+    def _record_discovery_failure(self, reason: str) -> None:
+        # `()` rather than `None` so the callers that report advertised ids while
+        # handling the error see an empty list instead of re-entering discovery.
+        self._discovered_model_ids = ()
+        self._discovered_model_records = ()
+        self._discovery_failed_at = monotonic()
+        self._discovery_error = reason
 
     def _available_remote_model_records(self) -> tuple[dict[str, Any], ...]:
         if self._discovered_model_records is None:
@@ -1095,18 +1133,45 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 details={"runtime": self.name, "path": path, "body": body, "status_code": exc.code},
             ) from exc
         except URLError as exc:
-            self._discovered_model_ids = ()
-            self._discovered_model_records = ()
-            self._discovery_error = str(exc.reason)
+            self._record_discovery_failure(str(exc.reason))
             if isinstance(exc.reason, ConnectionRefusedError):
                 raise RuntimeUnavailableError(
                     f"The configured external accelerator endpoint `{request_url}` refused the connection.",
+                    details={"runtime": self.name, "path": path, "reason": str(exc.reason)},
+                ) from exc
+            if isinstance(exc.reason, TimeoutError):
+                raise RuntimeUnavailableError(
+                    self._timeout_message(request_url),
                     details={"runtime": self.name, "path": path, "reason": str(exc.reason)},
                 ) from exc
             raise RuntimeUnavailableError(
                 "Could not reach the configured external accelerator endpoint.",
                 details={"runtime": self.name, "path": path, "reason": str(exc.reason)},
             ) from exc
+        except TimeoutError as exc:
+            # A read that stalls past the deadline surfaces as a bare socket
+            # timeout rather than a URLError, so it needs its own arm or it
+            # escapes the adapter as an untyped traceback.
+            self._record_discovery_failure(str(exc) or "timed out")
+            raise RuntimeUnavailableError(
+                self._timeout_message(request_url),
+                details={"runtime": self.name, "path": path, "reason": str(exc) or "timed out"},
+            ) from exc
+        except OSError as exc:
+            # Anything else the transport can raise (a reset connection, a DNS
+            # failure on a hostname alias) belongs to the adapter contract too.
+            self._record_discovery_failure(str(exc))
+            raise RuntimeUnavailableError(
+                "Could not reach the configured external accelerator endpoint.",
+                details={"runtime": self.name, "path": path, "reason": str(exc)},
+            ) from exc
+
+    def _timeout_message(self, request_url: str) -> str:
+        return (
+            f"The configured external accelerator endpoint `{request_url}` did not respond within "
+            f"{self._settings.external_accelerator_timeout_seconds}s. Raise "
+            "LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS when the server loads models on first request."
+        )
 
 
 def _profile_feature_map(settings: LewLMSettings) -> dict[str, tuple[PerformanceFeatureOwnership, str]]:

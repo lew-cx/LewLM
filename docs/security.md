@@ -2,7 +2,7 @@
 
 LewLM is built with local-first defaults and currently enforces the following guardrails:
 
-- outbound network access is disabled by default
+- outbound network access is disabled by default with `LEWLM_ALLOW_OUTBOUND_NETWORK=false`, which gates conversion backends from fetching a model source that is not already on disk. It is **not** a serving-path guardrail: it does not gate the external accelerator bridge, and it cannot stop a configured loopback server from relaying a request off-host (see [external accelerators](reference/configuration.md#external-accelerators))
 - server API keys can be required with `LEWLM_API_KEY_REQUIRED=true`
 - request bodies are limited by `LEWLM_REQUEST_MAX_BYTES`
 - HTTP traffic is rate-limited with `LEWLM_RATE_LIMIT_REQUESTS` over `LEWLM_RATE_LIMIT_WINDOW_SECONDS`

@@ -488,7 +488,7 @@ class TelemetryService:
                     runtime_affinities=[RuntimeAffinity.EXTERNAL_ACCELERATOR.value],
                     benchmark_backed_defaults=False,
                     lewlm_managed_layers=[
-                        "loopback-only safety boundary",
+                        "loopback-only endpoint validation (first hop only; a loopback server that relays off-host is not detected)",
                         "manifest-to-remote-model matching",
                         "capability probes, benchmark evidence, and fallback honesty",
                     ],

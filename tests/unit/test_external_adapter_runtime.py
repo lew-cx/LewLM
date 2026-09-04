@@ -1371,3 +1371,125 @@ def _write_streaming_response(
     handler.end_headers()
     handler.wfile.write(chunks)
     handler.wfile.flush()
+
+
+def _json_response(payload: dict[str, object]):
+    """A context-manager stand-in for what `urlopen` hands `_request_json`."""
+
+    return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc_info) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_external_adapter_runtime_retries_discovery_after_a_transport_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A server that starts after LewLM must become usable without a restart.
+
+    Caching the failed lookup as a known-empty inventory left every model
+    permanently unsupported once a single request had missed the endpoint.
+    """
+
+    settings = LewLMSettings(
+        data_dir=tmp_path / "state",
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+    )
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=settings)
+    monkeypatch.setattr(
+        openai_compatible_runtime,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(
+            URLError(ConnectionRefusedError(10061, "Connection refused")),
+        ),
+    )
+
+    with pytest.raises(RuntimeUnavailableError):
+        runtime._available_remote_models()
+    assert runtime._available_remote_models() == ()
+
+    # The daemon comes up, and the negative cache ages out.
+    monkeypatch.setattr(
+        openai_compatible_runtime,
+        "monotonic",
+        lambda: 10_000.0,
+    )
+    monkeypatch.setattr(
+        openai_compatible_runtime,
+        "urlopen",
+        lambda request, timeout: _json_response({"data": [{"id": "llama3.1:latest"}]}),
+    )
+
+    assert runtime._available_remote_models() == ("llama3.1:latest",)
+
+
+def test_external_adapter_runtime_invalidate_discovery_cache_rereads_the_inventory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = LewLMSettings(
+        data_dir=tmp_path / "state",
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+    )
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=settings)
+    advertised = [{"id": "llama3.1:latest"}]
+    monkeypatch.setattr(
+        openai_compatible_runtime,
+        "urlopen",
+        lambda request, timeout: _json_response({"data": advertised}),
+    )
+
+    assert runtime._available_remote_models() == ("llama3.1:latest",)
+
+    advertised.append({"id": "qwen3:latest"})
+    assert runtime._available_remote_models() == ("llama3.1:latest",)
+
+    runtime.invalidate_discovery_cache()
+    assert runtime._available_remote_models() == ("llama3.1:latest", "qwen3:latest")
+
+
+def test_external_adapter_runtime_maps_a_read_timeout_to_a_typed_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A stalled read raises a bare socket timeout, not a URLError.
+
+    Without its own arm it escaped the adapter as an untyped traceback, which is
+    what `lewlm bridges test` surfaced against a slow local server.
+    """
+
+    settings = LewLMSettings(
+        data_dir=tmp_path / "state",
+        external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:8080",
+        external_accelerator_timeout_seconds=3,
+    )
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=settings)
+    monkeypatch.setattr(
+        openai_compatible_runtime,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+
+    with pytest.raises(RuntimeUnavailableError, match=r"did not respond within 3s"):
+        runtime._available_remote_models()
+
+    # The typed error is what callers see; the report degrades to "advertises no
+    # matching model" rather than escaping as a traceback.
+    assert runtime.candidate_report(
+        _manifest(tmp_path, model_id="demo", display_name="demo"),
+    ).supports_manifest is False

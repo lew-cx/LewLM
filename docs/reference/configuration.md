@@ -115,11 +115,16 @@ Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
 `tensorrt_llm_server` and `openvino_model_server` are bridge profiles for compatible local servers; `ollama_local` and `llamacpp_server` keep the generic OpenAI-compatible bridge contract explicit for local servers that present themselves through those loopback shapes. None of these profiles promote backend-native behavior to LewLM-owned packaged parity.
 
 `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` must point to a loopback-only local server such as
-`http://127.0.0.1:8000`; remote/cloud endpoints are intentionally rejected.
+`http://127.0.0.1:8000`. LewLM rejects a base URL whose host is not `127.0.0.1`, `localhost`, or `::1`.
+
+That check validates the **first hop only**. It cannot tell whether the loopback server executes the
+request locally or relays it somewhere else, and several common setups do relay: an Ollama daemon
+serving a cloud-hosted model, an SSH tunnel bound to a loopback port, or a gateway process listening
+on loopback. Where the request is ultimately executed is a property of the server you configure, not
+of the URL, so treat this setting as "LewLM will not dial a remote host itself" rather than as a
+guarantee that prompts stay on the machine.
 
 Use this path when LewLM should front a loopback-only OpenAI-compatible local server instead of importing a runtime package directly.
-
-On Linux and Windows, including NVIDIA-backed local servers, this is the intended bridge path when you already run a compatible local endpoint. LewLM does not bundle that server, and this path remains bridge-only even when benchmarks are favorable, so keep the bridge/runtime distinction explicit in operator docs and deployments.
 
 ## File access, sandboxing, and persistence
 
