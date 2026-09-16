@@ -84,17 +84,17 @@ def build_runtime_provider_reports(services: Any) -> list[RuntimeProviderReport]
     """Summarize configured runtime providers through LewLM's ownership vocabulary."""
 
     reports: list[RuntimeProviderReport] = []
-    runtimes = getattr(services.runtime_catalog, "_runtimes", {})
-    for runtime in runtimes.values():
+    for runtime in services.runtime_catalog.all_runtimes():
         support_path = runtime_support_path_for_affinity(runtime.affinity) or RuntimeSupportPath.PACKAGED
         available = runtime.is_available()
         provider = _provider_from_runtime_name(
             runtime.name,
             support_path,
             affinity=runtime.affinity,
-            external_profile=services.settings.external_accelerator_profile,
+            external_profile=getattr(getattr(runtime, "endpoint", None), "profile", services.settings.external_accelerator_profile),
         )
-        supported_capabilities = [
+        cached_capabilities = getattr(runtime, "cached_supported_capabilities", None)
+        supported_capabilities = list(cached_capabilities()) if callable(cached_capabilities) else [
             capability
             for capability in CapabilityName
             if capability != CapabilityName.CONVERSION and runtime.supports_capability(capability)
@@ -115,6 +115,7 @@ def build_runtime_provider_reports(services: Any) -> list[RuntimeProviderReport]
                     else CapabilityEvidenceState.REQUIRES_INSTALL
                 ),
                 notes=_provider_notes(provider=provider, support_path=support_path),
+                bridge=runtime.bridge_profile() if callable(getattr(runtime, "bridge_profile", None)) else None,
             ),
         )
     reports.sort(key=lambda item: (item.support_path.value, item.provider.value, item.runtime_name))

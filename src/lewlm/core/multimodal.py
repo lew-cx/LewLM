@@ -236,7 +236,7 @@ class MultimodalOrchestrator:
         request_id = str(uuid4())
         self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
-        cache_key = self.runtime_response_cache.embedding_cache_key(model_id=manifest.model_id, inputs=inputs)
+        cache_key = self.runtime_response_cache.for_runtime(runtime).embedding_cache_key(model_id=manifest.model_id, inputs=inputs)
         is_owner, shared_future = self.runtime_request_coalescer.claim(cache_key)
         if not is_owner:
             try:
@@ -289,7 +289,7 @@ class MultimodalOrchestrator:
                 ),
             )
         try:
-            cached_response = self.runtime_response_cache.get_embedding_response_by_cache_key(cache_key)
+            cached_response = self.runtime_response_cache.for_runtime(runtime).get_embedding_response_by_cache_key(cache_key)
             if cached_response is not None:
                 cached_copy = cached_response.model_copy(deep=True)
                 await self._publish_cached_request_events(
@@ -418,7 +418,7 @@ class MultimodalOrchestrator:
         )
         request_id = str(uuid4())
         self._capture_request_identity(request_id)
-        cache_key = self.runtime_response_cache.rerank_cache_key(
+        cache_key = self.runtime_response_cache.for_runtime(runtime).rerank_cache_key(
             model_id=manifest.model_id,
             query=query,
             documents=documents,
@@ -464,7 +464,7 @@ class MultimodalOrchestrator:
                 ),
             )
         try:
-            cached_response = self.runtime_response_cache.get_rerank_response_by_cache_key(cache_key)
+            cached_response = self.runtime_response_cache.for_runtime(runtime).get_rerank_response_by_cache_key(cache_key)
             if cached_response is not None:
                 created_at = int(utc_now().timestamp())
                 cached_copy = cached_response.model_copy(deep=True)
@@ -527,7 +527,7 @@ class MultimodalOrchestrator:
                     ),
                 ),
             )
-            self.runtime_response_cache.put_rerank_response(
+            self.runtime_response_cache.for_runtime(runtime).put_rerank_response(
                 model_id=manifest.model_id,
                 query=query,
                 documents=documents,
@@ -834,6 +834,7 @@ class MultimodalOrchestrator:
         else:
             try:
                 self._resolve_embedding_batch_items(
+                    runtime=runtime,
                     manifest=manifest,
                     items=items,
                     response=response,
@@ -864,6 +865,7 @@ class MultimodalOrchestrator:
     def _resolve_embedding_batch_items(
         self,
         *,
+        runtime: RuntimeContract,
         manifest: ModelManifest,
         items: list[_PendingEmbeddingBatchItem],
         response: EmbeddingResponse,
@@ -890,7 +892,7 @@ class MultimodalOrchestrator:
                 ],
                 usage=usage_chunks[index],
             )
-            self.runtime_response_cache.put_embedding_response(
+            self.runtime_response_cache.for_runtime(runtime).put_embedding_response(
                 model_id=manifest.model_id,
                 inputs=item.inputs,
                 response=item_response,
@@ -1039,7 +1041,7 @@ class MultimodalOrchestrator:
         created_at = int(utc_now().timestamp())
         chunk_plan = _plan_audio_transcription_chunks(audio_bytes)
         total_progress_steps = (chunk_plan.chunk_count * 2) + 2 if chunk_plan.is_chunked else 2
-        cache_key = self.runtime_response_cache.audio_transcription_cache_key(
+        cache_key = self.runtime_response_cache.for_runtime(runtime).audio_transcription_cache_key(
             model_id=manifest.model_id,
             audio_bytes=audio_bytes,
             file_name=file_name,
@@ -1172,7 +1174,7 @@ class MultimodalOrchestrator:
                 ),
             )
         try:
-            cached_response = self.runtime_response_cache.get_audio_transcription_response_by_cache_key(cache_key)
+            cached_response = self.runtime_response_cache.for_runtime(runtime).get_audio_transcription_response_by_cache_key(cache_key)
             if cached_response is not None:
                 cached_copy = cached_response.model_copy(deep=True)
                 await self._publish_cached_request_events(
@@ -1238,7 +1240,7 @@ class MultimodalOrchestrator:
                 on_success=on_success,
                 on_failure=on_failure,
             )
-            self.runtime_response_cache.put_audio_transcription_response(
+            self.runtime_response_cache.for_runtime(runtime).put_audio_transcription_response(
                 model_id=manifest.model_id,
                 audio_bytes=audio_bytes,
                 file_name=file_name,
@@ -1373,7 +1375,7 @@ class MultimodalOrchestrator:
         request_id = str(uuid4())
         self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
-        cache_key = self.runtime_response_cache.audio_speech_cache_key(
+        cache_key = self.runtime_response_cache.for_runtime(runtime).audio_speech_cache_key(
             model_id=manifest.model_id,
             input_text=input_text,
             voice=voice,
@@ -1496,7 +1498,7 @@ class MultimodalOrchestrator:
                 ),
             )
         try:
-            cached_response = self.runtime_response_cache.get_audio_speech_response_by_cache_key(cache_key)
+            cached_response = self.runtime_response_cache.for_runtime(runtime).get_audio_speech_response_by_cache_key(cache_key)
             if cached_response is not None:
                 cached_copy = cached_response.model_copy(deep=True)
                 await self._publish_cached_request_events(
@@ -1559,7 +1561,7 @@ class MultimodalOrchestrator:
                 on_success=on_success,
                 on_failure=on_failure,
             )
-            self.runtime_response_cache.put_audio_speech_response(
+            self.runtime_response_cache.for_runtime(runtime).put_audio_speech_response(
                 model_id=manifest.model_id,
                 input_text=input_text,
                 voice=voice,

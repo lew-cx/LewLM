@@ -87,6 +87,7 @@ class InstallProfileSummary(BaseModel):
     llamacpp_build: LlamaCppBuildFlavor | None = None
     container: ContainerStatus | None = None
     notes: list[str] = Field(default_factory=list)
+    external_endpoints: list[dict[str, object]] = Field(default_factory=list)
 
 
 class FeaturePathRecommendation(BaseModel):
@@ -124,9 +125,21 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
     # succeeded. Readiness has to answer the second one.
     gguf_unloadable = llamacpp_build is not None and llamacpp_build.detection_state == "unavailable"
     documents_missing = _missing_modules(("openpyxl", "PIL", "pytesseract", "pypdf", "docx", "reportlab", "weasyprint"))
-    external_enabled = bool(getattr(settings, "external_accelerator_enabled", False))
-    external_base_url = getattr(settings, "external_accelerator_base_url", None)
-    external_profile = str(getattr(settings, "external_accelerator_profile", "openai_compatible"))
+    resolved_external_endpoints = (
+        settings.resolved_external_endpoints()
+        if settings is not None and callable(getattr(settings, "resolved_external_endpoints", None))
+        else ()
+    )
+    enabled_external_endpoints = tuple(endpoint for endpoint in resolved_external_endpoints if endpoint.enabled)
+    external_enabled = bool(enabled_external_endpoints) or bool(getattr(settings, "external_accelerator_enabled", False))
+    external_base_url = (
+        enabled_external_endpoints[0].base_url
+        if enabled_external_endpoints else getattr(settings, "external_accelerator_base_url", None)
+    )
+    external_profile = str(
+        enabled_external_endpoints[0].profile
+        if enabled_external_endpoints else getattr(settings, "external_accelerator_profile", "openai_compatible")
+    )
 
     ocr_note: str | None = None
     if not documents_missing:
@@ -346,6 +359,18 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         llamacpp_build=llamacpp_build,
         container=container,
         notes=summary_notes,
+        external_endpoints=[
+            {
+                "endpoint_id": endpoint.endpoint_id,
+                "profile": endpoint.profile,
+                "enabled": endpoint.enabled,
+                "base_url": endpoint.base_url,
+                "credential_configured": endpoint.api_key_env is not None,
+                "evidence_state": "unverified",
+            }
+            for endpoint in resolved_external_endpoints
+            if endpoint.base_url
+        ],
     )
 
 

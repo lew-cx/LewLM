@@ -46,8 +46,10 @@ class RuntimeCatalog:
         *,
         pack_registry: PackRegistry | None = None,
         backend_feature_probes_enabled: bool = False,
+        endpoint_runtimes: Mapping[str, RuntimeContract] | None = None,
     ) -> None:
         self._runtimes = dict(runtimes)
+        self._endpoint_runtimes = dict(endpoint_runtimes or {})
         self._pack_registry = pack_registry
         self._backend_feature_probes_enabled = backend_feature_probes_enabled
         self.model_residency_manager = None
@@ -59,8 +61,31 @@ class RuntimeCatalog:
     def get_runtime(self, affinity: RuntimeAffinity) -> RuntimeContract | None:
         return self._runtimes.get(affinity)
 
+    def get_endpoint_runtime(self, endpoint_id: str) -> RuntimeContract | None:
+        return self._endpoint_runtimes.get(endpoint_id)
+
+    def all_runtimes(self) -> tuple[RuntimeContract, ...]:
+        return tuple({id(runtime): runtime for runtime in
+                      (*self._runtimes.values(), *self._endpoint_runtimes.values())}.values())
+
+    def _manifest_runtime(self, affinity: RuntimeAffinity, manifest: ModelManifest) -> RuntimeContract | None:
+        if affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR:
+            endpoint_id = manifest.metadata.get("external_endpoint_id")
+            if isinstance(endpoint_id, str):
+                return self.get_endpoint_runtime(endpoint_id)
+            # Migrate existing Ollama manifests without changing their public IDs.
+            ollama_endpoint = manifest.metadata.get("ollama_endpoint")
+            if isinstance(ollama_endpoint, str) and self._endpoint_runtimes:
+                from lewlm.config.endpoints import server_root
+                for runtime in self._endpoint_runtimes.values():
+                    endpoint = getattr(runtime, "endpoint", None)
+                    if endpoint is not None and endpoint.profile == "ollama_local" and server_root(endpoint.base_url) == server_root(ollama_endpoint):
+                        return runtime
+                return None
+        return self.get_runtime(affinity)
+
     def find_runtime_by_name(self, runtime_name: str) -> RuntimeContract | None:
-        for runtime in self._runtimes.values():
+        for runtime in self.all_runtimes():
             if runtime.name == runtime_name:
                 return runtime
         return None
@@ -115,7 +140,7 @@ class RuntimeCatalog:
             request_modality=request_modality,
         )
         for affinity in self._candidate_affinities(manifest, request_modality=request_modality):
-            runtime = self.get_runtime(affinity)
+            runtime = self._manifest_runtime(affinity, manifest)
             if runtime is None:
                 alternatives.append(f"{affinity.value}: {self._runtime_absence_reason(affinity)}")
                 continue
@@ -202,7 +227,7 @@ class RuntimeCatalog:
     def describe_manifest_runtimes(self, manifest: ModelManifest) -> list[RuntimeCandidateReport]:
         reports: list[RuntimeCandidateReport] = []
         for affinity in self._candidate_affinities(manifest):
-            runtime = self.get_runtime(affinity)
+            runtime = self._manifest_runtime(affinity, manifest)
             if runtime is None:
                 reports.append(
                     RuntimeCandidateReport(
@@ -246,7 +271,7 @@ class RuntimeCatalog:
         host_platform = self.host_platform_snapshot()
         for system, machine in self._target_platforms():
             runtime_reports: list[dict[str, object]] = []
-            for runtime in self._runtimes.values():
+            for runtime in self.all_runtimes():
                 runtime_reports.append(
                     runtime.target_platform_status(
                         system,
@@ -325,7 +350,7 @@ class RuntimeCatalog:
 
     async def health_snapshot(self) -> list[dict[str, object]]:
         snapshots: list[dict[str, object]] = []
-        for runtime in self._runtimes.values():
+        for runtime in self.all_runtimes():
             if self._should_probe_runtime(runtime):
                 snapshots.append(await runtime.health_check())
                 continue
@@ -354,10 +379,12 @@ class RuntimeCatalog:
                     )
                 ],
             }
-            for runtime in self._runtimes.values()
+            for runtime in self.all_runtimes()
         ]
 
     def _supported_capability_names(self, runtime: RuntimeContract) -> list[str]:
+        if isinstance(runtime, LocalOpenAICompatibleAdapterRuntime):
+            return [capability.value for capability in runtime.cached_supported_capabilities()]
         if self._should_probe_runtime(runtime):
             capabilities = (
                 capability
@@ -371,9 +398,13 @@ class RuntimeCatalog:
     def performance_features_for(self, runtime: RuntimeContract) -> dict[str, object]:
         """Return feature details without importing an idle native MLX backend."""
 
+        if isinstance(runtime, LocalOpenAICompatibleAdapterRuntime):
+            return runtime.performance_feature_snapshot()
         return runtime.performance_feature_snapshot() if self._should_probe_runtime(runtime) else {}
 
     def _should_probe_runtime(self, runtime: RuntimeContract) -> bool:
+        if isinstance(runtime, LocalOpenAICompatibleAdapterRuntime):
+            return False
         module_name = type(runtime).__module__
         imports_native_mlx = module_name.startswith(
             (
@@ -389,7 +420,7 @@ class RuntimeCatalog:
         )
 
     async def unload_all_models(self) -> None:
-        for runtime in self._runtimes.values():
+        for runtime in self.all_runtimes():
             for loaded_manifest in runtime.loaded_manifests():
                 await runtime.unload_model(loaded_manifest.model_id)
 
@@ -445,7 +476,7 @@ class RuntimeCatalog:
             install_hints: list[str] = []
             reasons: list[str] = []
             for affinity in manifest.runtime_affinity:
-                runtime = self.get_runtime(affinity)
+                runtime = self._manifest_runtime(affinity, manifest)
                 if runtime is None or not runtime.supports_manifest(manifest):
                     continue
                 status = runtime.target_platform_status(system, machine, host_platform=host_platform)
@@ -651,7 +682,7 @@ class RuntimeCatalog:
     ) -> bool:
         host_target = self._matches_host_platform(host_platform, system=system, machine=machine)
         for affinity in self._candidate_affinities(manifest):
-            runtime = self.get_runtime(affinity)
+            runtime = self._manifest_runtime(affinity, manifest)
             if runtime is None:
                 continue
             if not runtime.supports_manifest(manifest):
@@ -724,7 +755,7 @@ class RuntimeCatalog:
     ) -> RuntimeContract | None:
         if system not in {"Linux", "Windows"} or ModelModality.VISION not in manifest.modality:
             return None
-        bridge_runtime = self.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+        bridge_runtime = self._manifest_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR, manifest)
         if bridge_runtime is None or not bridge_runtime.supports_target_platform(system, machine):
             return None
         if not self._structurally_supports_manifest(bridge_runtime, manifest):
@@ -775,6 +806,8 @@ class RuntimeCatalog:
         *,
         request_modality: RequestModality | None = None,
     ) -> tuple[RuntimeAffinity, ...]:
+        if manifest.metadata.get("external_endpoint_id") is not None:
+            return (RuntimeAffinity.EXTERNAL_ACCELERATOR,)
         affinities: list[RuntimeAffinity] = []
         if request_modality == RequestModality.TEXT_ONLY:
             affinities.extend(manifest.text_only_runtime_affinity)
@@ -800,6 +833,8 @@ class RuntimeCatalog:
         )
 
     def _runtime_absence_reason(self, affinity: RuntimeAffinity) -> str:
+        if affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR and self._endpoint_runtimes:
+            return "No matching endpoint/default; bind the manifest with external_endpoint_id when multiple endpoints are configured."
         if self._pack_registry is None:
             return "No runtime registered for this affinity."
         return self._pack_registry.runtime_affinity_absence_reason(affinity) or "No runtime registered for this affinity."
@@ -867,6 +902,8 @@ def build_default_runtime_catalog(
     for affinity, builder in runtime_builders.items():
         if not resolved_pack_registry.runtime_affinity_load_enabled(affinity):
             continue
+        if affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR and settings.external_endpoints is not None:
+            continue
         runtimes[affinity] = builder()
     if (
         (runtime_overrides is None or RuntimeAffinity.EXPERIMENTAL not in runtime_overrides)
@@ -883,8 +920,30 @@ def build_default_runtime_catalog(
             if hasattr(runtime, "_multimodal_encoder_cache"):
                 setattr(runtime, "_multimodal_encoder_cache", multimodal_encoder_cache)
             runtimes[affinity] = runtime
+    endpoint_runtimes = {}
+    external_override = runtime_overrides.get(RuntimeAffinity.EXTERNAL_ACCELERATOR) if runtime_overrides else None
+    if (settings.external_endpoints is not None
+            and resolved_pack_registry.runtime_affinity_load_enabled(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+            and external_override is None):
+        runtimes.pop(RuntimeAffinity.EXTERNAL_ACCELERATOR, None)
+        endpoint_runtimes = {
+            endpoint.endpoint_id: LocalOpenAICompatibleAdapterRuntime(settings=settings, endpoint=endpoint)
+            for endpoint in settings.external_endpoints
+        }
+        # A single endpoint remains a compatible affinity default. Multiple
+        # endpoints require a manifest binding; registration order is not policy.
+        if len(endpoint_runtimes) == 1:
+            runtimes[RuntimeAffinity.EXTERNAL_ACCELERATOR] = next(iter(endpoint_runtimes.values()))
+    elif settings.external_endpoints is not None and external_override is not None:
+        if len(settings.external_endpoints) != 1:
+            raise ValueError("One affinity-level external runtime override cannot represent multiple named endpoints.")
+        endpoint_runtimes[settings.external_endpoints[0].endpoint_id] = external_override
+        runtimes[RuntimeAffinity.EXTERNAL_ACCELERATOR] = external_override
+    elif settings.external_endpoints is None and RuntimeAffinity.EXTERNAL_ACCELERATOR in runtimes:
+        endpoint_runtimes["legacy-default"] = runtimes[RuntimeAffinity.EXTERNAL_ACCELERATOR]
     return RuntimeCatalog(
         runtimes,
         pack_registry=resolved_pack_registry,
         backend_feature_probes_enabled=settings.backend_feature_probes_enabled,
+        endpoint_runtimes=endpoint_runtimes,
     )

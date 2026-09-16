@@ -213,6 +213,14 @@ Use the quick path that matches the profile you installed:
    LEWLM_EXTERNAL_ACCELERATOR_PROFILE=vllm_local
    ```
 
+   Those settings remain the single-server compatibility form. To run more
+   than one bridge concurrently, set `LEWLM_EXTERNAL_ENDPOINTS` to a JSON array
+   of named loopback endpoints as documented in
+   [Configuration](docs/reference/configuration.md). Do not enable the legacy
+   singular endpoint at the same time. Named endpoint IDs become part of
+   runtime, residency, cache, and benchmark identity so equal upstream model
+   names on different servers cannot collide.
+
    Then run:
 
    ```bash

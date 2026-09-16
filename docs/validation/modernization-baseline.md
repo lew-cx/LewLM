@@ -48,6 +48,34 @@ Reproduce contract validation with `python scripts/validate_backend_compatibilit
 
 Next eligible step: 01, endpoint identity and capability evidence. Step 03 can also proceed from this baseline, but will retain the Docker/CUDA hardware deferrals above.
 
+## Step 01 — complete
+
+Commit: this step's commit, immediately after baseline commit `4226e97`.
+
+Behavior implemented: named loopback endpoints coexist under stable IDs while
+the singular settings resolve to `legacy-default`. Explicit endpoint bindings
+select the correct runtime; runtime names, residency keys, deterministic
+response/coalescing keys, health evidence, provider evidence, and Ollama
+inventory carry the endpoint boundary. Adapter health reads cached evidence and
+reports upstream residency/cancellation as unknown. Profile performance flags
+are inactive until observed rather than activated by their labels.
+
+Compatibility: old settings, runtime name, and Ollama model IDs remain valid.
+An explicit endpoint collection plus the enabled legacy endpoint is rejected
+with migration guidance. Named Ollama discovery requires one matching
+`ollama_local` endpoint. Credential reference names and values are absent from
+redacted settings output.
+
+Verification: `tests/unit/test_external_endpoints.py` covers URL/ID validation,
+legacy migration, secret redaction, equal-name endpoint routing, residency and
+cache isolation, passive health, and Ollama binding. Focused settings, catalog,
+Ollama, middleware, install-profile, runtime-metrics, adapter, and host API
+regressions pass. The shared-runtime multiprocess test is run with the final
+step gate. No real engine is required or claimed for this configuration step.
+
+Rollback: revert the step commit. The setting is additive and no stored data is
+migrated. Next eligible step: 02.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

@@ -24,8 +24,15 @@ ResponseT = TypeVar("ResponseT", AudioTranscriptionResponse, EmbeddingResponse, 
 class RuntimeResponseCache:
     """Reuse deterministic runtime responses across process restarts."""
 
-    def __init__(self, *, metadata_store: MetadataStore) -> None:
+    def __init__(self, *, metadata_store: MetadataStore, namespace: str | None = None) -> None:
         self.metadata_store = metadata_store
+        self.namespace = namespace
+
+    def for_runtime(self, runtime: object) -> RuntimeResponseCache:
+        namespace = getattr(runtime, "cache_namespace", None)
+        if not isinstance(namespace, str):
+            return self
+        return RuntimeResponseCache(metadata_store=self.metadata_store, namespace=namespace)
 
     def get_embedding_response(self, *, model_id: str, inputs: list[str]) -> EmbeddingResponse | None:
         return self._lookup_response(
@@ -292,10 +299,9 @@ class RuntimeResponseCache:
             response_payload=response_payload,
         )
 
-    @staticmethod
-    def _cache_key(*, capability: str, payload: dict[str, object]) -> str:
+    def _cache_key(self, *, capability: str, payload: dict[str, object]) -> str:
         serialized = json.dumps(
-            {"capability": capability, **payload},
+            {"capability": capability, **payload, **({"runtime_namespace": self.namespace} if self.namespace else {})},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=True,

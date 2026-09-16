@@ -108,6 +108,30 @@ Built-in feature pack names: `documents`.
 | `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` | `openai_compatible` | adapter profile |
 | `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` | unset | adapter endpoint |
 | `LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS` | `10` | adapter timeout |
+| `LEWLM_EXTERNAL_ENDPOINTS` | unset | JSON array of named local adapter endpoints |
+
+The four singular `LEWLM_EXTERNAL_ACCELERATOR_*` settings remain the compatible
+single-endpoint form. LewLM resolves them as the internal endpoint ID
+`legacy-default`. For multiple engines, use the named collection instead:
+
+```text
+LEWLM_EXTERNAL_ENDPOINTS=[{"endpoint_id":"mlx","profile":"omlx","base_url":"http://127.0.0.1:8000/v1","read_timeout_seconds":30},{"endpoint_id":"gpu","profile":"vllm_local","base_url":"http://127.0.0.1:8001","api_key_env":"VLLM_API_KEY"}]
+```
+
+Each entry accepts `endpoint_id`, `profile`, `enabled`, `base_url`, optional
+`api_key_env`, and positive `connect_timeout_seconds`, `read_timeout_seconds`,
+and `pool_timeout_seconds`. IDs must be unique. URLs may name the server root or
+end in `/v1`; LewLM normalizes those spellings to one endpoint identity. URLs
+cannot contain credentials, query parameters, fragments, or non-loopback hosts.
+The credential environment-variable name is omitted from redacted configuration
+output. Transport authentication is implemented in the shared-transport step;
+until then, leave `api_key_env` unset.
+
+Do not combine an explicit collection with
+`LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true`. To migrate, move the old profile and
+URL into one named entry, then remove or disable the singular enable flag. An
+explicit empty array means no named endpoints; it does not restore the legacy
+configuration.
 
 Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
 `openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, `sglang_local`, `tensorrt_llm_server`, `openvino_model_server`, `ollama_local`, and `llamacpp_server`.
@@ -140,7 +164,11 @@ update, or supervise it, and no packaged Ollama runtime exists. Obtaining Ollama
 the desktop client or the CLI, whichever you prefer. When discovery is enabled, `lewlm scan` asks the
 daemon what it holds and registers each model as a manifest whose `source_path` is `ollama://<tag>`;
 the **external accelerator bridge** executes those requests, which is why
-`LEWLM_OLLAMA_DISCOVERY_ENABLED` requires `LEWLM_EXTERNAL_ACCELERATOR_ENABLED`.
+With singular settings, `LEWLM_OLLAMA_DISCOVERY_ENABLED` requires
+`LEWLM_EXTERNAL_ACCELERATOR_ENABLED`. With named endpoints, it requires exactly
+one enabled `ollama_local` entry whose normalized URL matches
+`LEWLM_OLLAMA_BASE_URL`. This binds every discovered Ollama manifest to the
+correct endpoint while preserving its existing public model ID.
 
 While `LEWLM_OLLAMA_DISCOVERY_ENABLED` is false — the default — LewLM never contacts the daemon.
 

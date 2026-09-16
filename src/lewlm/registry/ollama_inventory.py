@@ -152,7 +152,14 @@ def discover_ollama_models(settings: LewLMSettings) -> OllamaInventoryResult:
         if locality == OFF_HOST and not settings.ollama_cloud_enabled:
             skipped_cloud.append(tag)
             continue
-        manifests.append(_build_manifest(record, tag=tag, locality=locality, endpoint=endpoint))
+        manifest = _build_manifest(record, tag=tag, locality=locality, endpoint=endpoint)
+        if settings.external_endpoints is not None:
+            from lewlm.config.endpoints import server_root
+            matched = next(config for config in settings.external_endpoints
+                           if config.enabled and config.profile == "ollama_local"
+                           and server_root(config.base_url) == server_root(endpoint))
+            manifest.metadata["external_endpoint_id"] = matched.endpoint_id
+        manifests.append(manifest)
 
     return OllamaInventoryResult(
         endpoint=endpoint,

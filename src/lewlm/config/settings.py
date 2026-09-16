@@ -11,13 +11,13 @@ from pydantic import SecretStr, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lewlm._version import __version__
+from lewlm.config.endpoints import ExternalEndpoint, ExternalProfile, LOOPBACK_HOSTS, server_root
 from lewlm.core.contracts import ReasoningVisibility
 from lewlm.pack_registry import KNOWN_FEATURE_PACKS, KNOWN_RUNTIME_PACKS, canonicalize_pack_name
 
 # Hosts that resolve to this machine. Validating a configured endpoint against
 # this set keeps LewLM from dialing a remote server itself; it says nothing about
 # whether the local server behind the address relays the request onward.
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Environment variables are always strings, so an operator has no way to spell
 # `None` for an optional setting without an explicit unset sentinel.
@@ -157,20 +157,12 @@ class LewLMSettings(BaseSettings):
     moe_bounded_memory_mode: Literal["off", "partial_load", "expert_streaming"] = "off"
     moe_resident_expert_count: int = 4
     external_accelerator_enabled: bool = False
-    external_accelerator_profile: Literal[
-        "openai_compatible",
-        "vmlx",
-        "omlx",
-        "vllm_mlx",
-        "vllm_local",
-        "sglang_local",
-        "tensorrt_llm_server",
-        "openvino_model_server",
-        "ollama_local",
-        "llamacpp_server",
-    ] = "openai_compatible"
+    external_accelerator_profile: ExternalProfile = "openai_compatible"
     external_accelerator_base_url: str | None = None
     external_accelerator_timeout_seconds: int = 10
+    # None means legacy configuration. An explicit empty collection disables
+    # all named endpoints rather than silently restoring a legacy endpoint.
+    external_endpoints: tuple[ExternalEndpoint, ...] | None = None
     # Ollama is a model *source*, not a LewLM-owned runtime. When enabled, discovery
     # asks a locally installed Ollama daemon what it has and publishes those models
     # as bridge-backed manifests; the existing external accelerator adapter executes
@@ -305,13 +297,30 @@ class LewLMSettings(BaseSettings):
             raise ValueError("moe_resident_expert_count must be at least 1.")
         if self.external_accelerator_timeout_seconds < 1:
             raise ValueError("external_accelerator_timeout_seconds must be at least 1.")
+        if self.external_endpoints is not None:
+            if self.external_accelerator_enabled:
+                raise ValueError(
+                    "external_endpoints cannot be combined with enabled legacy external_accelerator settings; "
+                    "move the legacy endpoint into external_endpoints and disable external_accelerator_enabled."
+                )
+            ids = [endpoint.endpoint_id for endpoint in self.external_endpoints]
+            if len(ids) != len(set(ids)):
+                raise ValueError("external_endpoints endpoint_id values must be unique.")
+            if "legacy-default" in ids:
+                raise ValueError("legacy-default is reserved for legacy external accelerator configuration.")
         if self.ollama_discovery_timeout_seconds < 1:
             raise ValueError("ollama_discovery_timeout_seconds must be at least 1.")
         if self.ollama_discovery_enabled:
             # Discovery publishes manifests the external accelerator adapter has to
             # execute. Without that adapter the models would list and then refuse to
             # run, so the dependency is refused up front rather than at request time.
-            if not self.external_accelerator_enabled:
+            if self.external_endpoints is not None:
+                matches = [endpoint for endpoint in self.external_endpoints if endpoint.enabled
+                           and endpoint.profile == "ollama_local"
+                           and server_root(endpoint.base_url) == server_root(self.ollama_base_url)]
+                if len(matches) != 1:
+                    raise ValueError("ollama_discovery_enabled requires exactly one enabled ollama_local endpoint matching ollama_base_url.")
+            elif not self.external_accelerator_enabled:
                 raise ValueError(
                     "ollama_discovery_enabled requires external_accelerator_enabled: LewLM discovers Ollama "
                     "models but serves them through the external accelerator bridge.",
@@ -324,6 +333,21 @@ class LewLMSettings(BaseSettings):
         if self.ollama_cloud_enabled and not self.ollama_discovery_enabled:
             raise ValueError("ollama_cloud_enabled requires ollama_discovery_enabled.")
         return self
+
+    def resolved_external_endpoints(self) -> tuple[ExternalEndpoint, ...]:
+        """Resolve configuration without changing legacy validation or routing."""
+        if self.external_endpoints is not None:
+            return self.external_endpoints
+        # Existing callers can construct invalid/disabled legacy URLs and ask
+        # doctor for guidance. Keep that runtime-level validation compatible.
+        return (ExternalEndpoint.model_construct(
+            endpoint_id="legacy-default", profile=self.external_accelerator_profile,
+            enabled=self.external_accelerator_enabled,
+            base_url=self.external_accelerator_base_url or "",
+            connect_timeout_seconds=float(self.external_accelerator_timeout_seconds),
+            read_timeout_seconds=float(self.external_accelerator_timeout_seconds),
+            pool_timeout_seconds=float(self.external_accelerator_timeout_seconds),
+        ),)
 
     @computed_field(return_type=Path)
     @property
@@ -530,6 +554,16 @@ class LewLMSettings(BaseSettings):
             "external_accelerator_profile": self.external_accelerator_profile,
             "external_accelerator_base_url": self.external_accelerator_base_url,
             "external_accelerator_timeout_seconds": self.external_accelerator_timeout_seconds,
+            "external_endpoints": (
+                [
+                    {
+                        **endpoint.model_dump(mode="json", exclude={"api_key_env"}),
+                        "credential_configured": endpoint.api_key_env is not None,
+                    }
+                    for endpoint in self.external_endpoints
+                ]
+                if self.external_endpoints is not None else None
+            ),
             "file_access_roots": [str(path) for path in self.file_access_roots],
             "validation_manifest_paths": [str(path) for path in self.validation_manifest_paths],
         }

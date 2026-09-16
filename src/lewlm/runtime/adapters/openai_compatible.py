@@ -17,7 +17,10 @@ from urllib.request import Request, urlopen
 import wave
 
 from lewlm.config.settings import LewLMSettings
+from lewlm.config.endpoints import ExternalEndpoint, server_root
 from lewlm.core.contracts import (
+    BridgeProfile,
+    RuntimeProvider,
     AudioSpeechRequest,
     AudioSpeechResponse,
     AudioTranscriptionRequest,
@@ -409,9 +412,21 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         "LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
     )
 
-    def __init__(self, *, settings: LewLMSettings) -> None:
+    def __init__(self, *, settings: LewLMSettings, endpoint: ExternalEndpoint | None = None) -> None:
         super().__init__()
-        self._settings = settings
+        if endpoint is None and settings.external_endpoints is not None:
+            raise ValueError("An explicit endpoint is required when using external_endpoints.")
+        self.endpoint = endpoint or settings.resolved_external_endpoints()[0]
+        if endpoint is not None:
+            self.name = f"local_external_adapter:{endpoint.endpoint_id}"
+            self._settings = settings.model_copy(update={
+                "external_accelerator_enabled": endpoint.enabled,
+                "external_accelerator_profile": endpoint.profile,
+                "external_accelerator_base_url": server_root(endpoint.base_url),
+                "external_accelerator_timeout_seconds": endpoint.read_timeout_seconds,
+            })
+        else:
+            self._settings = settings
         self._discovered_model_ids: tuple[str, ...] | None = None
         self._discovered_model_records: tuple[dict[str, Any], ...] | None = None
         self._discovery_error: str | None = None
@@ -421,7 +436,53 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
         self._model_capability_reason_cache: dict[tuple[str, CapabilityName], str | None] = {}
 
+    @property
+    def cache_namespace(self) -> str:
+        return self.endpoint.cache_namespace
+
+    def endpoint_snapshot(self) -> dict[str, Any]:
+        """Cached evidence only. Health must not make generation/discovery calls."""
+        return {
+            "endpoint_id": self.endpoint.endpoint_id,
+            "profile": self.endpoint.profile,
+            "enabled": self.endpoint.enabled,
+            "inventory_state": ("failed" if self._discovery_error else
+                                "advertised" if self._discovered_model_ids is not None else "unknown"),
+            "advertised_model_ids": list(self._discovered_model_ids or ()),
+            "capability_evidence": [
+                {"upstream_model_id": model_id, "capability": capability.value,
+                 "state": "generate_passed" if supported else "probe_failed"}
+                for (model_id, capability), supported in self._model_capability_support_cache.items()
+            ],
+            "upstream_residency": "unknown",
+            "upstream_cancellation": "unknown",
+        }
+
+    def cached_supported_capabilities(self) -> tuple[CapabilityName, ...]:
+        return tuple(sorted({capability for (_, capability), supported in
+                             self._model_capability_support_cache.items() if supported}, key=lambda c: c.value))
+
+    def bridge_profile(self) -> BridgeProfile:
+        profile = self.endpoint.profile
+        provider = (RuntimeProvider.VLLM if profile in {"vllm_local", "vllm_mlx"} else
+                    RuntimeProvider.SGLANG if profile == "sglang_local" else
+                    RuntimeProvider.OLLAMA if profile == "ollama_local" else
+                    RuntimeProvider.LLAMACPP_SERVER if profile == "llamacpp_server" else
+                    RuntimeProvider.OPENAI_COMPATIBLE)
+        return BridgeProfile(profile_id=profile, endpoint_id=self.endpoint.endpoint_id, provider=provider,
+                             base_url=server_root(self.endpoint.base_url),
+                             supported_capabilities=list(self.cached_supported_capabilities()),
+                             notes=["Configured bridge; upstream behavior requires model-specific validation."])
+
+    async def lightweight_health_check(self) -> dict[str, Any]:
+        result = await super().lightweight_health_check()
+        result["endpoint"] = self.endpoint_snapshot()
+        return result
+
     def supports_manifest(self, manifest: ModelManifest) -> bool:
+        binding = manifest.metadata.get("external_endpoint_id")
+        if binding is not None and binding != self.endpoint.endpoint_id:
+            return False
         if not super().supports_manifest(manifest):
             return False
         if not self.is_available():
@@ -433,6 +494,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
     def candidate_report(self, manifest: ModelManifest | None = None) -> RuntimeCandidateReport:
         report = super().candidate_report(manifest)
+        report.metadata["endpoint"] = self.endpoint_snapshot()
         if manifest is None or not report.available:
             return report
         try:
@@ -464,11 +526,13 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         for feature_name, (ownership, reason) in _profile_feature_map(self._settings).items():
             snapshot[feature_name] = runtime_performance_feature_report(
                 ownership=ownership,
-                active=ownership != PerformanceFeatureOwnership.UNSUPPORTED,
+                active=False,
                 reason=reason,
                 metrics={
                     "adapter_profile": self._settings.external_accelerator_profile,
                     "contract": "openai_compatible_local",
+                    "endpoint_id": self.endpoint.endpoint_id,
+                    "evidence_state": "unverified",
                     **(
                         {
                             "decoder_enforced": False,
@@ -914,7 +978,10 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
         if self._discovery_failed_at is None:
             return False
-        return (monotonic() - self._discovery_failed_at) >= _DISCOVERY_FAILURE_RETRY_SECONDS
+        elapsed = monotonic() - self._discovery_failed_at
+        # Defensive for tests and rare platform clock resets: a negative age is
+        # not a sound basis for keeping a failed network result indefinitely.
+        return elapsed < 0 or elapsed >= _DISCOVERY_FAILURE_RETRY_SECONDS
 
     def _record_discovery_failure(self, reason: str) -> None:
         # `()` rather than `None` so the callers that report advertised ids while

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 import inspect
 
+from lewlm.config.endpoints import ExternalEndpoint
 from lewlm.config.settings import LewLMSettings, get_settings
 from lewlm.conversion.backend import ConversionBackend
 from lewlm.conversion.service import ConversionService
@@ -183,7 +184,14 @@ def _clone_runtime_overrides(
         except (TypeError, ValueError):
             accepts_settings = False
         try:
-            cloned[affinity] = runtime_type(settings=settings) if accepts_settings else runtime_type()
+            endpoint = getattr(runtime, "endpoint", None)
+            cloned[affinity] = (
+                runtime_type(settings=settings, endpoint=endpoint)
+                if accepts_settings and isinstance(endpoint, ExternalEndpoint) and endpoint.endpoint_id != "legacy-default"
+                else runtime_type(settings=settings)
+                if accepts_settings
+                else runtime_type()
+            )
             continue
         except (TypeError, ValueError):
             pass

@@ -469,6 +469,7 @@ class BridgeProfile(BaseModel):
     """Local bridge profile for an upstream inference server."""
 
     profile_id: str
+    endpoint_id: str | None = None
     provider: RuntimeProvider = RuntimeProvider.OPENAI_COMPATIBLE
     runtime_affinity: RuntimeAffinity = RuntimeAffinity.EXTERNAL_ACCELERATOR
     ownership: CapabilityOwnership = CapabilityOwnership.UNVERIFIED
@@ -509,6 +510,7 @@ class RuntimeProviderReport(BaseModel):
     supported_capabilities: list[CapabilityName] = Field(default_factory=list)
     evidence_state: CapabilityEvidenceState = CapabilityEvidenceState.DISCOVERED
     notes: list[str] = Field(default_factory=list)
+    bridge: BridgeProfile | None = None
 
 
 class RoutingDecision(BaseModel):
