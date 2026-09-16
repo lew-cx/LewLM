@@ -1,0 +1,32 @@
+{
+  "jundot/omlx": {
+    "revision": "b45fb7e5a127355c0769d0b7c828849db17492e7",
+    "branch": "main",
+    "commit_date": "2026-09-16T15:29:53Z",
+    "source": "https://github.com/jundot/omlx/tree/b45fb7e5a127355c0769d0b7c828849db17492e7"
+  },
+  "turboderp-org/exllamav3": {
+    "revision": "02aef45cd681b960a00afcd0749a4ab99e6c1bfe",
+    "branch": "master",
+    "commit_date": "2026-09-13T15:07:32Z",
+    "source": "https://github.com/turboderp-org/exllamav3/tree/02aef45cd681b960a00afcd0749a4ab99e6c1bfe"
+  },
+  "theroyallab/tabbyAPI": {
+    "revision": "53da7919d4e45c63f4acbcbbc00cbe0f60a1ce65",
+    "branch": "main",
+    "commit_date": "2026-09-13T22:43:10Z",
+    "source": "https://github.com/theroyallab/tabbyAPI/tree/53da7919d4e45c63f4acbcbbc00cbe0f60a1ce65"
+  },
+  "vllm-project/vllm": {
+    "revision": "42919b49c573aa0b06710616a3b9785674f36ef5",
+    "branch": "main",
+    "commit_date": "2026-09-16T15:23:31Z",
+    "source": "https://github.com/vllm-project/vllm/tree/42919b49c573aa0b06710616a3b9785674f36ef5"
+  },
+  "sgl-project/sglang": {
+    "revision": "1b78083b428a095d7b0599141b350ac7f09a2bf0",
+    "branch": "main",
+    "commit_date": "2026-09-16T15:53:30Z",
+    "source": "https://github.com/sgl-project/sglang/tree/1b78083b428a095d7b0599141b350ac7f09a2bf0"
+  }
+}

@@ -1,0 +1,377 @@
+{
+  "$defs": {
+    "CandidatePins": {
+      "additionalProperties": false,
+      "properties": {
+        "sources": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Sources",
+          "type": "object"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelInput"
+        }
+      },
+      "required": [
+        "sources",
+        "model"
+      ],
+      "title": "CandidatePins",
+      "type": "object"
+    },
+    "ContainerInstall": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "image",
+          "title": "Kind",
+          "type": "string"
+        },
+        "image": {
+          "pattern": "^.+@sha256:[0-9a-f]{64}$",
+          "title": "Image",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "image"
+      ],
+      "title": "ContainerInstall",
+      "type": "object"
+    },
+    "DeferredRecipe": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "minLength": 1,
+          "title": "Profile",
+          "type": "string"
+        },
+        "status": {
+          "const": "deferred",
+          "title": "Status",
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/CandidatePins"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "next_step": {
+          "minLength": 1,
+          "title": "Next Step",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "status",
+        "candidate",
+        "reason",
+        "next_step"
+      ],
+      "title": "DeferredRecipe",
+      "type": "object"
+    },
+    "EnvironmentPins": {
+      "additionalProperties": false,
+      "properties": {
+        "python": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Python",
+          "type": "string"
+        },
+        "system": {
+          "enum": [
+            "Darwin",
+            "Linux",
+            "Windows"
+          ],
+          "title": "System",
+          "type": "string"
+        },
+        "machine": {
+          "minLength": 1,
+          "title": "Machine",
+          "type": "string"
+        },
+        "accelerator": {
+          "minLength": 1,
+          "title": "Accelerator",
+          "type": "string"
+        },
+        "driver": {
+          "minLength": 1,
+          "title": "Driver",
+          "type": "string"
+        },
+        "toolkit": {
+          "minLength": 1,
+          "title": "Toolkit",
+          "type": "string"
+        },
+        "engine_versions": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Engine Versions",
+          "type": "object"
+        },
+        "installation": {
+          "discriminator": {
+            "mapping": {
+              "image": "#/$defs/ContainerInstall",
+              "lock": "#/$defs/LockedInstall"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LockedInstall"
+            },
+            {
+              "$ref": "#/$defs/ContainerInstall"
+            }
+          ],
+          "title": "Installation"
+        }
+      },
+      "required": [
+        "python",
+        "system",
+        "machine",
+        "accelerator",
+        "driver",
+        "toolkit",
+        "engine_versions",
+        "installation"
+      ],
+      "title": "EnvironmentPins",
+      "type": "object"
+    },
+    "FailedRecipe": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "minLength": 1,
+          "title": "Profile",
+          "type": "string"
+        },
+        "status": {
+          "const": "failed",
+          "title": "Status",
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/CandidatePins"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "evidence_path": {
+          "minLength": 1,
+          "title": "Evidence Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "status",
+        "candidate",
+        "reason",
+        "evidence_path"
+      ],
+      "title": "FailedRecipe",
+      "type": "object"
+    },
+    "LockedInstall": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "lock",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "sha256"
+      ],
+      "title": "LockedInstall",
+      "type": "object"
+    },
+    "ModelInput": {
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "tokenizer_revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tokenizer Revision",
+          "type": "string"
+        },
+        "license": {
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "quantization": {
+          "minLength": 1,
+          "title": "Quantization",
+          "type": "string"
+        },
+        "files_sha256": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Files Sha256",
+          "type": "object"
+        },
+        "context_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Context Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repository",
+        "revision",
+        "tokenizer_revision",
+        "license",
+        "format",
+        "quantization",
+        "files_sha256",
+        "context_tokens",
+        "output_tokens"
+      ],
+      "title": "ModelInput",
+      "type": "object"
+    },
+    "ValidatedRecipe": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "minLength": 1,
+          "title": "Profile",
+          "type": "string"
+        },
+        "status": {
+          "const": "validated",
+          "title": "Status",
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/CandidatePins"
+        },
+        "environment": {
+          "$ref": "#/$defs/EnvironmentPins"
+        },
+        "evidence_path": {
+          "minLength": 1,
+          "title": "Evidence Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "status",
+        "candidate",
+        "environment",
+        "evidence_path"
+      ],
+      "title": "ValidatedRecipe",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "lewlm-backend-compatibility-v1",
+      "title": "Format",
+      "type": "string"
+    },
+    "recipes": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "deferred": "#/$defs/DeferredRecipe",
+            "failed": "#/$defs/FailedRecipe",
+            "validated": "#/$defs/ValidatedRecipe"
+          },
+          "propertyName": "status"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/DeferredRecipe"
+          },
+          {
+            "$ref": "#/$defs/ValidatedRecipe"
+          },
+          {
+            "$ref": "#/$defs/FailedRecipe"
+          }
+        ]
+      },
+      "title": "Recipes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "format",
+    "recipes"
+  ],
+  "title": "BackendCompatibilityManifest",
+  "type": "object"
+}

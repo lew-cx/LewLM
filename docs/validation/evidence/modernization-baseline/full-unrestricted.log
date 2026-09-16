@@ -1,0 +1,1704 @@
+..FF.....F.........FF.F..........s..................FFF.F..............F [  6%]
+...F.................................................................... [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 27%]
+........................................................................ [ 34%]
+........................................................................ [ 40%]
+.......................................F....................F.F......... [ 47%]
+........................................................................ [ 54%]
+..........................................................F.F........... [ 61%]
+........................................................................ [ 68%]
+........................................................................ [ 75%]
+........................................................................ [ 81%]
+........................................................................ [ 88%]
+........................................................................ [ 95%]
+................................................                         [100%]
+=================================== FAILURES ===================================
+________________ test_end_to_end_document_ingest_event_workflow ________________
+
+app_with_fake_runtime = <fastapi.applications.FastAPI object at 0x110977a10>
+sample_ingest_sources = {'csv': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_doc...nyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_document_inges0/state/ingest/images/receipt-front.png'), ...}
+
+    def test_end_to_end_document_ingest_event_workflow(app_with_fake_runtime, sample_ingest_sources) -> None:
+        with TestClient(app_with_fake_runtime) as client:
+            with client.websocket_connect("/v1/events") as websocket:
+                ingest_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["pdf"])]})
+>               assert ingest_response.status_code == 200
+E               assert 400 == 200
+E                +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/e2e/test_chat_workflow.py:114: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:21.938183+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/documents/ingest "HTTP/1.1 400 Bad Request"
+________________ test_end_to_end_http_document_ingest_workflow _________________
+
+app_with_fake_runtime = <fastapi.applications.FastAPI object at 0x110be6ba0>
+sample_ingest_sources = {'csv': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_htt...nyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_http_document_0/state/ingest/images/receipt-front.png'), ...}
+
+    def test_end_to_end_http_document_ingest_workflow(app_with_fake_runtime, sample_ingest_sources) -> None:
+        with TestClient(app_with_fake_runtime) as client:
+            pdf_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["pdf"])]})
+            image_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["image_bundle"])]})
+    
+>       assert pdf_response.status_code == 200
+E       assert 400 == 200
+E        +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/e2e/test_chat_workflow.py:131: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:23.063063+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:24.407199+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/documents/ingest "HTTP/1.1 400 Bad Request"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/documents/ingest "HTTP/1.1 200 OK"
+_____________ test_end_to_end_http_attachment_aware_chat_workflow ______________
+
+app_with_fake_attachment_runtime = <fastapi.applications.FastAPI object at 0x111010050>
+sample_attachment_sources = {'audio': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_h.../wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_http_attachmen0/state/ingest/images'), ...}
+
+    def test_end_to_end_http_attachment_aware_chat_workflow(
+        app_with_fake_attachment_runtime,
+        sample_attachment_sources,
+    ) -> None:
+        with TestClient(app_with_fake_attachment_runtime) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            assert scan_response.status_code == 200
+            vision_model_id = next(
+                manifest["model_id"]
+                for manifest in scan_response.json()["manifests"]
+                if manifest["display_name"] == "qwen2-vl-vision-mlx"
+            )
+    
+            chat_response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Review these local inputs."},
+                                {"type": "input_image", "path": str(sample_attachment_sources["image_one"])},
+                                {"type": "input_file", "path": str(sample_attachment_sources["docx"])},
+                                {"type": "input_audio", "path": str(sample_attachment_sources["audio"])},
+                            ],
+                        },
+                    ],
+                },
+            )
+    
+            response_api = client.post(
+                "/v1/responses",
+                json={
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "Summarize the attached PDF."},
+                                {"type": "input_file", "path": str(sample_attachment_sources["pdf"])},
+                            ],
+                        },
+                    ],
+                },
+            )
+    
+        assert chat_response.status_code == 200
+        assert chat_response.json()["model"] == vision_model_id
+        assert "[Attached image: receipt-front.png]" in chat_response.json()["choices"][0]["message"]["content"]
+        assert "[Attached document: sample.docx]" in chat_response.json()["choices"][0]["message"]["content"]
+        assert "Transcribed voice-note.wav" in chat_response.json()["choices"][0]["message"]["content"]
+        assert "[images: receipt-front.png]" in chat_response.json()["choices"][0]["message"]["content"]
+    
+>       assert response_api.status_code == 200
+E       assert 400 == 200
+E        +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/e2e/test_chat_workflow.py:439: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:24.759797+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/models/scan \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:25.770419+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/chat/completions \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:26.150323+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/responses \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/models/scan "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/chat/completions "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/responses "HTTP/1.1 400 Bad Request"
+_____________ test_end_to_end_cli_chat_supports_local_attachments ______________
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_chat_suppo3/state/metadata.sqlite3'))
+services_with_fake_attachment_runtime = LewLMServices(settings=LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=808...0x115d1b230>, cluster_service=<lewlm.runtime.experimental.distributed.DistributedClusterService object at 0x12217a6d0>)
+sample_attachment_sources = {'audio': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_c.../wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_chat_suppo3/state/ingest/images'), ...}
+capsys = <_pytest.capture.CaptureFixture object at 0x122205350>
+
+    def test_end_to_end_cli_chat_supports_local_attachments(
+        temp_settings,
+        services_with_fake_attachment_runtime,
+        sample_attachment_sources,
+        capsys,
+    ) -> None:
+        scan_code = main(["scan", "--json"], settings=temp_settings, services=services_with_fake_attachment_runtime)
+        scan_output = json.loads(capsys.readouterr().out)
+        assert scan_code == 0
+    
+        vision_model_id = next(
+            manifest["model_id"]
+            for manifest in scan_output["manifests"]
+            if manifest["display_name"] == "qwen2-vl-vision-mlx"
+        )
+    
+        chat_code = main(
+            [
+                "chat",
+                "Review these local inputs.",
+                "--attach-image",
+                str(sample_attachment_sources["image_one"]),
+                "--attach-file",
+                str(sample_attachment_sources["pdf"]),
+                "--attach-audio",
+                str(sample_attachment_sources["audio"]),
+                "--json",
+            ],
+            settings=temp_settings,
+            services=services_with_fake_attachment_runtime,
+        )
+        chat_output = json.loads(capsys.readouterr().out)
+>       assert chat_code == 0
+E       assert 1 == 0
+
+tests/e2e/test_chat_workflow.py:996: AssertionError
+_________________ test_end_to_end_cli_generate_document_files __________________
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1105ab4d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1105ab4d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_generate_d0/state/metadata.sqlite3'))
+sample_document_ir = DocumentIR(title='Quarterly Operations Summary', metadata={'department': 'Operations'}, style_tokens=[], header=Header...citations=[Citation(label='1', text='Internal finance worksheet', url=None, title=None, style_tokens=[], metadata={})])
+tmp_path = PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_generate_d0')
+capsys = <_pytest.capture.CaptureFixture object at 0x11661f850>
+
+    def test_end_to_end_cli_generate_document_files(
+        temp_settings,
+        sample_document_ir,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        input_path = tmp_path / "document.json"
+        input_path.write_text(sample_document_ir.model_dump_json(indent=2), encoding="utf-8")
+    
+        outputs = {
+            "text": tmp_path / "report.txt",
+            "markdown": tmp_path / "report.md",
+            "json": tmp_path / "report.json",
+            "csv": tmp_path / "report.csv",
+            "docx": tmp_path / "report.docx",
+            "pdf": tmp_path / "report.pdf",
+            "xlsx": tmp_path / "report.xlsx",
+        }
+    
+        for output_format, output_path in outputs.items():
+            exit_code = main(
+                [
+                    "generate-doc",
+                    "--input",
+                    str(input_path),
+                    "--format",
+                    output_format,
+                    "--output",
+                    str(output_path),
+                    "--json",
+                ],
+                settings=temp_settings,
+            )
+            payload = json.loads(capsys.readouterr().out)
+            assert exit_code == 0
+            assert payload["output_path"] == str(output_path)
+            assert output_path.exists()
+    
+        assert outputs["text"].read_text(encoding="utf-8").startswith("Quarterly Operations Summary")
+        assert outputs["markdown"].read_text(encoding="utf-8").startswith("# Quarterly Operations Summary")
+        assert json.loads(outputs["json"].read_text(encoding="utf-8"))["title"] == "Quarterly Operations Summary"
+        assert outputs["csv"].read_text(encoding="utf-8").startswith("Category,Amount")
+        assert outputs["docx"].read_bytes().startswith(b"PK")
+        assert outputs["pdf"].read_bytes().startswith(b"%PDF")
+>       workbook = load_workbook(outputs["xlsx"])
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/e2e/test_chat_workflow.py:1047: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1105ab4d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+_________________ test_end_to_end_cli_transform_skill_requests _________________
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1109b7ed0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1109b7ed0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_transform_0/state/metadata.sqlite3'))
+contract_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'terms': 'Net 30 days', 'vendor': 'LewLM'}, 'template_text': 'This ...nt terms are [[terms]].', 'title': 'Service Agreement'}, 'output_format': 'docx', 'skill': 'contract_text_replacement'}
+receipt_transform_payload = {'input': {'currency': 'USD', 'items': [{'description': 'Coffee', 'quantity': '2', 'total': '8.00', 'unit_price': '4.0... 'purchased_at': '2026-04-14', 'receipt_number': 'R-1001', ...}, 'output_format': 'csv', 'skill': 'receipt_extraction'}
+branded_document_template_payload = {'input': {'key_points': ['Keep API and CLI rollout dates aligned.', 'Use the same launch messaging across docs and su...w-up ownership into a branded document artifact.', ...}, 'output_format': 'json', 'skill': 'branded_document_template'}
+ocr_assisted_extraction_payload = {'input': {'document_type': 'invoice', 'expected_fields': [{'aliases': ['invoice no'], 'field': 'Invoice Number', 'req...ock.', 'source_title': 'Scanned Vendor Invoice', ...}, 'output_format': 'markdown', 'skill': 'ocr_assisted_extraction'}
+file_template_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'owner': 'LewLM', 'status': 'On Track'}}, 'output_format': 'xlsx', ...15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_transform_0/state/templates/project-template.json'}
+document_compare_transform_payload = {'input': {'left_text': 'Shared scope line.\n\nLegacy pricing remains in effect.\n\nTermination notice requires 30 day... is now mandatory.', 'right_title': 'Revised Agreement', ...}, 'output_format': 'xlsx', 'skill': 'document_comparison'}
+meeting_transcript_notes_payload = {'input': {'meeting_date': '2026-04-15', 'participants': ['Maya', 'Jon', 'Priya'], 'title': 'Project Kickoff Notes', '... stakeholder update once the timeline is approved.'}, 'output_format': 'markdown', 'skill': 'meeting_transcript_notes'}
+long_document_memo_payload = {'input': {'source_text': 'The platform review confirmed that document workflows are stable across the API and CLI. Ad...erly Platform Review', 'title': 'Platform Readiness Memo'}, 'output_format': 'markdown', 'skill': 'long_document_memo'}
+speech_transcript_cleanup_payload = {'input': {'language': 'en', 'title': 'Customer Call Cleanup', 'transcript_text': 'agent: thanks everyone for joining ...window\nfollow up with legal for the final notice'}, 'output_format': 'markdown', 'skill': 'speech_transcript_cleanup'}
+tmp_path = PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_end_to_end_cli_transform_0')
+capsys = <_pytest.capture.CaptureFixture object at 0x1166234d0>
+
+    def test_end_to_end_cli_transform_skill_requests(
+        temp_settings,
+        contract_transform_payload: dict[str, object],
+        receipt_transform_payload: dict[str, object],
+        branded_document_template_payload: dict[str, object],
+        ocr_assisted_extraction_payload: dict[str, object],
+        file_template_transform_payload: dict[str, object],
+        document_compare_transform_payload: dict[str, object],
+        meeting_transcript_notes_payload: dict[str, object],
+        long_document_memo_payload: dict[str, object],
+        speech_transcript_cleanup_payload: dict[str, object],
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        contract_request_path = tmp_path / "contract-transform.json"
+        contract_request_path.write_text(json.dumps(contract_transform_payload, indent=2), encoding="utf-8")
+        contract_output_path = tmp_path / "service-agreement.docx"
+    
+        contract_code = main(
+            [
+                "transform",
+                "--input",
+                str(contract_request_path),
+                "--output",
+                str(contract_output_path),
+                "--json",
+            ],
+            settings=temp_settings,
+        )
+        contract_payload = json.loads(capsys.readouterr().out)
+        assert contract_code == 0
+        assert contract_payload["skill"] == "contract_text_replacement"
+        assert contract_output_path.read_bytes().startswith(b"PK")
+    
+        receipt_request_path = tmp_path / "receipt-transform.json"
+        receipt_request_path.write_text(json.dumps(receipt_transform_payload, indent=2), encoding="utf-8")
+        receipt_output_path = tmp_path / "receipt.csv"
+    
+        receipt_code = main(
+            [
+                "transform",
+                "--input",
+                str(receipt_request_path),
+                "--output",
+                str(receipt_output_path),
+                "--json",
+            ],
+            settings=temp_settings,
+        )
+        receipt_payload = json.loads(capsys.readouterr().out)
+        assert receipt_code == 0
+        assert receipt_payload["skill"] == "receipt_extraction"
+        assert receipt_output_path.read_text(encoding="utf-8").startswith("Description,Quantity,Unit Price,Line Total")
+    
+        branding_assets_dir = tmp_path / "assets"
+        branding_assets_dir.mkdir(parents=True, exist_ok=True)
+        logo_source_path = Path(branded_document_template_payload["input"]["settings"]["logo_path"])
+        hero_source_path = Path(branded_document_template_payload["input"]["settings"]["hero_image_path"])
+        logo_target_path = branding_assets_dir / logo_source_path.name
+        hero_target_path = branding_assets_dir / hero_source_path.name
+        logo_target_path.write_bytes(logo_source_path.read_bytes())
+        hero_target_path.write_bytes(hero_source_path.read_bytes())
+        branded_request_payload = json.loads(json.dumps(branded_document_template_payload))
+        branded_request_payload["input"]["settings"]["logo_path"] = f"assets/{logo_target_path.name}"
+        branded_request_payload["input"]["settings"]["hero_image_path"] = f"assets/{hero_target_path.name}"
+        branded_request_path = tmp_path / "branded-document-template.json"
+        branded_request_path.write_text(json.dumps(branded_request_payload, indent=2), encoding="utf-8")
+        branded_output_path = tmp_path / "product-launch-brief.json"
+    
+        branded_code = main(
+            [
+                "transform",
+                "--input",
+                str(branded_request_path),
+                "--output",
+                str(branded_output_path),
+                "--json",
+            ],
+            settings=temp_settings,
+        )
+        branded_payload = json.loads(capsys.readouterr().out)
+        assert branded_code == 0
+        assert branded_payload["skill"] == "branded_document_template"
+        branded_document = json.loads(branded_output_path.read_text(encoding="utf-8"))
+        assert branded_document["header"]["left"] == "LewLM"
+        assert branded_document["footer"]["right"] == "Leadership Team"
+        image_blocks = [
+            block
+            for section in branded_document["sections"]
+            for block in section["blocks"]
+            if block["type"] == "image"
+        ]
+        assert len(image_blocks) == 2
+        assert any(block["role"] == "logo" for block in image_blocks)
+    
+        ocr_request_path = tmp_path / "ocr-assisted-extraction.json"
+        ocr_request_path.write_text(json.dumps(ocr_assisted_extraction_payload, indent=2), encoding="utf-8")
+        ocr_output_path = tmp_path / "scanned-invoice-extraction.md"
+    
+        ocr_code = main(
+            [
+                "transform",
+                "--input",
+                str(ocr_request_path),
+                "--output",
+                str(ocr_output_path),
+                "--json",
+            ],
+            settings=temp_settings,
+        )
+        ocr_payload = json.loads(capsys.readouterr().out)
+        assert ocr_code == 0
+        assert ocr_payload["skill"] == "ocr_assisted_extraction"
+        ocr_markdown = ocr_output_path.read_text(encoding="utf-8")
+        assert ocr_markdown.startswith("# Scanned Invoice Extraction")
+        assert "## Review Notes" in ocr_markdown
+        assert "Total Due | USD 1,240.00 | extracted" in ocr_markdown
+    
+        template_source_path = Path(file_template_transform_payload["template_path"])
+        local_template_path = tmp_path / template_source_path.name
+        local_template_path.write_text(template_source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        template_request_payload = dict(file_template_transform_payload)
+        template_request_payload["template_path"] = local_template_path.name
+        template_request_path = tmp_path / "template-transform.json"
+        template_request_path.write_text(json.dumps(template_request_payload, indent=2), encoding="utf-8")
+        template_output_path = tmp_path / "engagement-summary.xlsx"
+    
+        template_code = main(
+            [
+                "transform",
+                "--input",
+                str(template_request_path),
+                "--output",
+                str(template_output_path),
+                "--json",
+            ],
+            settings=temp_settings,
+        )
+        template_payload = json.loads(capsys.readouterr().out)
+        assert template_code == 0
+        assert template_payload["skill"] == "file_template"
+>       workbook = load_workbook(template_output_path)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/e2e/test_chat_workflow.py:1240: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1109b7ed0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+___________ test_document_generation_endpoint_supports_all_renderers ___________
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224c1950>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224c1950>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_generation_endpo1/state/metadata.sqlite3'))
+sample_document_payload = {'citations': [{'label': '1', 'metadata': {}, 'style_tokens': [], 'text': 'Internal finance worksheet', ...}], 'footer...uarterly Summary', 'left': 'LewLM', 'metadata': {}, 'right': None, ...}, 'metadata': {'department': 'Operations'}, ...}
+
+    def test_document_generation_endpoint_supports_all_renderers(
+        temp_settings,
+        sample_document_payload: dict[str, object],
+    ) -> None:
+        app = create_app(temp_settings)
+    
+        with TestClient(app) as client:
+            responses = {
+                output_format: client.post(
+                    "/v1/documents/generate",
+                    json={
+                        "output_format": output_format,
+                        "file_name": {
+                            "text": "report.txt",
+                            "markdown": "report.md",
+                            "json": "report.json",
+                        }.get(output_format, f"report.{output_format}"),
+                        "document": sample_document_payload,
+                    },
+                )
+                for output_format in ("text", "markdown", "json", "csv", "docx", "pdf")
+            }
+            responses["xlsx"] = client.post(
+                "/v1/documents/generate",
+                json={
+                    "output_format": "xlsx",
+                    "file_name": "report.xlsx",
+                    "document": sample_document_payload,
+                },
+            )
+    
+        assert responses["text"].status_code == 200
+        assert base64.b64decode(responses["text"].json()["content_base64"]).decode("utf-8").startswith("Quarterly Operations Summary")
+        assert responses["markdown"].status_code == 200
+        assert base64.b64decode(responses["markdown"].json()["content_base64"]).decode("utf-8").startswith("# Quarterly Operations Summary")
+        assert responses["json"].status_code == 200
+        assert '"title": "Quarterly Operations Summary"' in base64.b64decode(responses["json"].json()["content_base64"]).decode("utf-8")
+        assert responses["csv"].status_code == 200
+        assert responses["csv"].json()["request_id"]
+        assert base64.b64decode(responses["csv"].json()["content_base64"]).decode("utf-8").startswith("Category,Amount")
+        assert base64.b64decode(responses["docx"].json()["content_base64"]).startswith(b"PK")
+        assert base64.b64decode(responses["pdf"].json()["content_base64"]).startswith(b"%PDF")
+>       workbook = load_workbook(BytesIO(base64.b64decode(responses["xlsx"].json()["content_base64"])))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/test_api.py:773: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224c1950>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:44.045926+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:44.427011+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:44.806888+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:45.188556+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:45.615780+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:46.079679+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:46.510468+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/generate \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+_ test_document_transform_endpoint_supports_contract_receipt_and_file_template_skills _
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1220a2190>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1220a2190>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_transform_endpoi0/state/metadata.sqlite3'))
+contract_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'terms': 'Net 30 days', 'vendor': 'LewLM'}, 'template_text': 'This ...nt terms are [[terms]].', 'title': 'Service Agreement'}, 'output_format': 'docx', 'skill': 'contract_text_replacement'}
+receipt_transform_payload = {'input': {'currency': 'USD', 'items': [{'description': 'Coffee', 'quantity': '2', 'total': '8.00', 'unit_price': '4.0... 'purchased_at': '2026-04-14', 'receipt_number': 'R-1001', ...}, 'output_format': 'csv', 'skill': 'receipt_extraction'}
+branded_document_template_payload = {'input': {'key_points': ['Keep API and CLI rollout dates aligned.', 'Use the same launch messaging across docs and su...w-up ownership into a branded document artifact.', ...}, 'output_format': 'json', 'skill': 'branded_document_template'}
+ocr_assisted_extraction_payload = {'input': {'document_type': 'invoice', 'expected_fields': [{'aliases': ['invoice no'], 'field': 'Invoice Number', 'req...ock.', 'source_title': 'Scanned Vendor Invoice', ...}, 'output_format': 'markdown', 'skill': 'ocr_assisted_extraction'}
+file_template_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'owner': 'LewLM', 'status': 'On Track'}}, 'output_format': 'xlsx', ...15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_transform_endpoi0/state/templates/project-template.json'}
+document_compare_transform_payload = {'input': {'left_text': 'Shared scope line.\n\nLegacy pricing remains in effect.\n\nTermination notice requires 30 day... is now mandatory.', 'right_title': 'Revised Agreement', ...}, 'output_format': 'xlsx', 'skill': 'document_comparison'}
+meeting_transcript_notes_payload = {'input': {'meeting_date': '2026-04-15', 'participants': ['Maya', 'Jon', 'Priya'], 'title': 'Project Kickoff Notes', '... stakeholder update once the timeline is approved.'}, 'output_format': 'markdown', 'skill': 'meeting_transcript_notes'}
+long_document_memo_payload = {'input': {'source_text': 'The platform review confirmed that document workflows are stable across the API and CLI. Ad...erly Platform Review', 'title': 'Platform Readiness Memo'}, 'output_format': 'markdown', 'skill': 'long_document_memo'}
+speech_transcript_cleanup_payload = {'input': {'language': 'en', 'title': 'Customer Call Cleanup', 'transcript_text': 'agent: thanks everyone for joining ...window\nfollow up with legal for the final notice'}, 'output_format': 'markdown', 'skill': 'speech_transcript_cleanup'}
+
+    def test_document_transform_endpoint_supports_contract_receipt_and_file_template_skills(
+        temp_settings,
+        contract_transform_payload: dict[str, object],
+        receipt_transform_payload: dict[str, object],
+        branded_document_template_payload: dict[str, object],
+        ocr_assisted_extraction_payload: dict[str, object],
+        file_template_transform_payload: dict[str, object],
+        document_compare_transform_payload: dict[str, object],
+        meeting_transcript_notes_payload: dict[str, object],
+        long_document_memo_payload: dict[str, object],
+        speech_transcript_cleanup_payload: dict[str, object],
+    ) -> None:
+        app = create_app(temp_settings)
+    
+        with TestClient(app) as client:
+            contract_response = client.post("/v1/documents/transform", json=contract_transform_payload)
+            receipt_response = client.post("/v1/documents/transform", json=receipt_transform_payload)
+            branded_response = client.post("/v1/documents/transform", json=branded_document_template_payload)
+            ocr_response = client.post("/v1/documents/transform", json=ocr_assisted_extraction_payload)
+            template_response = client.post("/v1/documents/transform", json=file_template_transform_payload)
+            compare_response = client.post("/v1/documents/transform", json=document_compare_transform_payload)
+            meeting_response = client.post("/v1/documents/transform", json=meeting_transcript_notes_payload)
+            memo_response = client.post("/v1/documents/transform", json=long_document_memo_payload)
+            cleanup_response = client.post("/v1/documents/transform", json=speech_transcript_cleanup_payload)
+    
+        assert contract_response.status_code == 200
+        assert contract_response.json()["request_id"]
+        assert contract_response.json()["skill"] == "contract_text_replacement"
+        assert base64.b64decode(contract_response.json()["content_base64"]).startswith(b"PK")
+    
+        assert receipt_response.status_code == 200
+        assert receipt_response.json()["skill"] == "receipt_extraction"
+        assert base64.b64decode(receipt_response.json()["content_base64"]).decode("utf-8").startswith(
+            "Description,Quantity,Unit Price,Line Total",
+        )
+    
+        assert branded_response.status_code == 200
+        assert branded_response.json()["skill"] == "branded_document_template"
+        branded_document = json.loads(base64.b64decode(branded_response.json()["content_base64"]).decode("utf-8"))
+        assert branded_document["metadata"]["skill"] == "branded_document_template"
+        assert branded_document["header"]["center"] == "Product Launch Brief"
+        assert branded_document["sections"][0]["heading"] == "Overview"
+        image_blocks = [
+            block
+            for section in branded_document["sections"]
+            for block in section["blocks"]
+            if block["type"] == "image"
+        ]
+        assert len(image_blocks) == 2
+    
+        assert ocr_response.status_code == 200
+        assert ocr_response.json()["skill"] == "ocr_assisted_extraction"
+        ocr_markdown = base64.b64decode(ocr_response.json()["content_base64"]).decode("utf-8")
+        assert ocr_markdown.startswith("# Scanned Invoice Extraction")
+        assert "Invoice Date | 2026-04-12 | extracted" in ocr_markdown
+        assert "Payment Terms |  | missing" in ocr_markdown
+    
+        assert template_response.status_code == 200
+        assert template_response.json()["skill"] == "file_template"
+>       workbook = load_workbook(BytesIO(base64.b64decode(template_response.json()["content_base64"])))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/test_api.py:836: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1220a2190>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:47.036766+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:47.412345+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:47.791207+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:48.171424+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:48.608924+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:49.044375+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:49.423600+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:49.804390+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:50.188686+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/transform \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+_________ test_document_ingest_endpoint_supports_pdf_and_image_bundle __________
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_endpoint_0/state/metadata.sqlite3'))
+sample_ingest_sources = {'csv': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_inges...nyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_endpoint_0/state/ingest/images/receipt-front.png'), ...}
+
+    def test_document_ingest_endpoint_supports_pdf_and_image_bundle(
+        temp_settings,
+        sample_ingest_sources,
+    ) -> None:
+        app = create_app(temp_settings)
+    
+        with TestClient(app) as client:
+            pdf_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["pdf"])]})
+            image_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["image_bundle"])]})
+    
+>       assert pdf_response.status_code == 200
+E       assert 400 == 200
+E        +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/integration/test_api.py:877: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:51.277159+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:52.556521+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+_____________ test_document_ingest_endpoint_emits_lifecycle_events _____________
+
+app_with_fake_runtime = <fastapi.applications.FastAPI object at 0x1222ae120>
+sample_ingest_sources = {'csv': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_inges...nyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_endpoint_2/state/ingest/images/receipt-front.png'), ...}
+
+    def test_document_ingest_endpoint_emits_lifecycle_events(
+        app_with_fake_runtime,
+        sample_ingest_sources,
+    ) -> None:
+        with TestClient(app_with_fake_runtime) as client:
+            with client.websocket_connect("/v1/events") as websocket:
+                ingest_response = client.post("/v1/documents/ingest", json={"paths": [str(sample_ingest_sources["pdf"])]})
+>               assert ingest_response.status_code == 200
+E               assert 400 == 200
+E                +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/integration/test_api.py:942: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:55.515170+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/documents/ingest \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/documents/ingest "HTTP/1.1 400 Bad Request"
+______________ test_multimodal_endpoints_accept_multipart_uploads ______________
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_multimodal_endpoints_acce0/state/metadata.sqlite3'))
+app_with_fake_attachment_runtime = <fastapi.applications.FastAPI object at 0x122e50830>
+sample_attachment_sources = {'audio': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_multimodal_e.../wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_multimodal_endpoints_acce0/state/ingest/images'), ...}
+sample_audio_bytes = b'RIFF/\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x80>\x00\x00\x01\x00\x08\x00data\x0b\x00\x00\x00hello world'
+
+    def test_multimodal_endpoints_accept_multipart_uploads(
+        temp_settings,
+        app_with_fake_attachment_runtime,
+        sample_attachment_sources,
+        sample_audio_bytes: bytes,
+    ) -> None:
+        with TestClient(app_with_fake_attachment_runtime) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            manifests = scan_response.json()["manifests"]
+            vision_model_id = next(
+                manifest["model_id"]
+                for manifest in manifests
+                if manifest["display_name"] == "qwen2-vl-vision-mlx"
+            )
+            audio_model_id = next(
+                manifest["model_id"]
+                for manifest in manifests
+                if manifest["display_name"] == "whisper-mini-audio"
+            )
+    
+            chat_response = client.post(
+                "/v1/chat/completions",
+                data={
+                    "payload_json": json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "Review these uploaded files."},
+                                        {"type": "input_image", "upload_name": "image_upload"},
+                                        {"type": "input_file", "upload_name": "document_upload"},
+                                        {"type": "input_audio", "upload_name": "audio_upload"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ),
+                },
+                files=[
+                    ("image_upload", ("receipt-front.png", sample_attachment_sources["image_one"].read_bytes(), "image/png")),
+                    (
+                        "document_upload",
+                        (
+                            "sample.pdf",
+                            sample_attachment_sources["pdf"].read_bytes(),
+                            "application/pdf",
+                        ),
+                    ),
+                    ("audio_upload", ("voice-note.wav", sample_audio_bytes, "audio/wav")),
+                ],
+            )
+            response_api = client.post(
+                "/v1/responses",
+                data={
+                    "payload_json": json.dumps(
+                        {
+                            "input": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "input_text", "text": "Summarize this uploaded spreadsheet."},
+                                        {"type": "input_file", "upload_name": "sheet_upload"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ),
+                },
+                files=[
+                    (
+                        "sheet_upload",
+                        (
+                            "sample.xlsx",
+                            sample_attachment_sources["xlsx"].read_bytes(),
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        ),
+                    ),
+                ],
+            )
+            transcription_response = client.post(
+                "/v1/audio/transcriptions",
+                data={"model": audio_model_id},
+                files=[("file", ("sample.wav", sample_audio_bytes, "audio/wav"))],
+            )
+    
+>       assert chat_response.status_code == 200
+E       assert 400 == 200
+E        +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/integration/test_api.py:1856: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:56.664994+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/models/scan \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:57.355842+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/chat/completions \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:57.735349+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/responses \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:57.741892+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/audio/transcriptions \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/models/scan "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/chat/completions "HTTP/1.1 400 Bad Request"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/responses "HTTP/1.1 400 Bad Request"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/audio/transcriptions "HTTP/1.1 200 OK"
+___________ test_chat_and_responses_support_mixed_local_attachments ____________
+
+app_with_fake_attachment_runtime = <fastapi.applications.FastAPI object at 0x110865160>
+sample_attachment_sources = {'audio': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_chat_and_res.../wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_chat_and_responses_suppor0/state/ingest/images'), ...}
+
+    def test_chat_and_responses_support_mixed_local_attachments(
+        app_with_fake_attachment_runtime,
+        sample_attachment_sources,
+    ) -> None:
+        with TestClient(app_with_fake_attachment_runtime) as client:
+            scan_response = client.post("/v1/models/scan", json={})
+            assert scan_response.status_code == 200
+            vision_model_id = next(
+                manifest["model_id"]
+                for manifest in scan_response.json()["manifests"]
+                if manifest["display_name"] == "qwen2-vl-vision-mlx"
+            )
+    
+            chat_response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Summarize these local artifacts."},
+                                {"type": "input_image", "path": str(sample_attachment_sources["image_one"])},
+                                {"type": "input_file", "path": str(sample_attachment_sources["pdf"])},
+                                {"type": "input_file", "path": str(sample_attachment_sources["text"])},
+                                {"type": "input_audio", "path": str(sample_attachment_sources["audio"])},
+                            ],
+                        },
+                    ],
+                },
+            )
+            response_api = client.post(
+                "/v1/responses",
+                json={
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "Turn this spreadsheet into notes."},
+                                {"type": "input_file", "path": str(sample_attachment_sources["xlsx"])},
+                            ],
+                        },
+                    ],
+                },
+            )
+    
+>       assert chat_response.status_code == 200
+E       assert 400 == 200
+E        +  where 400 = <Response [400 Bad Request]>.status_code
+
+tests/integration/test_api.py:2035: AssertionError
+----------------------------- Captured stderr call -----------------------------
+{"timestamp": "2026-09-16T16:07:58.127352+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/models/scan \"HTTP/1.1 200 OK\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:58.819608+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/chat/completions \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+{"timestamp": "2026-09-16T16:07:59.198424+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://testserver/v1/responses \"HTTP/1.1 400 Bad Request\"", "extra": {"taskName": null}}
+------------------------------ Captured log call -------------------------------
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/models/scan "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/chat/completions "HTTP/1.1 400 Bad Request"
+INFO     httpx:_client.py:1025 HTTP Request: POST http://testserver/v1/responses "HTTP/1.1 400 Bad Request"
+____________________ test_xlsx_applies_font_and_accent_fill ____________________
+
+self = <xml.etree.ElementTree.XMLParser object at 0x11657c9d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x11657c9d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+    def test_xlsx_applies_font_and_accent_fill() -> None:
+        service = DocumentGenerationService()
+    
+        artifact = service.generate(_branded_document(), output_format=DocumentOutputFormat.XLSX)
+>       workbook = load_workbook(BytesIO(artifact.content))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_document_style_tokens.py:138: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x11657c9d0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+__________ test_document_generation_service_renders_supported_formats __________
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224fc3b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224fc3b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+sample_document_ir = DocumentIR(title='Quarterly Operations Summary', metadata={'department': 'Operations'}, style_tokens=[], header=Header...citations=[Citation(label='1', text='Internal finance worksheet', url=None, title=None, style_tokens=[], metadata={})])
+
+    def test_document_generation_service_renders_supported_formats(sample_document_ir: DocumentIR) -> None:
+        service = DocumentGenerationService()
+    
+        text_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.TEXT)
+        markdown_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.MARKDOWN)
+        json_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.JSON)
+        csv_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.CSV)
+        docx_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.DOCX)
+        pdf_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.PDF)
+        xlsx_artifact = service.generate(sample_document_ir, output_format=DocumentOutputFormat.XLSX)
+    
+        assert text_artifact.content.decode("utf-8").startswith("Quarterly Operations Summary")
+        assert "# Quarterly Operations Summary" in markdown_artifact.content.decode("utf-8")
+        assert json.loads(json_artifact.content.decode("utf-8"))["title"] == "Quarterly Operations Summary"
+        assert csv_artifact.content.decode("utf-8").splitlines()[0] == "Category,Amount"
+        assert docx_artifact.content.startswith(b"PK")
+        assert pdf_artifact.content.startswith(b"%PDF")
+>       workbook = load_workbook(BytesIO(xlsx_artifact.content))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_documents.py:37: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x1224fc3b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+_____ test_document_transform_service_supports_contract_and_receipt_skills _____
+
+self = <xml.etree.ElementTree.XMLParser object at 0x122e268b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+>           from xml.parsers import expat
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1546: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Interface to the Expat non-validating XML parser."""
+    import sys
+    
+>   from pyexpat import *
+E   ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E     Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E     Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/parsers/expat.py:4: ImportError
+
+During handling of the above exception, another exception occurred:
+
+self = <xml.etree.ElementTree.XMLParser object at 0x122e268b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+>               import pyexpat as expat
+E               ImportError: dlopen(/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so, 0x0002): Symbol not found: _XML_SetAllocTrackerActivationThreshold
+E                 Referenced from: <46224F46-6E0E-3C48-95AB-C29DC7EB8DFF> /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+E                 Expected in:     <4D62FA9D-D86A-3DD0-98F2-C6D0718849E8> /usr/lib/libexpat.1.dylib
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1549: ImportError
+
+During handling of the above exception, another exception occurred:
+
+contract_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'terms': 'Net 30 days', 'vendor': 'LewLM'}, 'template_text': 'This ...nt terms are [[terms]].', 'title': 'Service Agreement'}, 'output_format': 'docx', 'skill': 'contract_text_replacement'}
+receipt_transform_payload = {'input': {'currency': 'USD', 'items': [{'description': 'Coffee', 'quantity': '2', 'total': '8.00', 'unit_price': '4.0... 'purchased_at': '2026-04-14', 'receipt_number': 'R-1001', ...}, 'output_format': 'csv', 'skill': 'receipt_extraction'}
+branded_document_template_payload = {'input': {'key_points': ['Keep API and CLI rollout dates aligned.', 'Use the same launch messaging across docs and su...w-up ownership into a branded document artifact.', ...}, 'output_format': 'json', 'skill': 'branded_document_template'}
+ocr_assisted_extraction_payload = {'input': {'document_type': 'invoice', 'expected_fields': [{'aliases': ['invoice no'], 'field': 'Invoice Number', 'req...ock.', 'source_title': 'Scanned Vendor Invoice', ...}, 'output_format': 'markdown', 'skill': 'ocr_assisted_extraction'}
+file_template_transform_payload = {'input': {'replacements': {'client': 'Acme Corp', 'owner': 'LewLM', 'status': 'On Track'}}, 'output_format': 'xlsx', ...15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_transform_servic0/state/templates/project-template.json'}
+document_compare_transform_payload = {'input': {'left_text': 'Shared scope line.\n\nLegacy pricing remains in effect.\n\nTermination notice requires 30 day... is now mandatory.', 'right_title': 'Revised Agreement', ...}, 'output_format': 'xlsx', 'skill': 'document_comparison'}
+meeting_transcript_notes_payload = {'input': {'meeting_date': '2026-04-15', 'participants': ['Maya', 'Jon', 'Priya'], 'title': 'Project Kickoff Notes', '... stakeholder update once the timeline is approved.'}, 'output_format': 'markdown', 'skill': 'meeting_transcript_notes'}
+long_document_memo_payload = {'input': {'source_text': 'The platform review confirmed that document workflows are stable across the API and CLI. Ad...erly Platform Review', 'title': 'Platform Readiness Memo'}, 'output_format': 'markdown', 'skill': 'long_document_memo'}
+speech_transcript_cleanup_payload = {'input': {'language': 'en', 'title': 'Customer Call Cleanup', 'transcript_text': 'agent: thanks everyone for joining ...window\nfollow up with legal for the final notice'}, 'output_format': 'markdown', 'skill': 'speech_transcript_cleanup'}
+
+    def test_document_transform_service_supports_contract_and_receipt_skills(
+        contract_transform_payload: dict[str, object],
+        receipt_transform_payload: dict[str, object],
+        branded_document_template_payload: dict[str, object],
+        ocr_assisted_extraction_payload: dict[str, object],
+        file_template_transform_payload: dict[str, object],
+        document_compare_transform_payload: dict[str, object],
+        meeting_transcript_notes_payload: dict[str, object],
+        long_document_memo_payload: dict[str, object],
+        speech_transcript_cleanup_payload: dict[str, object],
+    ) -> None:
+        service = DocumentTransformService()
+    
+        contract_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(contract_transform_payload)
+        receipt_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(receipt_transform_payload)
+        branded_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(branded_document_template_payload)
+        ocr_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(ocr_assisted_extraction_payload)
+        template_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(file_template_transform_payload)
+        compare_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(document_compare_transform_payload)
+        meeting_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(meeting_transcript_notes_payload)
+        memo_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(long_document_memo_payload)
+        cleanup_request = DOCUMENT_TRANSFORM_REQUEST_ADAPTER.validate_python(speech_transcript_cleanup_payload)
+    
+        contract_artifact = service.transform(contract_request)
+        receipt_artifact = service.transform(receipt_request)
+        branded_artifact = service.transform(branded_request)
+        ocr_artifact = service.transform(ocr_request)
+        template_artifact = service.transform(template_request)
+        compare_artifact = service.transform(compare_request)
+        meeting_artifact = service.transform(meeting_request)
+        memo_artifact = service.transform(memo_request)
+        cleanup_artifact = service.transform(cleanup_request)
+    
+        assert contract_artifact.content.startswith(b"PK")
+        assert receipt_artifact.content.decode("utf-8").startswith("Description,Quantity,Unit Price,Line Total")
+        branded_document = json.loads(branded_artifact.content.decode("utf-8"))
+        assert branded_document["title"] == "LewLM Product Launch Brief"
+        assert branded_document["header"]["left"] == "LewLM"
+        assert branded_document["footer"]["center"] == "Internal planning use only"
+        image_blocks = [
+            block
+            for section in branded_document["sections"]
+            for block in section["blocks"]
+            if block["type"] == "image"
+        ]
+        assert len(image_blocks) == 2
+        assert any(block["role"] == "logo" for block in image_blocks)
+        assert any(block["role"] == "image" for block in image_blocks)
+        ocr_markdown = ocr_artifact.content.decode("utf-8")
+        assert ocr_markdown.startswith("# Scanned Invoice Extraction")
+        assert "## Extracted Fields" in ocr_markdown
+        assert "Invoice Number | INV-2048 | extracted" in ocr_markdown
+        assert "Payment Terms |  | missing" in ocr_markdown
+        assert "Urgent handling for April restock." in ocr_markdown
+>       workbook = load_workbook(BytesIO(template_artifact.content))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_documents.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:348: in load_workbook
+    reader.read()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:303: in read
+    self.read_worksheets()
+.venv/lib/python3.14/site-packages/openpyxl/reader/excel.py:237: in read_worksheets
+    ws_parser.bind_all()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:465: in bind_all
+    self.bind_cells()
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:368: in bind_cells
+    for idx, row in self.parser.parse():
+                    ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.14/site-packages/openpyxl/worksheet/_reader.py:154: in parse
+    it = iterparse(self.source) # add a finaliser to close the source when this becomes possible
+         ^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1249: in iterparse
+    pullparser = XMLPullParser(events=events, _parser=parser)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1303: in __init__
+    self._parser = _parser or XMLParser(target=TreeBuilder())
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <xml.etree.ElementTree.XMLParser object at 0x122e268b0>
+
+    def __init__(self, *, target=None, encoding=None):
+        try:
+            from xml.parsers import expat
+        except ImportError:
+            try:
+                import pyexpat as expat
+            except ImportError:
+>               raise ImportError(
+                    "No module named expat; use SimpleXMLTreeBuilder instead"
+                    )
+E               ImportError: No module named expat; use SimpleXMLTreeBuilder instead
+
+/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/xml/etree/ElementTree.py:1551: ImportError
+__________ test_document_ingest_service_extracts_supported_file_types __________
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_e0/state/metadata.sqlite3'))
+sample_ingest_sources = {'csv': PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_inges...nyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_e0/state/ingest/images/receipt-front.png'), ...}
+
+    def test_document_ingest_service_extracts_supported_file_types(temp_settings, sample_ingest_sources) -> None:
+        service = DocumentIngestService(workspace_root=temp_settings.temp_dir)
+    
+        csv_result = service.ingest([sample_ingest_sources["csv"]], allowed_file_roots=(temp_settings.data_dir,))
+>       xlsx_result = service.ingest([sample_ingest_sources["xlsx"]], allowed_file_roots=(temp_settings.data_dir,))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_ingest.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <lewlm.documents.ingest.service.DocumentIngestService object at 0x1225e3410>
+paths = [PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_e0/state/ingest/sample.xlsx')]
+
+    def ingest(
+        self,
+        paths: list[str] | tuple[str, ...] | list[Path] | tuple[Path, ...] | None = None,
+        *,
+        sources: Sequence[UploadedDocumentSource] | None = None,
+        title: str | None = None,
+        allowed_file_roots: tuple[Path | str, ...] | list[Path | str] | None = None,
+        base_dir: Path | str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> DocumentIngestResult:
+        self._ensure_enabled()
+        paths = list(paths or ())
+        uploads = list(sources or ())
+        if not paths and not uploads:
+            raise DocumentValidationError("Document ingest requires at least one source path or uploaded source.")
+    
+        resolved_request_id = request_id or str(uuid4())
+        scoped_roots = tuple(allowed_file_roots) if allowed_file_roots is not None else _default_ingest_scope_roots(paths, base_dir=base_dir)
+        normalized = self._normalize_requested_sources(
+            paths,
+            uploads,
+            scoped_roots=scoped_roots,
+            base_dir=base_dir,
+        )
+        ocr_status = detect_ocr_backend()
+        self._publish(
+            EventType.DOCUMENT_PARSE_STARTED,
+            {
+                "request_id": resolved_request_id,
+                "correlation_id": correlation_id,
+                "source_count": len(normalized),
+                "uploaded_source_count": len(uploads),
+                "title": title,
+                "ocr_available": ocr_status.available,
+            },
+        )
+    
+        sections: list[DocumentSection] = []
+        source_records: list[IngestedDocumentSource] = []
+        outcomes: list[DocumentSourceIngestOutcome] = []
+        try:
+            with secure_workspace(self.workspace_root, prefix="ingest-") as workspace:
+                total_sources = len(normalized)
+                for requested in normalized:
+                    index = requested.index
+                    # Checked between sources, outside the per-source guard: a
+                    # cancelled ingestion stops the run rather than being
+                    # recorded as one more failed source.
+                    raise_if_request_cancelled(stage="document.ingest")
+                    # One source failing must not discard the sources that
+                    # parsed cleanly, so each is contained and reported.
+                    try:
+                        parsed, content_digest = self._ingest_requested_source(
+                            requested,
+                            workspace / f"source-{index}",
+                            allowed_file_roots=scoped_roots,
+                            base_dir=base_dir,
+                            ocr_status=ocr_status,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - recorded as a per-source outcome
+                        outcomes.append(
+                            _failed_source_outcome(
+                                requested,
+                                exc,
+                                request_id=resolved_request_id,
+                            ),
+                        )
+                        self._publish(
+                            EventType.OPERATION_PROGRESS,
+                            {
+                                "request_id": resolved_request_id,
+                                "correlation_id": correlation_id,
+                                "operation": "document.parse",
+                                "stage": "source_failed",
+                                "completed_steps": len(outcomes),
+                                "total_steps": total_sources,
+                                "progress": round(len(outcomes) / total_sources, 4),
+                                "source_id": requested.reference,
+                                "error_code": _error_code_for(exc).value,
+                            },
+                        )
+                        continue
+    
+                    source_record = _standardize_source_record(parsed.source, source_index=index)
+                    parsed_sections = _standardize_sections(
+                        parsed.sections,
+                        source=source_record,
+                        source_index=index,
+                        global_section_offset=len(sections),
+                    )
+                    sections.extend(parsed_sections)
+                    source_records.append(source_record)
+                    outcomes.append(
+                        _succeeded_source_outcome(
+                            source_record,
+                            section_count=len(parsed_sections),
+                            content_sha256=content_digest,
+                            ocr_status=ocr_status,
+                            request_id=resolved_request_id,
+                        ),
+                    )
+                    self._publish(
+                        EventType.OPERATION_PROGRESS,
+                        {
+                            "request_id": resolved_request_id,
+                            "correlation_id": correlation_id,
+                            "operation": "document.parse",
+                            "stage": "source_parsed",
+                            "completed_steps": len(outcomes),
+                            "total_steps": total_sources,
+                            "progress": round(len(outcomes) / total_sources, 4),
+                            "source_id": source_record.source_id,
+                            "source_type": source_record.source_type.value,
+                        },
+                    )
+    
+            if not source_records:
+                first_failure = next((item for item in outcomes if item.error_message), None)
+>               raise DocumentValidationError(
+                    "Document ingest could not parse any requested source.",
+                    details={
+                        "source_count": len(normalized),
+                        "source_results": [item.model_dump(mode="json") for item in outcomes],
+                        "first_error_code": first_failure.error_code.value if first_failure and first_failure.error_code else None,
+                    },
+                )
+E               lewlm.core.errors.DocumentValidationError: Document ingest could not parse any requested source.
+
+src/lewlm/documents/ingest/service.py:605: DocumentValidationError
+_________ test_document_ingest_service_uses_ocr_for_scanned_pdf_pages __________
+
+temp_settings = LewLMSettings(app_name='LewLM', version='0.4.2', environment='test', host='127.0.0.1', port=8080, log_level='INFO', da...rs/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_u0/state/metadata.sqlite3'))
+tmp_path = PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_u0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x122e58280>
+
+    def test_document_ingest_service_uses_ocr_for_scanned_pdf_pages(temp_settings, tmp_path: Path, monkeypatch) -> None:
+        source_image = tmp_path / "scanned-page.png"
+        scanned_pdf = tmp_path / "scanned.pdf"
+    
+        image = Image.new("RGB", (240, 100), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((20, 40), "Scanned milestone note", fill="black")
+        image.save(source_image)
+    
+        pdf_canvas = canvas.Canvas(str(scanned_pdf))
+        pdf_canvas.drawImage(ImageReader(str(source_image)), 72, 640, width=240, height=100)
+        pdf_canvas.save()
+    
+        monkeypatch.setattr(
+            "lewlm.documents.ingest.service.perform_ocr_on_image_bytes",
+            lambda _raw: OcrExtractionResult(text="Scanned OCR text", backend_name="test-ocr"),
+        )
+    
+        service = DocumentIngestService(workspace_root=temp_settings.temp_dir, sandbox_enabled=False)
+>       result = service.ingest([scanned_pdf], allowed_file_roots=(tmp_path,))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_ingest.py:125: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <lewlm.documents.ingest.service.DocumentIngestService object at 0x1226d9520>
+paths = [PosixPath('/private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pytest-of-lew/pytest-3/test_document_ingest_service_u0/scanned.pdf')]
+
+    def ingest(
+        self,
+        paths: list[str] | tuple[str, ...] | list[Path] | tuple[Path, ...] | None = None,
+        *,
+        sources: Sequence[UploadedDocumentSource] | None = None,
+        title: str | None = None,
+        allowed_file_roots: tuple[Path | str, ...] | list[Path | str] | None = None,
+        base_dir: Path | str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> DocumentIngestResult:
+        self._ensure_enabled()
+        paths = list(paths or ())
+        uploads = list(sources or ())
+        if not paths and not uploads:
+            raise DocumentValidationError("Document ingest requires at least one source path or uploaded source.")
+    
+        resolved_request_id = request_id or str(uuid4())
+        scoped_roots = tuple(allowed_file_roots) if allowed_file_roots is not None else _default_ingest_scope_roots(paths, base_dir=base_dir)
+        normalized = self._normalize_requested_sources(
+            paths,
+            uploads,
+            scoped_roots=scoped_roots,
+            base_dir=base_dir,
+        )
+        ocr_status = detect_ocr_backend()
+        self._publish(
+            EventType.DOCUMENT_PARSE_STARTED,
+            {
+                "request_id": resolved_request_id,
+                "correlation_id": correlation_id,
+                "source_count": len(normalized),
+                "uploaded_source_count": len(uploads),
+                "title": title,
+                "ocr_available": ocr_status.available,
+            },
+        )
+    
+        sections: list[DocumentSection] = []
+        source_records: list[IngestedDocumentSource] = []
+        outcomes: list[DocumentSourceIngestOutcome] = []
+        try:
+            with secure_workspace(self.workspace_root, prefix="ingest-") as workspace:
+                total_sources = len(normalized)
+                for requested in normalized:
+                    index = requested.index
+                    # Checked between sources, outside the per-source guard: a
+                    # cancelled ingestion stops the run rather than being
+                    # recorded as one more failed source.
+                    raise_if_request_cancelled(stage="document.ingest")
+                    # One source failing must not discard the sources that
+                    # parsed cleanly, so each is contained and reported.
+                    try:
+                        parsed, content_digest = self._ingest_requested_source(
+                            requested,
+                            workspace / f"source-{index}",
+                            allowed_file_roots=scoped_roots,
+                            base_dir=base_dir,
+                            ocr_status=ocr_status,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - recorded as a per-source outcome
+                        outcomes.append(
+                            _failed_source_outcome(
+                                requested,
+                                exc,
+                                request_id=resolved_request_id,
+                            ),
+                        )
+                        self._publish(
+                            EventType.OPERATION_PROGRESS,
+                            {
+                                "request_id": resolved_request_id,
+                                "correlation_id": correlation_id,
+                                "operation": "document.parse",
+                                "stage": "source_failed",
+                                "completed_steps": len(outcomes),
+                                "total_steps": total_sources,
+                                "progress": round(len(outcomes) / total_sources, 4),
+                                "source_id": requested.reference,
+                                "error_code": _error_code_for(exc).value,
+                            },
+                        )
+                        continue
+    
+                    source_record = _standardize_source_record(parsed.source, source_index=index)
+                    parsed_sections = _standardize_sections(
+                        parsed.sections,
+                        source=source_record,
+                        source_index=index,
+                        global_section_offset=len(sections),
+                    )
+                    sections.extend(parsed_sections)
+                    source_records.append(source_record)
+                    outcomes.append(
+                        _succeeded_source_outcome(
+                            source_record,
+                            section_count=len(parsed_sections),
+                            content_sha256=content_digest,
+                            ocr_status=ocr_status,
+                            request_id=resolved_request_id,
+                        ),
+                    )
+                    self._publish(
+                        EventType.OPERATION_PROGRESS,
+                        {
+                            "request_id": resolved_request_id,
+                            "correlation_id": correlation_id,
+                            "operation": "document.parse",
+                            "stage": "source_parsed",
+                            "completed_steps": len(outcomes),
+                            "total_steps": total_sources,
+                            "progress": round(len(outcomes) / total_sources, 4),
+                            "source_id": source_record.source_id,
+                            "source_type": source_record.source_type.value,
+                        },
+                    )
+    
+            if not source_records:
+                first_failure = next((item for item in outcomes if item.error_message), None)
+>               raise DocumentValidationError(
+                    "Document ingest could not parse any requested source.",
+                    details={
+                        "source_count": len(normalized),
+                        "source_results": [item.model_dump(mode="json") for item in outcomes],
+                        "first_error_code": first_failure.error_code.value if first_failure and first_failure.error_code else None,
+                    },
+                )
+E               lewlm.core.errors.DocumentValidationError: Document ingest could not parse any requested source.
+
+src/lewlm/documents/ingest/service.py:605: DocumentValidationError
+=========================== short test summary info ============================
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_document_ingest_event_workflow
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_http_document_ingest_workflow
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_http_attachment_aware_chat_workflow
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_cli_chat_supports_local_attachments
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_cli_generate_document_files
+FAILED tests/e2e/test_chat_workflow.py::test_end_to_end_cli_transform_skill_requests
+FAILED tests/integration/test_api.py::test_document_generation_endpoint_supports_all_renderers
+FAILED tests/integration/test_api.py::test_document_transform_endpoint_supports_contract_receipt_and_file_template_skills
+FAILED tests/integration/test_api.py::test_document_ingest_endpoint_supports_pdf_and_image_bundle
+FAILED tests/integration/test_api.py::test_document_ingest_endpoint_emits_lifecycle_events
+FAILED tests/integration/test_api.py::test_multimodal_endpoints_accept_multipart_uploads
+FAILED tests/integration/test_api.py::test_chat_and_responses_support_mixed_local_attachments
+FAILED tests/unit/test_document_style_tokens.py::test_xlsx_applies_font_and_accent_fill
+FAILED tests/unit/test_documents.py::test_document_generation_service_renders_supported_formats
+FAILED tests/unit/test_documents.py::test_document_transform_service_supports_contract_and_receipt_skills
+FAILED tests/unit/test_ingest.py::test_document_ingest_service_extracts_supported_file_types
+FAILED tests/unit/test_ingest.py::test_document_ingest_service_uses_ocr_for_scanned_pdf_pages
+17 failed, 1038 passed, 1 skipped, 5 deselected in 199.37s (0:03:19)

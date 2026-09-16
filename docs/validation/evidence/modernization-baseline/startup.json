@@ -1,0 +1,5 @@
+{
+  "status": "passed",
+  "scope": "One fresh LewLM process; external_accelerator pack requested; existing defaults still import llama.cpp/Metal during health; no model warmup",
+  "process_to_health_seconds": 0.8971887079997032
+}
