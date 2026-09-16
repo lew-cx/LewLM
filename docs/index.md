@@ -39,6 +39,8 @@ This documentation set is organized around the surfaces LewLM actually ships tod
 
 ## Suggested reading order
 
+For planned runtime integrations and build improvements, see the [agent-followable modernization roadmap](architecture/modernization-roadmap.md).
+
 1. Start with [Getting started](getting-started/index.md).
 2. Read [Models and routing](guides/models-and-routing.md), [Chat and responses](guides/chat-and-responses.md), and [Host-app integration](guides/host-app-integration.md).
 3. Add [Documents](guides/documents.md), [Tools and skills](guides/tools-and-skills.md), and [Benchmarking and autotune](guides/benchmarking-and-autotune.md) as needed.

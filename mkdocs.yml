@@ -43,6 +43,7 @@ nav:
       - Release and validation: reference/release-and-validation.md
   - Architecture:
       - Overview: architecture/overview.md
+      - Modernization roadmap: architecture/modernization-roadmap.md
       - Runtime routing and serving: architecture/runtime-routing-and-serving.md
       - Storage and state: architecture/storage-and-state.md
   - Operations:
