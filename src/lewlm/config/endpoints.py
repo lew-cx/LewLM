@@ -12,7 +12,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ExternalProfile = Literal[
     "openai_compatible", "vmlx", "omlx", "vllm_mlx", "vllm_local",
     "sglang_local", "tensorrt_llm_server", "openvino_model_server",
-    "ollama_local", "llamacpp_server",
+    "ollama_local", "llamacpp_server", "exllamav3_tabby",
 ]
 
 

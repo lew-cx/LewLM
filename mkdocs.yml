@@ -52,4 +52,5 @@ nav:
       - Docker: operations/docker.md
       - Backends:
           - oMLX: operations/backends/omlx.md
+          - ExLlamaV3 via TabbyAPI: operations/backends/exllamav3-tabby.md
       - Troubleshooting: operations/troubleshooting.md

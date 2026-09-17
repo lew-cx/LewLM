@@ -433,6 +433,7 @@ class RuntimeProvider(str, Enum):
     VLLM = "vllm"
     SGLANG = "sglang"
     TENSORRT_LLM = "tensorrt_llm"
+    EXLLAMAV3 = "exllamav3"
     OLLAMA = "ollama"
     LM_STUDIO = "lm_studio"
     OPENAI_COMPATIBLE = "openai_compatible"

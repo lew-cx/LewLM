@@ -165,6 +165,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** portable tests cover profile selection, format gating, auth, and error translation. Linux/NVIDIA runs the common real-engine suite, first-start versus cached restart, and memory observations. Native Windows needs its own install/generation/cancellation proof; a Linux-container pass does not certify native Windows. An unavailable Tabby endpoint must leave llama.cpp and Ollama usable.
 
+**Implementation status:** portable part completed on 2026-09-17 (`exllamav3_tabby` profile, provider evidence, digest-pinned recipe with config keys verified at the pinned commit, docs, tests). The Linux/NVIDIA lane is deferred with exact commands in the [validation record](../validation/modernization-step-06.md); `exllamav3_tabby` stays `deferred` in the compatibility manifest until it passes.
+
 ## Step 07 — Complete vLLM integration
 
 **Depends on:** 02 and 04. **Touch:** existing `vllm_local` profile; **proposed** `examples/backends/vllm/` and corresponding operator docs.

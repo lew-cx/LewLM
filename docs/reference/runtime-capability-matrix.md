@@ -175,6 +175,7 @@ For portable performance-core reporting, runtime snapshots now tag the major tex
 | `openvino_model_server` | OpenVINO Model Server-style local server | Intel CPU/GPU/NPU-oriented bridge hint for compatible local servers; LewLM reports scheduler and graph/runtime optimization as bridge-owned |
 | `ollama_local` | Ollama-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows Ollama-style local deployment patterns; set `LEWLM_OLLAMA_DISCOVERY_ENABLED=true` to publish an operator-managed Ollama daemon's models as bridge-backed manifests; LewLM owns no Ollama runtime (see [fronting an Ollama install](../guides/models-and-routing.md#fronting-an-ollama-install-you-already-run)) |
 | `llamacpp_server` | llama.cpp-server-compatible local server | explicit alias for the generic OpenAI-compatible bridge contract when the loopback endpoint follows llama.cpp-server local deployment patterns |
+| `exllamav3_tabby` | TabbyAPI (ExLlamaV3) local server | NVIDIA-oriented bridge for EXL3 artifacts served by TabbyAPI; batching, paged KV cache, `cache_mode` quantization, and chunked prefill are reported as backend-native or partial and inactive until observed; deferred until the Linux/NVIDIA recipe passes |
 
 ## Routing considerations
 

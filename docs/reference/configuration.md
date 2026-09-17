@@ -177,7 +177,9 @@ request that fails after generation starts is surfaced as a failure; LewLM
 never replays it.
 
 Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
-`openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, `sglang_local`, `tensorrt_llm_server`, `openvino_model_server`, `ollama_local`, and `llamacpp_server`.
+`openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, `sglang_local`, `tensorrt_llm_server`, `openvino_model_server`, `ollama_local`, `llamacpp_server`, and `exllamav3_tabby`.
+
+`exllamav3_tabby` names a TabbyAPI server (ExLlamaV3's official OpenAI-compatible server). Its models are endpoint-bound like every other advertised model: the weight format stays `unknown` unless the server's record names one, EXL3 artifacts are never handed to llama.cpp, and the endpoint's `api_key_env` must name the *inference* key, never TabbyAPI's admin key. The pinned recipe is `examples/backends/exllamav3-tabby/`; the profile is not validated until that recipe passes on Linux/NVIDIA.
 
 `tensorrt_llm_server` and `openvino_model_server` are bridge profiles for compatible local servers; `ollama_local` and `llamacpp_server` keep the generic OpenAI-compatible bridge contract explicit for local servers that present themselves through those loopback shapes. None of these profiles promote backend-native behavior to LewLM-owned packaged parity.
 

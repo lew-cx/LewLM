@@ -1,0 +1,42 @@
+# TabbyAPI (ExLlamaV3) behind LewLM -- single GPU, loopback only, pinned image.
+#
+# Operator-run. LewLM never starts, stops, or reconfigures this container.
+# The image digest below was built from TabbyAPI commit
+# 53da7919d4e45c63f4acbcbbc00cbe0f60a1ce65 (org.opencontainers.image.revision)
+# on CUDA 12.8.1; TabbyAPI is a rolling release, so the digest, not a tag, is
+# the pin. Requires the NVIDIA Container Toolkit and a driver for CUDA 12.8.
+#
+#   docker compose -f examples/backends/exllamav3-tabby/docker-compose.yml up -d
+#
+# Then follow README.md to wire LewLM. LewLM must run on the host: the port is
+# published to host loopback only, which is what LewLM's endpoint rule requires.
+
+services:
+  tabbyapi:
+    image: ghcr.io/theroyallab/tabbyapi@sha256:10bfcf9d27d1b3a5c7ada786f814b9da43fadad35643362f2fe0816082893172
+    container_name: lewlm-tabbyapi
+    gpus: all
+    ports:
+      # Host loopback only; LewLM refuses non-loopback endpoints by design.
+      - "127.0.0.1:5000:5000"
+    # ExLlamaV3 keeps tensor-parallel and CPU MoE offload buffers in /dev/shm.
+    # Docker's default 64 MiB is too small even for the single-GPU recipe's
+    # safety margin; this is a tmpfs upper bound, not a reservation.
+    shm_size: "8g"
+    ulimits:
+      memlock: -1
+      nofile: 1048576
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${TABBY_GPU:-0}
+    volumes:
+      # A directory of EXL3 model folders (see README.md, "Model").
+      - ${TABBY_MODELS_DIR:-./models}:/app/models
+      - ./config.yml:/app/config.yml:ro
+      # Holds both the inference key LewLM uses and the admin key it must never see.
+      - ./api_tokens.yml:/app/api_tokens.yml:ro
+    restart: unless-stopped

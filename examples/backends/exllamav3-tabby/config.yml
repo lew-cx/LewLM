@@ -1,0 +1,41 @@
+# TabbyAPI configuration for the LewLM recipe.
+# Keys verified against config_sample.yml at TabbyAPI commit 53da7919.
+# Anything not listed keeps TabbyAPI's default.
+
+network:
+  # Bind inside the container; docker-compose publishes it to host loopback only.
+  host: 0.0.0.0
+  port: 5000
+  # Keep authentication on: LewLM sends the inference key from api_tokens.yml.
+  disable_auth: false
+  # Only the OpenAI-compatible server; LewLM speaks that contract.
+  api_servers: ["OAI"]
+  # Do not let API callers trigger Hugging Face downloads; models arrive offline.
+  disable_fetch_requests: true
+  send_tracebacks: false
+
+logging:
+  log_prompt: false
+  log_generation_params: true
+  log_requests: false
+
+model:
+  model_dir: /app/models
+  # Load exactly one model at startup and refuse per-request model switching:
+  # LewLM routes by the id this server advertises, it does not drive loading.
+  inline_model_loading: false
+  use_dummy_models: false
+  # REQUIRED: the EXL3 model folder name under model_dir (see README.md).
+  model_name: Qwen2.5-0.5B-Instruct-exl3-4.0bpw
+  backend: exllamav3
+  # Bounded context and cache for a small single-GPU validation run.
+  max_seq_len: 8192
+  cache_size: 8192
+  cache_mode: FP16
+  tensor_parallel: false
+  gpu_split_auto: true
+  chunk_size: 2048
+  max_batch_size: 4
+  # No draft model, no vision, no reasoning parsing for the initial recipe.
+  vision: false
+  reasoning: false

@@ -1,0 +1,8 @@
+# TabbyAPI keys. Generate two distinct random values (e.g. `openssl rand -hex 24`).
+#
+# api_key   -- inference key. Export the SAME value as TABBY_API_KEY for LewLM
+#              (lewlm.env.example); LewLM's endpoint names the variable.
+# admin_key -- model load/unload and administration. Keep it here and out of
+#              LewLM, Chap, and every client; LewLM never loads models upstream.
+api_key: replace-with-inference-key
+admin_key: replace-with-admin-key

@@ -341,6 +341,8 @@ def _provider_from_runtime_name(
             return RuntimeProvider.VLLM
         if "tensorrt" in bridge_key or "trt" in bridge_key:
             return RuntimeProvider.TENSORRT_LLM
+        if "exllama" in bridge_key or "tabby" in bridge_key:
+            return RuntimeProvider.EXLLAMAV3
         if "openvino" in bridge_key:
             return RuntimeProvider.OPENVINO
         if "ollama" in bridge_key:

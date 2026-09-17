@@ -81,8 +81,8 @@
      "output_tokens": 64
     }
    },
-   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-   "next_step": "Follow modernization roadmap step 06; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+   "reason": "Linux/NVIDIA validation host unavailable on 2026-09-17. The recipe in examples/backends/exllamav3-tabby/ is complete and pinned (image ghcr.io/theroyallab/tabbyapi@sha256:10bfcf9d27d1b3a5c7ada786f814b9da43fadad35643362f2fe0816082893172, built from the pinned commit on CUDA 12.8.1; config keys verified against config_sample.yml at that commit), but nothing was executed. The BF16 model is a conversion input; no EXL3 artifact has been produced or hashed.",
+   "next_step": "Run examples/backends/exllamav3-tabby/README.md section 4 on a Linux/NVIDIA host: convert the pinned BF16 model to EXL3 offline, start the digest-pinned image, scan, run scripts/backend_acceptance.py and scripts/bridge_prefix_benchmark.py, record first-start vs cached-restart and nvidia-smi memory, then promote with the image digest as installation and the EXL3 hashes."
   },
   {
    "profile": "vllm_local",

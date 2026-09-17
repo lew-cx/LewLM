@@ -340,6 +340,37 @@ _PROFILE_FEATURES: dict[str, dict[str, tuple[PerformanceFeatureOwnership, str]]]
         ),
     },
 }
+_PROFILE_FEATURES["exllamav3_tabby"] = {
+    "continuous_batching": (
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+        "TabbyAPI schedules batched ExLlamaV3 generation inside the server; LewLM keeps an admission cap and forwards requests.",
+    ),
+    "prefix_cache": (
+        PerformanceFeatureOwnership.PARTIAL,
+        "ExLlamaV3's paged cache may reuse prefixes upstream; hit counters are not exposed through the bridge.",
+    ),
+    "paged_kv_cache": (
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+        "Paged KV cache residency is owned by ExLlamaV3 inside TabbyAPI.",
+    ),
+    "kv_cache_quantization": (
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+        "TabbyAPI's `cache_mode` (FP16, Q8/Q6/Q4, or k_bits,v_bits) is configured server-side; LewLM cannot tune it per request.",
+    ),
+    "prefill_optimization": (
+        PerformanceFeatureOwnership.BACKEND_NATIVE,
+        "Chunked prefill (`chunk_size`) is a server setting inside TabbyAPI.",
+    ),
+    "speculative_decoding": (
+        PerformanceFeatureOwnership.UNSUPPORTED,
+        "TabbyAPI draft models and n-gram drafting stay outside the adapter contract; configure them in TabbyAPI if wanted.",
+    ),
+    "constrained_decoding": (
+        PerformanceFeatureOwnership.PARTIAL,
+        "json_schema is forwarded as a native response_format; whether TabbyAPI enforces it for the loaded model is validated after generation, not assumed.",
+    ),
+}
+
 _PROFILE_ALIASES = {
     "ollama_local": "openai_compatible",
     "llamacpp_server": "openai_compatible",
@@ -531,6 +562,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         profile = self.endpoint.profile
         provider = (RuntimeProvider.VLLM if profile in {"vllm_local", "vllm_mlx"} else
                     RuntimeProvider.SGLANG if profile == "sglang_local" else
+                    RuntimeProvider.EXLLAMAV3 if profile == "exllamav3_tabby" else
                     RuntimeProvider.OLLAMA if profile == "ollama_local" else
                     RuntimeProvider.LLAMACPP_SERVER if profile == "llamacpp_server" else
                     RuntimeProvider.OPENAI_COMPATIBLE)

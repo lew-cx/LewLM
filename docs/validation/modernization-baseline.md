@@ -177,6 +177,34 @@ kernels, the full step-09 benchmark protocol, upstream abort verification
 from oMLX's log. Rollback: revert the step commit. Next eligible steps: 06–08
 need Linux/NVIDIA; 09–10 can proceed on this host.
 
+## Step 06 — portable part complete; Linux/NVIDIA lane deferred
+
+Commit: this step's commit, immediately after step 05 commit `684aca9`.
+Full record: [modernization-step-06.md](modernization-step-06.md).
+
+Behavior implemented: `exllamav3_tabby` profile in settings validation,
+`RuntimeProvider.EXLLAMAV3` with provider mapping, install-profile note,
+conservative feature map (inactive until observed); recipe
+`examples/backends/exllamav3-tabby/` with the image pinned by digest (built
+from the step-00 TabbyAPI commit, CUDA 12.8.1), `config.yml` keys verified
+against the pinned `config_sample.yml`, inference/admin key split,
+host-loopback-only port, `shm_size: 8g`, offline EXL3 conversion step, and
+promotion checklist; operator doc and reference updates.
+
+Compatibility: additive. Format gating and the llama.cpp guard come from
+step 04; nothing routes an EXL3 artifact to a packaged runtime.
+
+Commands run and results: `tests/unit/test_exllamav3_tabby_profile.py`
+5 passed; adapter/middleware/install-profile/settings 73 passed; manifest
+validates with `exllamav3_tabby` deferred.
+
+Real-engine evidence: none claimed. Deferred: EXL3 conversion, serve +
+common suite, first-start vs cached restart, memory, format evidence,
+coexistence on hardware, native Windows — each with its command in the
+record. Rollback: revert the step commit. Next eligible step: 07 (vLLM,
+portable part) or 08 (SGLang, portable part); 09–10 remain available on this
+host.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

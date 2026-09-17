@@ -40,6 +40,7 @@ _EXTERNAL_ACCELERATOR_PROFILE_NOTES = {
     "openvino_model_server": "OpenVINO Model Server bridge profile for a compatible local loopback server.",
     "ollama_local": "Ollama-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
     "llamacpp_server": "llama.cpp-server-compatible bridge profile for a local loopback server that preserves the generic OpenAI-compatible contract.",
+    "exllamav3_tabby": "ExLlamaV3 through a TabbyAPI loopback server; EXL3 artifacts are served by the endpoint and are never loaded by llama.cpp.",
 }
 
 
