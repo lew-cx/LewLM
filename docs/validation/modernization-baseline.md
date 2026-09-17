@@ -76,6 +76,47 @@ step gate. No real engine is required or claimed for this configuration step.
 Rollback: revert the step commit. The setting is additive and no stored data is
 migrated. Next eligible step: 02.
 
+## Step 03 — implemented; container/CUDA hardware lanes deferred
+
+Commit: this step's commit, immediately after step 02 commit `93bce1c`.
+Full record: [modernization-step-03.md](modernization-step-03.md).
+
+Behavior implemented: a serving-only `llamacpp_runtime` extra; image
+dependency inputs exported from `pyproject.toml` (`requirements/`); both
+Dockerfiles restructured so the dependency layer is keyed on that input and
+the LewLM wheel is installed `--no-deps` last; `IMAGE_FLAVOR`
+(`bridge|serving|full`, default `full`); bounded `BUILD_JOBS`; `ccache` and
+BuildKit cache mounts; prebuilt-wheel or keyed source build for
+`llama-cpp-python`; explicit torch indexes; CUDA SM validation before compile;
+build-time flavor verification (`scripts/verify_llamacpp_build.py`);
+`image_flavor` and a real `storage_access` write probe in doctor/health; CI
+bridge boot smoke plus a full-image rebuild-contract gate
+(`scripts/docker/measure_rebuild.sh`); lock generator
+(`scripts/docker/lock_dependencies.sh`). `MTL` added as a Metal marker in
+build-flavor detection after observing current llama.cpp output.
+
+Compatibility: existing build/compose commands and `EXTRAS` keep working; the
+old default equals the `full` flavor. Additive doctor/health fields only.
+
+Commands run and results: roadmap focused regression **160 passed**; unit
+suite **786 passed, 37 deselected** (document tests blocked by the host
+`pyexpat` mismatch recorded in step 00); step-specific set 117 passed;
+`export_dependency_inputs.py --check` in sync; `docker compose config` valid;
+clean-venv simulations of the app stage, the `bridge` flavor, and the
+`serving` source-build command line all pass. The verifier rejected a
+would-be CPU-only macOS build that llama-cpp-python forced to Metal — the
+intended failure mode.
+
+Real-engine evidence: none claimed. Deferred: Docker clean/no-change/app-only
+timings and logs, `BUILD_JOBS` timing comparison, lean-image contents in a
+built image, fixture conversion, pinned locks, Linux ISA report, CUDA
+compile/offload/generation, prebuilt-wheel path, native Windows wheel safety,
+and the two CI docker jobs on the next push — each with its exact command in
+the step record.
+
+Rollback: revert the step commit; nothing stored changes. Next eligible step:
+04, external discovery and routing.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

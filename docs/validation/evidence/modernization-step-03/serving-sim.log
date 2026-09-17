@@ -1,0 +1,41 @@
+start: 15:23:12
+spec=llama-cpp-python>=0.3.0,<1.0.0
+abi=cpython-311-darwin native_key=ca27b88d75e67b9c
+Collecting llama-cpp-python<1.0.0,>=0.3.0
+  Downloading llama_cpp_python-0.3.35.tar.gz (74.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 74.9/74.9 MB 14.1 MB/s  0:00:05
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Installing backend dependencies: started
+  Installing backend dependencies: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: llama-cpp-python
+  Building wheel for llama-cpp-python (pyproject.toml): started
+  Building wheel for llama-cpp-python (pyproject.toml): finished with status 'done'
+  Created wheel for llama-cpp-python: filename=llama_cpp_python-0.3.35-py3-none-macosx_26_0_arm64.whl size=17506087 sha256=a3f8b53c68bc84c231dfbbaa26e0cbe0a4dc5a370ebfe0f3263f409e64d91aec
+  Stored in directory: <scratch>/pip-native/ca27b88d75e67b9c/wheels/89/43/13/b04c479bd7d5b7d18c86dfb94d12034986ccb2a44215487f40
+Successfully built llama-cpp-python
+( CMAKE_ARGS="$LLAMA_CMAKE_ARGS" FORCE_CMAKE=1 "$S/sv/bin/pip" --cache-dir   )  213.91s user 20.40s system 512% cpu 45.752 total
+total 34192
+drwxr-xr-x@ 3 lew  wheel        96 Sep 17 11:23 .
+drwxr-xr-x@ 4 lew  wheel       128 Sep 17 11:23 ..
+-rw-r--r--@ 1 lew  wheel  17506087 Sep 17 11:23 llama_cpp_python-0.3.35-py3-none-macosx_26_0_arm64.whl
+No broken requirements found.
+serving package set: honest
+    "metal"
+  ],
+  "system_info": "MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | DOTPROD = 1 | LLAMAFILE = 1 | ACCELERATE = 1 | REPACK = 1 | ",
+  "detection_state": "detected",
+  "reason": "llama.cpp build flavor detected from the installed backend's own reporting APIs. Accelerator hints are heuristic inventory evidence only; probes and benchmarks decide capability evidence.",
+  "verdict": {
+    "expect": "cpu",
+    "hint": null,
+    "exit_code": 1,
+    "message": "expected a CPU-only build but installed llama.cpp build is GPU-offload-capable (accelerator hints: metal)"
+  }
+}
+verify exit=0
+end: 15:24:13

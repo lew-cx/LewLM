@@ -122,6 +122,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** clean-build, cached-build, and app-only-change rebuild each selected image; retain BuildKit logs and elapsed times. An app-only edit must perform zero llama.cpp/CUDA compilation. Verify lean installation has no Torch/Transformers/engine packages, `doctor` works, and the full image still converts and quantizes a small fixture. Linux CPU/container tests can run in a suitable local container runtime; real CUDA execution requires NVIDIA hardware. Test CUDA offload and model generation there, not just package import. Test native Windows wheel/import safety on Windows and preserve the current container fallback. Report missing environments explicitly.
 
+**Implementation status:** implemented on 2026-09-17; portable acceptance passed. See the [validation record](../validation/modernization-step-03.md). Docker build/rebuild timings, Linux ISA evidence, CUDA compile/offload, pinned locks, and native Windows wheel safety are deferred there with exact commands; the `docker-full` CI job produces the rebuild evidence on the next push.
+
 ## Step 04 — Discover external models and route without losing fallbacks
 
 **Depends on:** 01–02. **Touch:** `registry/service.py`, `registry/discovery.py`, `registry/ollama_inventory.py`, `utils/model_identity.py`, `runtime/catalog.py`, `routing/service.py`, `routing/measured_preferences.py`, `runtime/support_strategy.py`.

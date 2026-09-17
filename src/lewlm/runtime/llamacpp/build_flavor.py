@@ -19,7 +19,7 @@ _ACCELERATOR_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cuda", ("CUDA",)),
     ("rocm", ("ROCM", "HIP")),
     ("vulkan", ("VULKAN",)),
-    ("metal", ("METAL",)),
+    ("metal", ("METAL", "MTL")),
     ("sycl", ("SYCL",)),
     ("kompute", ("KOMPUTE",)),
 )

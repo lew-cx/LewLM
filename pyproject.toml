@@ -36,6 +36,15 @@ mlx = [
   "mlx-vlm>=0.1.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "mlx-audio>=0.1.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
+# Serving-only GGUF inference: the llama.cpp bindings and nothing else. This is
+# the input for the lean bridge/serving container image and for hosts that never
+# convert models. `llamacpp` below keeps its legacy batteries-included meaning
+# (runtime + HF->GGUF conversion dependencies) for this release.
+llamacpp_runtime = [
+  "llama-cpp-python>=0.3.0,<1.0.0",
+  "cmake>=3.30.0,<4.0.0; platform_system == 'Windows'",
+  "ninja>=1.11.1,<2.0.0; platform_system == 'Windows'",
+]
 llamacpp = [
   "llama-cpp-python>=0.3.0,<1.0.0",
   "cmake>=3.30.0,<4.0.0; platform_system == 'Windows'",

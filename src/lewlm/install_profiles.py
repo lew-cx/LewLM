@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import os
 import platform
 import shutil
+import uuid
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -72,6 +75,22 @@ class BackendModuleStatus(BaseModel):
     detail: str
 
 
+class StorageAccessStatus(BaseModel):
+    """Whether the process can actually write LewLM's data directory.
+
+    Container volumes and bind mounts are where this goes wrong: the image runs
+    as uid 10001 and a host directory mounted over ``/data`` may not be
+    writable by it. ``writable`` comes from a real create/delete probe, not
+    from ``os.access``, which answers incorrectly on many mounted filesystems.
+    """
+
+    data_dir: str
+    exists: bool
+    writable: bool
+    owner: str | None = None
+    reason: str
+
+
 class InstallProfileSummary(BaseModel):
     """Current host summary for LewLM's documented install profiles."""
 
@@ -86,6 +105,7 @@ class InstallProfileSummary(BaseModel):
     backend_feature_probes: list[BackendFeatureProbe] = Field(default_factory=list)
     llamacpp_build: LlamaCppBuildFlavor | None = None
     container: ContainerStatus | None = None
+    storage_access: StorageAccessStatus | None = None
     notes: list[str] = Field(default_factory=list)
     external_endpoints: list[dict[str, object]] = Field(default_factory=list)
 
@@ -147,7 +167,16 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         if not ocr_status.available and ocr_status.reason:
             ocr_note = f"OCR-style flows still need a working local backend: {ocr_status.reason}"
 
+    data_dir = getattr(settings, "data_dir", None)
+    storage_access = probe_storage_access(Path(data_dir)) if data_dir is not None else None
+
     summary_notes: list[str] = []
+    if storage_access is not None and not storage_access.writable:
+        summary_notes.append(
+            f"Data directory {storage_access.data_dir} is not writable by this process; registry, cache, and "
+            "conversion output will fail until the volume or bind mount is writable by the runtime user "
+            f"({storage_access.owner or 'unknown'}). {storage_access.reason}",
+        )
     if apple_silicon_host:
         summary_notes.append("This Apple Silicon host can use MLX as LewLM's first-class local runtime profile.")
     elif gguf_host_supported:
@@ -160,6 +189,12 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
                 "It packages the cross-platform GGUF profile as LewLM's first-class non-Apple runtime family "
                 "together with the llama.cpp HF-to-GGUF conversion tools.",
             )
+            if container.image_flavor in {"bridge", "serving"}:
+                summary_notes.append(
+                    f"This is the `{container.image_flavor}` image flavor: HF-to-GGUF conversion and document "
+                    "workflows are not installed here by design. Build the `full` flavor "
+                    "(`--build-arg IMAGE_FLAVOR=full`) when you need them.",
+                )
         else:
             summary_notes.append(
                 f"{host_label} should run LewLM through the shipped container image, which packages the "
@@ -270,6 +305,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
                     else []
                 ),
                 *_llamacpp_build_notes(llamacpp_build, system=system),
+                "Serving-only hosts can install `.[llamacpp_runtime]` instead: the same llama.cpp runtime without the Torch/Transformers conversion dependencies. `.[llamacpp]` keeps conversion available.",
             ],
         ),
         InstallProfileStatus(
@@ -358,6 +394,7 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
         ),
         llamacpp_build=llamacpp_build,
         container=container,
+        storage_access=storage_access,
         notes=summary_notes,
         external_endpoints=[
             {
@@ -372,6 +409,63 @@ def summarize_install_profiles(settings: Any | None = None) -> InstallProfileSum
             if endpoint.base_url
         ],
     )
+
+
+def probe_storage_access(data_dir: Path) -> StorageAccessStatus:
+    """Create and remove a probe file under ``data_dir`` to prove it is writable.
+
+    The directory is created when missing, matching what the registry does on
+    first use; a directory that cannot be created is reported, not raised.
+    """
+
+    owner = _process_owner()
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return StorageAccessStatus(
+            data_dir=str(data_dir),
+            exists=data_dir.exists(),
+            writable=False,
+            owner=owner,
+            reason=f"Could not create the data directory: {exc}",
+        )
+    probe = data_dir / f".lewlm-write-probe-{uuid.uuid4().hex}"
+    try:
+        with probe.open("xb") as handle:
+            handle.write(b"lewlm")
+    except OSError as exc:
+        return StorageAccessStatus(
+            data_dir=str(data_dir),
+            exists=True,
+            writable=False,
+            owner=owner,
+            reason=f"Write probe failed: {exc}",
+        )
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return StorageAccessStatus(
+        data_dir=str(data_dir),
+        exists=True,
+        writable=True,
+        owner=owner,
+        reason="A probe file was created and removed successfully.",
+    )
+
+
+def _process_owner() -> str | None:
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    uid = getuid()
+    try:
+        import pwd
+
+        return f"{pwd.getpwuid(uid).pw_name} (uid {uid})"
+    except (ImportError, KeyError):
+        return f"uid {uid}"
 
 
 def _missing_modules(module_names: tuple[str, ...]) -> list[str]:

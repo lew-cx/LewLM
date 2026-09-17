@@ -61,6 +61,9 @@ jobs:
           tests/unit/test_middleware_evidence.py
           tests/unit/test_pack_registry.py
           tests/unit/test_external_adapter_runtime.py
+          tests/unit/test_dependency_inputs.py
+          tests/unit/test_image_build_contract.py
+          tests/unit/test_verify_llamacpp_build.py
 
       - name: Smoke-check the readiness surface
         # `doctor` exercises install-profile + runtime-capability reporting end
@@ -70,24 +73,36 @@ jobs:
           python -c "import json; d=json.load(open('doctor.json')); assert d['service']; print('doctor OK on', d['runtime_stats']['platform'])"
 
   # ---------------------------------------------------------------------------
-  # Container path (BLOCKING).
+  # Container boot path (BLOCKING, fast).
   #
-  # Proves the portable, llama.dll-free runtime image builds, boots, and serves
-  # its readiness surface. Built with the lightweight `dev` extra so CI does not
-  # compile torch + llama.cpp on every run; the CPU-baseline GGUF runtime itself
-  # is exercised locally / in release validation.
+  # Proves the image layering builds, boots, and serves its readiness surface
+  # using the `bridge` flavor with the conversion tools disabled: no torch, no
+  # llama.cpp compilation, nothing native. The GGUF runtime and conversion
+  # image are covered by the `docker-full` gate below.
   # ---------------------------------------------------------------------------
   docker:
-    name: docker build + boot smoke
+    name: docker bridge build + boot smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the runtime image (dev extra)
-        run: docker build -t lewlm:ci --build-arg EXTRAS=dev .
+      - name: Build the bridge image (no native build)
+        run: >
+          docker build --progress=plain -t lewlm:ci
+          --build-arg IMAGE_FLAVOR=bridge
+          --build-arg CONVERSION_TOOLS=disabled
+          . 2>&1 | tee build-bridge.log
 
-      - name: Prove the packaged app reports readiness
-        run: docker run --rm lewlm:ci doctor --json
+      - name: Prove no native compilation happened
+        run: |
+          if grep -qE '\] Building (C|CXX|CUDA) object|Building wheel for llama' build-bridge.log; then
+            echo "bridge image performed native compilation" >&2; exit 1
+          fi
+
+      - name: Prove the packaged app reports readiness and a writable data dir
+        run: |
+          docker run --rm lewlm:ci doctor --json > doctor.json
+          python -c "import json; d=json.load(open('doctor.json')); s=d['install_profiles']['storage_access']; assert s['writable'] is True, s; assert d['install_profiles']['container']['image_flavor']=='bridge'; print('doctor OK, data dir writable as', s['owner'])"
 
       - name: Boot the server and hit /v1/health
         run: |
@@ -99,6 +114,48 @@ jobs:
           cat health.json
           python -c "import json; d=json.load(open('health.json')); assert d['status']=='ok'; print('container health OK')"
           docker rm -f "$cid"
+
+  # ---------------------------------------------------------------------------
+  # Full conversion image (BLOCKING, slow).
+  #
+  # Builds the default `full` flavor (llama.cpp GGUF runtime compiled with
+  # GGML_NATIVE=OFF, HF->GGUF conversion tools, documents) and proves the layer
+  # contract: an app-only edit rebuilds without a single native compile step.
+  # The measurement script keeps the three plain-progress build logs as the
+  # evidence; no wall-clock assertion is made on a shared runner.
+  # ---------------------------------------------------------------------------
+  docker-full:
+    name: docker full build + rebuild contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Clean, no-change, and app-only builds
+        run: >
+          scripts/docker/measure_rebuild.sh --flavor full --reset --out rebuild-evidence
+
+      - name: Prove the full image can convert
+        run: |
+          docker run --rm lewlm:measure-full doctor --json > doctor.json
+          python - <<'PY'
+          import json
+          d = json.load(open("doctor.json"))
+          profiles = {p["profile"]: p for p in d["install_profiles"]["profiles"]}
+          assert profiles["gguf_fallback_backend"]["ready"], profiles["gguf_fallback_backend"]
+          assert profiles["documents_enabled_backend"]["installed"], profiles["documents_enabled_backend"]
+          assert d["install_profiles"]["llamacpp_build"]["gpu_offload_supported"] is False
+          assert d["install_profiles"]["container"]["image_flavor"] == "full"
+          print("full image: GGUF ready, documents installed, CPU-only llama.cpp")
+          PY
+          docker run --rm --entrypoint sh lewlm:measure-full -c 'test -x /opt/llamacpp-tools/llama-quantize && test -f /opt/llamacpp-tools/convert_hf_to_gguf.py && echo "conversion tools present"'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-full-rebuild-evidence
+          path: rebuild-evidence/
 
   # ---------------------------------------------------------------------------
   # Full suite (BLOCKING) on Linux with every runtime + document dependency

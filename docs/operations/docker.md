@@ -44,11 +44,31 @@ location.
 | Apple MLX runtimes | ❌ Not containerizable — Apple Metal is unavailable to containers; run MLX natively on macOS |
 | Vision / audio | Bridge-only on non-Apple, same as native: front a loopback server via the external-accelerator bridge. Containerising does not change this — it is a runtime-adapter gap, not a packaging one |
 
+## Image flavors
+
+Every image is built from one of three flavors (`--build-arg IMAGE_FLAVOR=...`):
+
+| Flavor | Contents | Use it when |
+| --- | --- | --- |
+| `bridge` | base package only (`requirements/bridge.txt`) | LewLM fronts Ollama or another loopback server; nothing native is compiled |
+| `serving` | `bridge` + llama.cpp GGUF runtime (`llamacpp_runtime` extra) | packaged local GGUF inference without conversion; no Torch/Transformers, no document libraries |
+| `full` | `serving` + HF→GGUF conversion dependencies + documents/OCR (`llamacpp` + `documents` extras) | **default** — batteries included, unchanged behavior for `docker build -t lewlm:cpu .` |
+
+`lewlm doctor` reports the flavor (`install_profiles.container.image_flavor`) and,
+for `bridge`/`serving`, says that conversion and document workflows are not
+installed by design rather than leaving you to discover a missing package.
+Pair the lean flavors with `--build-arg CONVERSION_TOOLS=disabled`: they have
+no converter Python dependencies, so building `llama-quantize` for them is
+wasted time.
+
 ## Quick start (CPU)
 
 ```bash
 # Build the portable CPU image (batteries included: GGUF + conversion + documents)
 docker build -t lewlm:cpu .
+
+# Lean GGUF serving image (no torch, no conversion, no documents)
+docker build -t lewlm:serving --build-arg IMAGE_FLAVOR=serving --build-arg CONVERSION_TOOLS=disabled .
 
 # Run it, persisting state + models in a named volume
 docker run -d --name lewlm -p 8080:8080 -v lewlm-data:/data lewlm:cpu
@@ -116,16 +136,43 @@ docker run -d --gpus all -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cuda
 # or:  docker compose --profile gpu up --build lewlm-cuda
 ```
 
-Set the GPU compute capability for your card if the default set does not cover
-it (e.g. Blackwell / RTX 50-series is `120`, and needs a recent CUDA base
-image):
+The default `CUDA_ARCHITECTURES=75;80;86;89` is the broad **compatibility
+profile** (Turing through Ada). It produces one image that runs on any of
+those cards at the cost of compiling every kernel four times. A **per-device
+build** is the recommended local recipe: find your card's number and build for
+it alone.
+
+```bash
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader   # e.g. 8.9 -> 89
+
+docker build -f Dockerfile.cuda --build-arg CUDA_ARCHITECTURES=89 -t lewlm:cuda .
+```
+
+The build checks every requested SM against the toolkit in the selected base
+image *before* compiling (`scripts/docker/validate_cuda_archs.sh`), so an
+unsupported combination fails in seconds with the supported list instead of
+twenty minutes in. `native` is refused: the image must not depend on which GPU
+was visible on the build host. Blackwell / RTX 50-series (`120`) needs a CUDA
+≥ 12.8 base image and the matching torch index:
 
 ```bash
 docker build -f Dockerfile.cuda \
   --build-arg CUDA_ARCHITECTURES=120 \
-  --build-arg CUDA_DEVEL_IMAGE=12.8.0-devel-ubuntu22.04 \
-  --build-arg CUDA_RUNTIME_IMAGE=12.8.0-runtime-ubuntu22.04 \
+  --build-arg CUDA_DEVEL_IMAGE=12.8.0-devel-ubuntu24.04 \
+  --build-arg CUDA_RUNTIME_IMAGE=12.8.0-runtime-ubuntu24.04 \
+  --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
   -t lewlm:cuda .
+```
+
+The CUDA image proves at build time that the installed `llama-cpp-python`
+reports CUDA offload (`scripts/verify_llamacpp_build.py --expect gpu --hint
+cuda`); a CPU-only wheel — from a wrong wheel index or a source build that
+silently lost its toolkit — fails the build. That proof needs no GPU. Real
+offload and generation are verified on hardware:
+
+```bash
+docker run --rm --gpus all lewlm:cuda doctor --json | python -c "import json,sys; b=json.load(sys.stdin)['install_profiles']['llamacpp_build']; print(b['gpu_offload_supported'], b['accelerator_hints'])"
+docker run --rm --gpus all -v "$HOME/.lewlm:/data" lewlm:cuda runtime probe --model <gguf-model-id> --mode generate
 ```
 
 ## Configuration
@@ -149,16 +196,98 @@ the [configuration reference](../reference/configuration.md)). The most relevant
 
 | Arg | Default | Purpose |
 | --- | --- | --- |
-| `EXTRAS` | `llamacpp,documents` | Which install extras to bake in. Use `llamacpp` for a leaner serving-only image, or `dev` for a CI image with no torch/llama build |
-| `LLAMA_CMAKE_ARGS` (CPU) | `-DGGML_NATIVE=OFF` | llama.cpp build flags. Keep `GGML_NATIVE=OFF` for portability |
+| `IMAGE_FLAVOR` | `full` | `bridge`, `serving`, or `full` — see [Image flavors](#image-flavors) |
+| `DEPENDENCY_INPUT` | `requirements/<flavor>.txt` | The dependency-layer input. Point it at a lock from `scripts/docker/lock_dependencies.sh` for pinned, hashed installs |
+| `BUILD_JOBS` | `4` | Parallel compile jobs for llama.cpp and the conversion tools (`CMAKE_BUILD_PARALLEL_LEVEL`, `MAX_JOBS`, `-j`). Deliberately not `nproc`: raise it on a large build host, lower it on a memory-constrained one |
+| `LLAMA_CPP_PYTHON_WHEEL_INDEX` | *(empty)* | When set, install `llama-cpp-python` only as a prebuilt wheel from that index (e.g. `https://abetlen.github.io/llama-cpp-python/whl/cpu`, `/whl/cu126`) and skip the source build. Wheel availability is release-specific; a missing wheel fails the build rather than silently compiling. The flavor is still verified |
+| `LLAMA_CMAKE_ARGS` (CPU) | `-DGGML_NATIVE=OFF` | llama.cpp build flags. Keep `GGML_NATIVE=OFF` for a distributable image; `-DGGML_NATIVE=ON` is the explicit host-tuned local option |
+| `LLAMA_BUILD_EXPECT` (CPU) | `cpu` | What the installed llama.cpp must report: `cpu`, `gpu` (when `LLAMA_CMAKE_ARGS` enabled an accelerator such as Vulkan), or `any` |
+| `TORCH_INDEX_URL` | CPU: `…/whl/cpu`; CUDA: `…/whl/cu126` | Where torch resolves from in the `full` flavor. Never inferred from PyPI's default build; keep it on the image's CUDA version |
 | `PYTHON_VERSION` (CPU) | `3.11` | Base Python version |
-| `CUDA_ARCHITECTURES` (CUDA) | `75;80;86;89` | Target GPU compute capabilities |
+| `CUDA_ARCHITECTURES` (CUDA) | `75;80;86;89` | Target GPU compute capabilities, validated against the toolkit before compiling |
+| `CACHE_SCOPE` | CPU: `cpu-py<ver>`; CUDA: `cuda-<devel image>` | Name of the BuildKit cache mounts for ccache and native wheels. Different toolchains never share a cache; different flags within one scope are separated by a hash of the flags |
 | `LLAMA_CPP_REF` | `b10698` | Pinned llama.cpp revision used to build the conversion tools |
-| `CONVERSION_TOOLS` | `enabled` | `disabled` skips building `convert_hf_to_gguf.py` and `llama-quantize`, for a leaner CI image |
+| `CONVERSION_TOOLS` | `enabled` | `disabled` skips building `convert_hf_to_gguf.py` and `llama-quantize` |
+| `EXTRAS` | *(empty)* | Legacy knob: extra pyproject extras layered on top of the flavor (`dev` adds pytest). The flavor already carries its dependencies, so only the difference resolves |
 
 `CONVERSION_TOOLS=disabled` leaves the tool paths configured but absent, so
 `lewlm convert` reports the converter as not found at its configured path
 rather than silently dropping the capability.
+
+## How the layers are arranged, and why rebuilds are cheap
+
+Both Dockerfiles share one shape:
+
+1. **toolchain** — compilers, `ccache`, an empty venv. Changes almost never.
+2. **deps** — copies *only* `requirements/<flavor>.txt` (or the lock named by
+   `DEPENDENCY_INPUT`) and installs it. `llama-cpp-python` is handled first and
+   on its own: either downloaded as a verified prebuilt wheel or compiled once
+   with `ccache` as the compiler launcher. The compiled wheel is cached in a
+   directory keyed on cache scope + CMake flags + Python ABI, so pip can never
+   hand back a wheel built with different flags.
+3. **app** — copies `pyproject.toml`, `README.md`, `LICENSE`, `MANIFEST.in`, and
+   `src/`, builds the LewLM wheel, installs it `--no-deps`, then verifies the
+   image: the flavor's package set is honest (no torch in `serving`, no
+   llama.cpp in `bridge`) and the native backend is the intended flavor.
+4. **runtime** — slim base with the venv, the llama.cpp tools, and only the
+   shared libraries the flavor needs.
+
+Only step 2's inputs (the requirements file and the build arguments) feed the
+dependency layer, so editing anything under `src/` rebuilds step 3 alone: a
+wheel build and a `pip install --no-deps`, no compilation. Package downloads
+and `ccache` output live in BuildKit cache mounts (`--mount=type=cache`), which
+persist across builds on the same builder and never land in the image.
+
+`requirements/*.txt` are exported from `pyproject.toml` by
+`scripts/export_dependency_inputs.py`; a unit test fails when they drift, so
+`pyproject.toml` stays the single source of truth. They are deliberately
+unpinned inputs. For a pinned build, resolve a lock **on the image's own
+platform** (the script runs pip-tools inside the matching base image, so this
+works from macOS or Windows too) and point the build at it:
+
+```bash
+scripts/docker/lock_dependencies.sh --flavor serving
+scripts/docker/lock_dependencies.sh --flavor full --torch-index https://download.pytorch.org/whl/cpu
+docker build --build-arg IMAGE_FLAVOR=serving \
+  --build-arg DEPENDENCY_INPUT=requirements/locks/serving-linux-x86_64-py311.txt .
+```
+
+### Measuring it
+
+`scripts/docker/measure_rebuild.sh` runs three builds — clean (`--no-cache`),
+no-change, and app-only-change (made in a disposable `git worktree`) — on a
+dedicated buildx builder so your own build cache is never touched, keeps all
+three plain-progress logs, and fails if the app-only build performed any native
+compile step:
+
+```bash
+scripts/docker/measure_rebuild.sh --flavor full --reset            # cold caches
+scripts/docker/measure_rebuild.sh --flavor serving -- --build-arg CONVERSION_TOOLS=disabled
+scripts/docker/measure_rebuild.sh --dockerfile Dockerfile.cuda --flavor full -- --build-arg CUDA_ARCHITECTURES=89
+```
+
+Output lands in `docs/validation/evidence/rebuild-<stamp>/` (`summary.tsv`,
+`context.txt`, and one log per build). CI runs this for the `full` CPU flavor
+on every push and uploads the logs; there is no wall-clock assertion, only the
+compile-step count. To confirm `BUILD_JOBS` is honored, build once with
+`--build-arg BUILD_JOBS=1` and once with `4` and compare the `clean` times in
+the two summaries on the same machine.
+
+### Portability of the CPU build
+
+`GGML_NATIVE=OFF` removes `-march=native`; it does not by itself guarantee that
+every instruction llama.cpp enables is present on every old CPU. To see what a
+build actually assumes, read the backend's own report from the image
+(`CPU : SSE3 = 1 | AVX = 1 | AVX2 = 1 | …`):
+
+```bash
+docker run --rm lewlm:cpu doctor --json | python -c "import json,sys; print(json.load(sys.stdin)['install_profiles']['llamacpp_build']['system_info'])"
+```
+
+and test generation on the oldest CPU you intend to support with
+`lewlm runtime probe --model <gguf-model-id> --mode generate`. A build tuned to
+the build host is an explicit local choice: `--build-arg
+LLAMA_CMAKE_ARGS=-DGGML_NATIVE=ON`; do not distribute that image.
 
 ## Converting models in the container
 
@@ -192,16 +321,20 @@ converting them in place.
 
 ## Notes
 
-- The default image bundles a CPU build of `torch` (pulled in by the
-  conversion/llamacpp extras) to keep it lean. For a smaller serving-only image,
-  build with `--build-arg EXTRAS=llamacpp` and skip documents.
+- The default (`full`) image bundles a CPU build of `torch` (pulled in by the
+  conversion extra) from the explicit CPU wheel index. For a smaller
+  serving-only image use `--build-arg IMAGE_FLAVOR=serving`, which installs no
+  torch at all.
 - The container runs as a non-root `lewlm` user; the mounted volume must be
-  writable by uid `10001`.
+  writable by uid `10001`. `lewlm doctor` proves this with a real write probe
+  (`install_profiles.storage_access.writable`) and prints `data dir writable:
+  NO …` with the reason when a bind mount is not, so a bad mount is visible
+  before the first request fails. `/v1/health` exposes the same field.
 - A `HEALTHCHECK` polls `/v1/health`, so `docker ps` reports container health
   directly.
 - Building the conversion tools compiles llama.cpp a second time (only the
-  `llama-quantize` target, roughly 20-30 seconds). Pass
-  `--build-arg CONVERSION_TOOLS=disabled` to skip it.
+  `llama-quantize` target, roughly 20-30 seconds cold, near-instant with a warm
+  `ccache`). Pass `--build-arg CONVERSION_TOOLS=disabled` to skip it.
 - Docker Desktop on Windows gives the VM a fraction of host RAM by default, so
   `lewlm doctor` inside the container reports less memory than the host has.
   Raise it in `.wslconfig` if model residency needs more.

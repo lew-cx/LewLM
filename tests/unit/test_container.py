@@ -10,6 +10,7 @@ from lewlm.container import ContainerStatus, detect_container
 @pytest.fixture(autouse=True)
 def _clear_marker_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEWLM_IN_CONTAINER", raising=False)
+    monkeypatch.delenv("LEWLM_IMAGE_FLAVOR", raising=False)
 
 
 def _no_marker_files(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,3 +95,19 @@ def test_status_model_round_trips() -> None:
     )
 
     assert ContainerStatus.model_validate(status.model_dump()) == status
+
+
+def test_image_flavor_is_reported_only_when_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_marker_files(monkeypatch)
+    _no_cgroup(monkeypatch)
+    monkeypatch.setenv("LEWLM_IN_CONTAINER", "true")
+
+    assert detect_container().image_flavor is None
+
+    monkeypatch.setenv("LEWLM_IMAGE_FLAVOR", "serving")
+    status = detect_container()
+
+    assert status.in_container is True
+    assert status.image_flavor == "serving"
+    # The flavor is descriptive metadata, not a container indicator.
+    assert not any("IMAGE_FLAVOR" in indicator for indicator in status.indicators)

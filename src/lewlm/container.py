@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field
 #: Set by LewLM's own images so the container answer never depends on probing.
 _EXPLICIT_MARKER_ENV = "LEWLM_IN_CONTAINER"
 
+#: Set by LewLM's own images to name which flavor was built (`bridge`,
+#: `serving`, or `full`), so guidance can say whether conversion or documents
+#: are even installable here.
+_IMAGE_FLAVOR_ENV = "LEWLM_IMAGE_FLAVOR"
+
 _MARKER_FILES: tuple[tuple[str, str], ...] = (
     ("/.dockerenv", "docker"),
     ("/run/.containerenv", "podman"),
@@ -53,6 +58,8 @@ class ContainerStatus(BaseModel):
     runtime: ContainerRuntimeName | None = None
     indicators: list[str] = Field(default_factory=list)
     reason: str
+    #: Flavor stamped into LewLM's own images; ``None`` outside them.
+    image_flavor: str | None = None
 
 
 def detect_container() -> ContainerStatus:
@@ -64,6 +71,7 @@ def detect_container() -> ContainerStatus:
     explicit = os.environ.get(_EXPLICIT_MARKER_ENV, "").strip().casefold()
     if explicit in {"1", "true", "yes", "on"}:
         indicators.append(f"`{_EXPLICIT_MARKER_ENV}` is set in the environment")
+    image_flavor = os.environ.get(_IMAGE_FLAVOR_ENV, "").strip() or None
 
     for marker_path, runtime_name in _MARKER_FILES:
         if Path(marker_path).exists():
@@ -80,6 +88,7 @@ def detect_container() -> ContainerStatus:
             in_container=False,
             runtime=None,
             indicators=[],
+            image_flavor=image_flavor,
             reason=(
                 "No container markers were visible to this process, so LewLM treats this as a native host. "
                 "Container images that strip the usual markers can still be reported this way."
@@ -91,6 +100,7 @@ def detect_container() -> ContainerStatus:
         in_container=True,
         runtime=runtime,
         indicators=indicators,
+        image_flavor=image_flavor,
         reason=(
             f"LewLM is running inside a container ({runtime}); detected from: {', '.join(indicators)}. "
             "These are indicators, not proof, and they do not by themselves say which runtimes are installed."

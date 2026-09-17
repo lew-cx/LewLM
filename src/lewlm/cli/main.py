@@ -811,9 +811,19 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
         container = install_profiles.get("container")
         if isinstance(container, dict):
             if container.get("in_container"):
-                print(f"deployment: container ({container.get('runtime') or 'unknown'} markers detected)")
+                flavor = container.get("image_flavor")
+                flavor_suffix = f", image flavor {flavor}" if isinstance(flavor, str) and flavor else ""
+                print(f"deployment: container ({container.get('runtime') or 'unknown'} markers detected{flavor_suffix})")
             else:
                 print("deployment: native host (no container markers detected)")
+        storage_access = install_profiles.get("storage_access")
+        if isinstance(storage_access, dict):
+            owner = storage_access.get("owner")
+            owner_suffix = f" as {owner}" if isinstance(owner, str) and owner else ""
+            if storage_access.get("writable"):
+                print(f"data dir writable: yes{owner_suffix}")
+            else:
+                print(f"data dir writable: NO{owner_suffix} ({storage_access.get('reason')})")
         print("active install profiles: " + ", ".join(install_profiles["active_profile_ids"]))
         recommended_profile = install_profiles.get("recommended_profile_id")
         if isinstance(recommended_profile, str) and recommended_profile:

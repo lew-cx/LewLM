@@ -85,6 +85,32 @@ def test_build_flavor_hints_from_backend_section_style_output(monkeypatch) -> No
     assert flavor.accelerator_hints == ["vulkan"]
 
 
+def test_build_flavor_hints_metal_from_current_backend_section_names(monkeypatch) -> None:
+    """Current llama.cpp names the Metal section `MTL`, as observed on an Apple Silicon host."""
+
+    fake_llama_cpp = SimpleNamespace(
+        llama_supports_gpu_offload=lambda: True,
+        llama_print_system_info=lambda: b"MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | ACCELERATE = 1 | ",
+    )
+    monkeypatch.setattr("lewlm.runtime.llamacpp.build_flavor.import_module", lambda name: fake_llama_cpp)
+
+    flavor = detect_llamacpp_build_flavor()
+
+    assert flavor.accelerator_hints == ["metal"]
+
+
+def test_build_flavor_hints_cuda_from_current_backend_section_names(monkeypatch) -> None:
+    fake_llama_cpp = SimpleNamespace(
+        llama_supports_gpu_offload=lambda: True,
+        llama_print_system_info=lambda: b"CUDA : ARCHS = 890 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | AVX = 1 | ",
+    )
+    monkeypatch.setattr("lewlm.runtime.llamacpp.build_flavor.import_module", lambda name: fake_llama_cpp)
+
+    flavor = detect_llamacpp_build_flavor()
+
+    assert flavor.accelerator_hints == ["cuda"]
+
+
 def test_build_flavor_reports_partial_detection_honestly(monkeypatch) -> None:
     fake_llama_cpp = SimpleNamespace()
     monkeypatch.setattr("lewlm.runtime.llamacpp.build_flavor.import_module", lambda name: fake_llama_cpp)

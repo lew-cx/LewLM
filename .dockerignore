@@ -1,4 +1,8 @@
-# Keep the build context small and reproducible.
+# Keep the build context small and reproducible. The Dockerfiles copy only
+# what they need (requirements/, pyproject.toml, README.md, LICENSE,
+# MANIFEST.in, src/, and two helper scripts); everything else listed here is
+# still excluded so the context upload stays small and unrelated edits never
+# invalidate a layer.
 .git
 .github
 .venv
@@ -16,6 +20,16 @@ htmlcov
 **/*.py[cod]
 .DS_Store
 
+# Not part of the wheel or the image.
+tests/
+docs/
+examples/
+site/
+benchmarks/
+*.md
+!README.md
+mkdocs.yml
+
 # Never copy local model weights / state into the image.
 **/*.gguf
 **/*.safetensors
@@ -26,4 +40,5 @@ models/
 Dockerfile*
 docker-compose*.yml
 .dockerignore
-site/
+.env
+.env.*

@@ -28,11 +28,21 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-llamacpp,documents}"
+        # bridge | serving | full. `full` (default) is serving + HF->GGUF
+        # conversion + documents; `serving` is the lean GGUF runtime image.
+        IMAGE_FLAVOR: "${LEWLM_DOCKER_IMAGE_FLAVOR:-full}"
+        # Extra pyproject extras layered on top of the flavor (legacy knob).
+        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-}"
         # Pinned llama.cpp revision for the bundled HF->GGUF conversion tools.
         LLAMA_CPP_REF: "${LEWLM_DOCKER_LLAMA_CPP_REF:-b10698}"
         # Set to `disabled` for a lean image without the conversion tools.
         CONVERSION_TOOLS: "${LEWLM_DOCKER_CONVERSION_TOOLS:-enabled}"
+        # Parallel native compile jobs; raise on a large build host.
+        BUILD_JOBS: "${LEWLM_DOCKER_BUILD_JOBS:-4}"
+        # Optional prebuilt llama-cpp-python wheel index (skips the source build).
+        LLAMA_CPP_PYTHON_WHEEL_INDEX: "${LEWLM_DOCKER_LLAMA_CPP_PYTHON_WHEEL_INDEX:-}"
+        # Optional pinned lock from scripts/docker/lock_dependencies.sh.
+        DEPENDENCY_INPUT: "${LEWLM_DOCKER_DEPENDENCY_INPUT:-requirements/${LEWLM_DOCKER_IMAGE_FLAVOR:-full}.txt}"
     image: lewlm:cpu
     ports:
       - "${LEWLM_DOCKER_PORT:-8080}:8080"
@@ -61,18 +71,24 @@ services:
       context: .
       dockerfile: Dockerfile.cuda
       args:
-        # gguf_conversion shares every dependency with llamacpp, so it adds no
-        # image weight and makes `lewlm convert` available for the safetensors
-        # bundles on this host.
-        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-llamacpp,documents,gguf_conversion}"
+        # serving | full. `full` (default) carries the conversion dependencies
+        # (torch from the CUDA-matched index) and documents.
+        IMAGE_FLAVOR: "${LEWLM_DOCKER_IMAGE_FLAVOR:-full}"
+        EXTRAS: "${LEWLM_DOCKER_EXTRAS:-}"
         LLAMA_CPP_REF: "${LEWLM_DOCKER_LLAMA_CPP_REF:-b10698}"
         CONVERSION_TOOLS: "${LEWLM_DOCKER_CONVERSION_TOOLS:-enabled}"
+        BUILD_JOBS: "${LEWLM_DOCKER_BUILD_JOBS:-4}"
+        LLAMA_CPP_PYTHON_WHEEL_INDEX: "${LEWLM_DOCKER_LLAMA_CPP_PYTHON_WHEEL_INDEX:-}"
+        DEPENDENCY_INPUT: "${LEWLM_DOCKER_DEPENDENCY_INPUT:-requirements/${LEWLM_DOCKER_IMAGE_FLAVOR:-full}.txt}"
         # CUDA 12.6 has no sm_120 support and the Dockerfile's default arch list
-        # stops at Ada, so a Blackwell / RTX 50-series host must override both
-        # the base images and the architecture list. See `.env.example`.
+        # stops at Ada, so a Blackwell / RTX 50-series host must override the
+        # base images, the torch index, and the architecture list. The build
+        # validates the requested SMs against the toolkit before compiling.
+        # See `.env.example`.
         CUDA_DEVEL_IMAGE: "${LEWLM_DOCKER_CUDA_DEVEL_IMAGE:-12.6.2-devel-ubuntu24.04}"
         CUDA_RUNTIME_IMAGE: "${LEWLM_DOCKER_CUDA_RUNTIME_IMAGE:-12.6.2-runtime-ubuntu24.04}"
         CUDA_ARCHITECTURES: "${LEWLM_DOCKER_CUDA_ARCHITECTURES:-75;80;86;89}"
+        TORCH_INDEX_URL: "${LEWLM_DOCKER_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
     image: lewlm:cuda
     ports:
       - "${LEWLM_DOCKER_PORT:-8080}:8080"

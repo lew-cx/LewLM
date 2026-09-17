@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -689,3 +690,94 @@ def test_cpu_only_llamacpp_build_points_at_the_cuda_image(monkeypatch) -> None:
     assert any("Dockerfile.cuda" in note for note in gguf.notes)
     # The native escape hatches stay documented rather than being replaced.
     assert any("Vulkan as the vendor-neutral option" in note for note in gguf.notes)
+
+
+def test_storage_access_probe_reports_a_writable_data_dir(tmp_path: Path) -> None:
+    from lewlm.install_profiles import probe_storage_access
+
+    status = probe_storage_access(tmp_path / "fresh")
+
+    assert status.writable is True
+    assert status.exists is True
+    assert (tmp_path / "fresh").is_dir()
+    assert not list((tmp_path / "fresh").iterdir()), "the probe file must be removed"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid") or os.getuid() == 0, reason="root ignores directory modes")
+def test_storage_access_probe_reports_a_read_only_data_dir(tmp_path: Path) -> None:
+    from lewlm.install_profiles import probe_storage_access
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        status = probe_storage_access(locked)
+    finally:
+        locked.chmod(0o700)
+
+    assert status.writable is False
+    assert status.exists is True
+    assert "Write probe failed" in status.reason
+
+
+def test_install_profiles_surface_storage_access_and_flag_unwritable_data_dir(monkeypatch, tmp_path: Path) -> None:
+    from lewlm.install_profiles import StorageAccessStatus
+
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Linux")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "x86_64")
+    _stub_installed_modules(monkeypatch, set())
+    _stub_container(monkeypatch, in_container=True)
+    monkeypatch.setattr(
+        "lewlm.install_profiles.probe_storage_access",
+        lambda path: StorageAccessStatus(
+            data_dir=str(path), exists=True, writable=False, owner="lewlm (uid 10001)", reason="Write probe failed: EACCES",
+        ),
+    )
+    settings = LewLMSettings(data_dir=tmp_path / "data")
+
+    summary = summarize_install_profiles(settings)
+
+    assert summary.storage_access is not None
+    assert summary.storage_access.writable is False
+    assert summary.notes[0].startswith("Data directory ")
+    assert "uid 10001" in summary.notes[0]
+
+
+def test_install_profiles_skip_storage_probe_without_settings(monkeypatch) -> None:
+    _stub_installed_modules(monkeypatch, set())
+    _stub_container(monkeypatch, in_container=False)
+    monkeypatch.setattr(
+        "lewlm.install_profiles.probe_storage_access",
+        lambda path: (_ for _ in ()).throw(AssertionError("must not probe without settings")),
+    )
+
+    assert summarize_install_profiles().storage_access is None
+
+
+def test_lean_image_flavor_explains_missing_conversion(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Linux")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "x86_64")
+    _stub_installed_modules(monkeypatch, {"llama_cpp"})
+    _stub_loadable_llamacpp_build(monkeypatch)
+    monkeypatch.setattr(
+        "lewlm.install_profiles.detect_container",
+        lambda: ContainerStatus(
+            in_container=True, runtime="docker", indicators=["`/.dockerenv` exists"], reason="pinned", image_flavor="serving",
+        ),
+    )
+
+    summary = summarize_install_profiles()
+
+    assert any("`serving` image flavor" in note and "IMAGE_FLAVOR=full" in note for note in summary.notes)
+
+
+def test_gguf_profile_points_serving_only_hosts_at_the_runtime_extra(monkeypatch) -> None:
+    monkeypatch.setattr("lewlm.install_profiles.platform.system", lambda: "Linux")
+    monkeypatch.setattr("lewlm.install_profiles.platform.machine", lambda: "x86_64")
+    _stub_installed_modules(monkeypatch, set())
+    _stub_container(monkeypatch, in_container=False)
+
+    gguf = {profile.profile: profile for profile in summarize_install_profiles().profiles}["gguf_fallback_backend"]
+
+    assert gguf.install_spec == ".[llamacpp]", "the legacy spec stays the documented default this release"
+    assert any("`.[llamacpp_runtime]`" in note for note in gguf.notes)
