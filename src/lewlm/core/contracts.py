@@ -36,6 +36,10 @@ class ModelFormat(str, Enum):
     HUGGINGFACE = "huggingface"
     AUDIO_FOLDER = "audio_folder"
     ADAPTER_BUNDLE = "adapter_bundle"
+    # ExLlamaV3 artifacts, served only through an external TabbyAPI endpoint.
+    # Assigned from artifact evidence, never inferred from a profile name, and
+    # never loadable by llama.cpp.
+    EXL3 = "exl3"
     UNKNOWN = "unknown"
 
 
@@ -525,6 +529,18 @@ class RoutingDecision(BaseModel):
     modality_path: RoutingModalityPath | None = None
     modality_path_reason: str | None = None
     alternatives: list[str] = Field(default_factory=list)
+    # Which named endpoint and engine profile will execute a bridge-backed
+    # request; `None` for packaged runtimes.
+    endpoint_id: str | None = None
+    engine_profile: str | None = None
+    # `host_local` for packaged runtimes and Ollama models it runs itself,
+    # `off_host` for Ollama cloud relays, `loopback_unverified` for a generic
+    # loopback endpoint (a loopback URL proves only the first hop).
+    execution_locality: str | None = None
+    # Set only when an explicit fallback policy substituted the requested
+    # model before generation was submitted.
+    fallback_from_model_id: str | None = None
+    fallback_reason: str | None = None
 
 
 class IdempotentOperationRecord(BaseModel):

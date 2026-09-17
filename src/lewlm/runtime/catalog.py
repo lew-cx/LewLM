@@ -64,6 +64,11 @@ class RuntimeCatalog:
     def get_endpoint_runtime(self, endpoint_id: str) -> RuntimeContract | None:
         return self._endpoint_runtimes.get(endpoint_id)
 
+    def endpoint_runtimes(self) -> dict[str, RuntimeContract]:
+        """Named endpoint runtimes keyed by endpoint id (a copy)."""
+
+        return dict(self._endpoint_runtimes)
+
     def all_runtimes(self) -> tuple[RuntimeContract, ...]:
         return tuple({id(runtime): runtime for runtime in
                       (*self._runtimes.values(), *self._endpoint_runtimes.values())}.values())

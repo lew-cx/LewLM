@@ -28,6 +28,9 @@ class ExecutionModelMetadata(BaseModel):
     resolved_model_id: str | None = None
     runtime_name: str | None = None
     runtime_affinity: RuntimeAffinity | None = None
+    endpoint_id: str | None = None
+    engine_profile: str | None = None
+    execution_locality: str | None = None
 
 
 class ExecutionRoutingMetadata(BaseModel):
@@ -37,6 +40,8 @@ class ExecutionRoutingMetadata(BaseModel):
     modality_path: RoutingModalityPath | None = None
     modality_path_reason: str | None = None
     alternatives: list[str] = Field(default_factory=list)
+    fallback_from_model_id: str | None = None
+    fallback_reason: str | None = None
 
 
 class ExecutionTimingMetadata(BaseModel):
@@ -115,6 +120,9 @@ def build_routed_execution_metadata(
             resolved_model_id=routing.model_id,
             runtime_name=routing.runtime_name,
             runtime_affinity=routing.runtime_affinity,
+            endpoint_id=routing.endpoint_id,
+            engine_profile=routing.engine_profile,
+            execution_locality=routing.execution_locality,
         ),
         routing=ExecutionRoutingMetadata(
             kind="model_router",
@@ -123,6 +131,8 @@ def build_routed_execution_metadata(
             modality_path=routing.modality_path,
             modality_path_reason=routing.modality_path_reason,
             alternatives=list(routing.alternatives),
+            fallback_from_model_id=routing.fallback_from_model_id,
+            fallback_reason=routing.fallback_reason,
         ),
         timing=ExecutionTimingMetadata(
             queue_milliseconds=max(queue_milliseconds, 0),

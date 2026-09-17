@@ -30,6 +30,7 @@ from lewlm.core.contracts import (
     RequestModality,
     RoutingDecision,
     RoutingModalityPath,
+    RuntimeAffinity,
     RuntimeContract,
     RuntimeSupportPath,
     ServiceReadinessState,
@@ -39,7 +40,7 @@ from lewlm.core.contracts import (
     performance_core_evidence_mode_from_measured_status,
     runtime_support_path_for_affinity,
 )
-from lewlm.core.errors import RoutingError
+from lewlm.core.errors import ModelNotFoundError, RoutingError
 from lewlm.core.middleware import build_model_capability_evidence
 from lewlm.registry.service import ModelRegistry
 from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
@@ -58,7 +59,7 @@ from lewlm.routing.measured_preferences import (
 from lewlm.runtime.catalog import RuntimeCatalog
 from lewlm.runtime.residency import ModelLifecycleResult, ModelResidencyManager, ModelResidencyState
 from lewlm.runtime.experimental import build_frontier_serving_plan, frontier_plan_notes, frontier_plan_summary
-from lewlm.utils.model_identity import build_manifest_validation_key
+from lewlm.utils.model_identity import build_manifest_validation_key, is_uri_source
 from lewlm.utils.validation_manifests import (
     apply_external_validation_to_model_targets,
     load_validation_manifests,
@@ -205,6 +206,17 @@ class ModelRouter:
                 alternatives=alternatives,
             )
             if not scored_candidates:
+                fallback = self._explicit_fallback(
+                    manifest,
+                    capability=capability,
+                    required_modalities=required_modalities,
+                    requested_context_tokens=requested_context_tokens,
+                    request_modality=request_modality,
+                    structured_output_requested=structured_output_requested,
+                    alternatives=alternatives,
+                )
+                if fallback is not None:
+                    return fallback
                 raise self._routing_error(
                     f"No {capability.value.replace('_', ' ')}-capable runtime is currently available for the requested model.",
                     capability=capability,
@@ -212,6 +224,7 @@ class ModelRouter:
                     required_modalities=required_modalities,
                     requested_context_tokens=requested_context_tokens,
                     alternatives=alternatives[:8],
+                    extra_details=self._endpoint_error_details(manifest),
                 )
             selected = scored_candidates[0]
             decision = self._build_routing_decision(
@@ -1086,6 +1099,95 @@ class ModelRouter:
                 return runtime
         return runtimes[0]
 
+    def _endpoint_error_details(self, manifest: ModelManifest) -> dict[str, object]:
+        """Name the endpoint an unroutable bound model needed, so callers can say why."""
+
+        endpoint_id = manifest.metadata.get("external_endpoint_id")
+        if not isinstance(endpoint_id, str):
+            return {}
+        details: dict[str, object] = {
+            "endpoint_id": endpoint_id,
+            "engine_profile": manifest.metadata.get("external_profile"),
+            "fallback_policy": self.settings.external_fallback_policy,
+        }
+        runtime = self.runtime_catalog.get_endpoint_runtime(endpoint_id)
+        snapshot = getattr(runtime, "endpoint_snapshot", None)
+        if callable(snapshot):
+            details["endpoint"] = snapshot()
+        return details
+
+    def _explicit_fallback(
+        self,
+        manifest: ModelManifest,
+        *,
+        capability: CapabilityName,
+        required_modalities: tuple[ModelModality, ...],
+        requested_context_tokens: int | None,
+        request_modality: RequestModality | None,
+        structured_output_requested: bool,
+        alternatives: list[str],
+    ) -> tuple[ModelManifest, RuntimeContract, RoutingDecision] | None:
+        """Substitute a registered alias for an unroutable endpoint-bound model.
+
+        Only under `external_fallback_policy=explicit_alias`, only for a model
+        the operator mapped in `external_fallback_aliases`, only to a runnable
+        registered model that satisfies the same request, and only here --
+        before anything has been submitted upstream. Nothing is ever retried
+        after generation starts. The decision records what was substituted
+        and why.
+        """
+
+        if self.settings.external_fallback_policy != "explicit_alias" or not is_uri_source(manifest.source_path):
+            return None
+        alias = self.settings.external_fallback_aliases.get(manifest.model_id)
+        if alias is None:
+            alternatives.append(f"{manifest.model_id}: no fallback alias configured in external_fallback_aliases.")
+            return None
+        try:
+            alias_manifest = self._candidate_manifests(
+                alias,
+                required_modalities=required_modalities,
+                requested_context_tokens=requested_context_tokens,
+            )[0]
+        except (RoutingError, ModelNotFoundError) as exc:
+            alternatives.append(f"{manifest.model_id}: fallback alias `{alias}` is not usable ({exc}).")
+            return None
+        scored = self._rank_runtime_candidates(
+            alias_manifest,
+            capability=capability,
+            required_modalities=required_modalities,
+            requested_context_tokens=requested_context_tokens,
+            request_modality=request_modality,
+            structured_output_requested=structured_output_requested,
+            alternatives=alternatives,
+        )
+        if not scored:
+            alternatives.append(f"{manifest.model_id}: fallback alias `{alias}` has no ready runtime either.")
+            return None
+        selected = scored[0]
+        endpoint_id = manifest.metadata.get("external_endpoint_id")
+        fallback_reason = (
+            f"Requested model `{manifest.model_id}` on endpoint `{endpoint_id}` had no ready runtime; "
+            f"substituted the operator-configured alias `{alias_manifest.model_id}` before submission."
+        )
+        decision = self._build_routing_decision(
+            selected,
+            capability=capability,
+            requested_context_tokens=requested_context_tokens,
+            request_modality=request_modality,
+            explicit_request=True,
+            alternatives=[*alternatives[:4], *[
+                f"{candidate.manifest.model_id} via {candidate.runtime.name}: lower routing score ({candidate.score:.1f})."
+                for candidate in scored[1:4]
+            ]],
+        )
+        decision = decision.model_copy(update={
+            "reason": f"{fallback_reason} {decision.reason}",
+            "fallback_from_model_id": manifest.model_id,
+            "fallback_reason": fallback_reason,
+        })
+        return selected.manifest, selected.runtime, decision
+
     def _routing_error(
         self,
         message: str,
@@ -1358,6 +1460,7 @@ class ModelRouter:
             if explicit_request
             else self._build_candidate_reason(candidate, capability)
         )
+        endpoint = getattr(candidate.runtime, "endpoint", None)
         return RoutingDecision(
             model_id=candidate.manifest.model_id,
             runtime_name=candidate.runtime.name,
@@ -1368,7 +1471,22 @@ class ModelRouter:
             modality_path=modality_path,
             modality_path_reason=modality_path_reason,
             alternatives=alternatives,
+            endpoint_id=getattr(endpoint, "endpoint_id", None),
+            engine_profile=getattr(endpoint, "profile", None),
+            execution_locality=self._execution_locality(candidate.manifest, candidate.runtime),
         )
+
+    @staticmethod
+    def _execution_locality(manifest: ModelManifest, runtime: RuntimeContract) -> str:
+        """Where the request actually executes, as far as the evidence goes."""
+
+        for key in ("execution_locality", "ollama_execution_locality"):
+            value = manifest.metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+        if runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR:
+            return "loopback_unverified"
+        return "host_local"
 
     def _build_explicit_reason(
         self,

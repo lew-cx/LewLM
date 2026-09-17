@@ -44,6 +44,7 @@ from lewlm.core.contracts import (
     RuntimeAffinity,
     RuntimeCandidateReport,
     RuntimeReadinessState,
+    build_portable_performance_core_evidence,
     normalize_performance_feature_ownership,
     normalize_runtime_performance_feature_report,
     runtime_performance_feature_report,
@@ -435,6 +436,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovered_model_records: tuple[dict[str, Any], ...] | None = None
         self._discovery_error: str | None = None
         self._discovery_failed_at: float | None = None
+        # When the last successful read happened; drives the TTL. A failed
+        # refresh after a success keeps the last-known list and marks it stale
+        # rather than pretending the upstream models were deleted.
+        self._discovered_at: float | None = None
+        self._inventory_stale = False
+        self._force_refresh = False
         self._capability_support_cache: dict[CapabilityName, bool] = {}
         self._capability_reason_cache: dict[CapabilityName, str | None] = {}
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
@@ -456,8 +463,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             "endpoint_id": self.endpoint.endpoint_id,
             "profile": self.endpoint.profile,
             "enabled": self.endpoint.enabled,
-            "inventory_state": ("failed" if self._discovery_error else
-                                "advertised" if self._discovered_model_ids is not None else "unknown"),
+            "inventory_state": self.inventory_state,
+            "inventory_error": self._discovery_error,
+            "inventory_age_seconds": (
+                round(monotonic() - self._discovered_at, 3) if self._discovered_at is not None else None
+            ),
+            "inventory_ttl_seconds": self._inventory_ttl_seconds(),
             "advertised_model_ids": list(self._discovered_model_ids or ()),
             "capability_evidence": [
                 {"upstream_model_id": model_id, "capability": capability.value,
@@ -467,6 +478,50 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             "upstream_residency": "unknown",
             "upstream_cancellation": "unknown",
         }
+
+    @property
+    def inventory_state(self) -> str:
+        """``unknown`` (never read), ``advertised``, ``stale`` (last read failed,
+        earlier list retained), or ``failed`` (never succeeded)."""
+
+        if self._discovered_model_ids is None:
+            return "unknown"
+        if self._discovery_error is not None:
+            return "stale" if self._inventory_stale else "failed"
+        return "advertised"
+
+    def advertised_model_records(self, *, refresh: bool = False) -> tuple[dict[str, Any], ...]:
+        """The upstream ``/v1/models`` records, honoring the TTL.
+
+        ``refresh=True`` is the explicit-refresh path (``lewlm scan``): it
+        drops the cached list first so the read is live. Raises
+        :class:`RuntimeUnavailableError` when the endpoint cannot be read; the
+        last-known records stay cached and :attr:`inventory_state` says
+        ``stale``.
+        """
+
+        if refresh:
+            self._force_refresh = True
+        self._available_remote_models()
+        return self._discovered_model_records or ()
+
+    def _inventory_ttl_seconds(self) -> float:
+        return float(getattr(self._settings, "external_inventory_ttl_seconds", 0.0) or 0.0)
+
+    def _discovery_cache_expired(self) -> bool:
+        """Whether a *successful* list has outlived the configured TTL.
+
+        Failure retry timing is `_discovery_cache_is_stale_failure`'s job, and
+        a list with no timestamp (set directly by a test) never expires.
+        """
+
+        if self._discovery_error is not None or self._discovered_at is None:
+            return False
+        ttl = self._inventory_ttl_seconds()
+        if ttl <= 0:
+            return False
+        age = monotonic() - self._discovered_at
+        return age < 0 or age >= ttl
 
     def cached_supported_capabilities(self) -> tuple[CapabilityName, ...]:
         return tuple(sorted({capability for (_, capability), supported in
@@ -485,7 +540,20 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                              notes=["Configured bridge; upstream behavior requires model-specific validation."])
 
     async def lightweight_health_check(self) -> dict[str, Any]:
+        # Passive: no discovery, no capability probes. The performance-feature
+        # snapshot is a static profile map (ownership + `active=False` until
+        # observed), so attaching it costs no network call and keeps the
+        # runtime-stats aggregate honest about which ownership modes exist.
         result = await super().lightweight_health_check()
+        performance_features = self.performance_feature_snapshot()
+        result["performance_features"] = performance_features
+        result["performance_core_evidence"] = [
+            record.model_dump(mode="json")
+            for record in build_portable_performance_core_evidence(
+                performance_features=performance_features,
+                runtime_names=[self.name],
+            )
+        ]
         result["endpoint"] = self.endpoint_snapshot()
         return result
 
@@ -493,7 +561,13 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         binding = manifest.metadata.get("external_endpoint_id")
         if binding is not None and binding != self.endpoint.endpoint_id:
             return False
-        if not super().supports_manifest(manifest):
+        if binding is not None:
+            # The endpoint owns the artifact; its weight format (often unknown
+            # from `/v1/models`) is not a reason to refuse serving it. Modality
+            # still has to be one the bridge contract can carry.
+            if not any(modality in self.supported_modalities for modality in manifest.modality):
+                return False
+        elif not super().supports_manifest(manifest):
             return False
         if not self.is_available():
             return False
@@ -520,6 +594,17 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             )
         if remote_model_id is not None:
             return report
+        if self.inventory_state == "failed":
+            # Nothing has ever been read from this endpoint and the last attempt
+            # failed: that is an unavailable runtime, not a missing model.
+            return report.model_copy(
+                update={
+                    "available": False,
+                    "readiness_state": RuntimeReadinessState.RUNTIME_UNAVAILABLE,
+                    "supports_manifest": False,
+                    "availability_reason": self._discovery_error,
+                },
+            )
         available_models = list(self._available_remote_models())
         return report.model_copy(
             update={
@@ -949,11 +1034,27 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovered_model_records = None
         self._discovery_failed_at = None
         self._discovery_error = None
+        self._discovered_at = None
+        self._inventory_stale = False
+        self._force_refresh = False
 
     def _available_remote_models(self) -> tuple[str, ...]:
-        if self._discovered_model_ids is not None and not self._discovery_cache_is_stale_failure():
+        if (
+            self._discovered_model_ids is not None
+            and not self._force_refresh
+            and not self._discovery_cache_is_stale_failure()
+            and not self._discovery_cache_expired()
+        ):
             return self._discovered_model_ids
-        payload = self._request_json("GET", "/v1/models", None)
+        self._force_refresh = False
+        try:
+            payload = self._request_json("GET", "/v1/models", None)
+        except RuntimeUnavailableError as exc:
+            # `_request` already recorded transport failures; HTTP errors and
+            # malformed bodies land here without a record, so record them too.
+            if self._discovery_error is None or self._discovery_failed_at is None:
+                self._record_discovery_failure(str(exc))
+            raise
         data = payload.get("data")
         model_ids: list[str] = []
         discovered_records: list[dict[str, Any]] = []
@@ -969,6 +1070,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovered_model_records = tuple(discovered_records)
         self._discovery_failed_at = None
         self._discovery_error = None
+        self._discovered_at = monotonic()
+        self._inventory_stale = False
         return self._discovered_model_ids
 
     def _discovery_cache_is_stale_failure(self) -> bool:
@@ -986,10 +1089,17 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         return elapsed < 0 or elapsed >= _DISCOVERY_FAILURE_RETRY_SECONDS
 
     def _record_discovery_failure(self, reason: str) -> None:
-        # `()` rather than `None` so the callers that report advertised ids while
-        # handling the error see an empty list instead of re-entering discovery.
-        self._discovered_model_ids = ()
-        self._discovered_model_records = ()
+        # An unreachable endpoint is not evidence that its models were deleted:
+        # a list that was read successfully before is kept and marked stale.
+        # With no earlier success, `()` rather than `None` so callers that report
+        # advertised ids while handling the error see an empty list instead of
+        # re-entering discovery.
+        if self._discovered_model_ids and self._discovery_error is None:
+            self._inventory_stale = True
+        elif not self._discovered_model_ids:
+            self._discovered_model_ids = ()
+            self._discovered_model_records = ()
+            self._inventory_stale = False
         self._discovery_failed_at = monotonic()
         self._discovery_error = reason
 

@@ -88,6 +88,9 @@ class OllamaInventoryResult:
     # Set when the daemon could not be read. A failed read is not evidence that
     # the operator's models are gone, so callers must not prune on it.
     error: str | None = None
+    # Set when the models were registered but no configured endpoint is the
+    # Ollama daemon, so nothing can route to them until configuration changes.
+    binding_note: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -140,6 +143,7 @@ def discover_ollama_models(settings: LewLMSettings) -> OllamaInventoryResult:
     except _OllamaUnavailable as exc:
         return OllamaInventoryResult(endpoint=endpoint, error=str(exc))
 
+    bound_endpoint_id, binding_note = _ollama_endpoint_binding(settings, endpoint)
     manifests: list[ModelManifest] = []
     skipped_cloud: list[str] = []
     seen_tags: set[str] = set()
@@ -153,18 +157,39 @@ def discover_ollama_models(settings: LewLMSettings) -> OllamaInventoryResult:
             skipped_cloud.append(tag)
             continue
         manifest = _build_manifest(record, tag=tag, locality=locality, endpoint=endpoint)
-        if settings.external_endpoints is not None:
-            from lewlm.config.endpoints import server_root
-            matched = next(config for config in settings.external_endpoints
-                           if config.enabled and config.profile == "ollama_local"
-                           and server_root(config.base_url) == server_root(endpoint))
-            manifest.metadata["external_endpoint_id"] = matched.endpoint_id
+        if bound_endpoint_id is not None:
+            manifest.metadata["external_endpoint_id"] = bound_endpoint_id
         manifests.append(manifest)
 
     return OllamaInventoryResult(
         endpoint=endpoint,
         manifests=manifests,
         skipped_cloud=sorted(skipped_cloud),
+        binding_note=binding_note,
+    )
+
+
+def _ollama_endpoint_binding(settings: LewLMSettings, endpoint: str) -> tuple[str | None, str | None]:
+    """Which configured endpoint *is* this daemon, so its models bind to it.
+
+    An Ollama model must execute on the Ollama daemon, never on whichever
+    other accelerator happens to be configured. With named endpoints, settings
+    validation already guarantees exactly one matching `ollama_local` entry.
+    With the legacy singular settings, the one endpoint may or may not be the
+    daemon; when it is not, the models are still registered (nothing is
+    silently dropped) but stay unbound and unroutable, and the scan says why.
+    """
+
+    from lewlm.config.endpoints import server_root
+
+    daemon_root = server_root(endpoint)
+    for config in settings.resolved_external_endpoints():
+        if config.enabled and config.profile == "ollama_local" and server_root(config.base_url) == daemon_root:
+            return config.endpoint_id, None
+    return None, (
+        f"No enabled external endpoint with profile `ollama_local` targets {daemon_root}; the discovered Ollama "
+        "models are registered but cannot be routed. Point LEWLM_EXTERNAL_ACCELERATOR_PROFILE=ollama_local and "
+        "LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at the daemon, or add an `ollama_local` entry to LEWLM_EXTERNAL_ENDPOINTS."
     )
 
 
@@ -296,6 +321,8 @@ def _build_manifest(
             # What the bridge matches against the endpoint's advertised ids.
             "external_adapter_model_id": tag,
             EXECUTION_LOCALITY_METADATA_KEY: locality,
+            # Shared key read by routing/execution metadata for every source kind.
+            "execution_locality": locality,
             "ollama_endpoint": endpoint,
             "ollama_tag": tag,
             "ollama_digest": record.get("digest"),

@@ -45,6 +45,7 @@ from lewlm.core.errors import (
     UnsupportedCapabilityError,
 )
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
+from lewlm.utils.model_identity import is_uri_source
 
 
 class ManagedRuntime(ABC):
@@ -118,6 +119,11 @@ class ManagedRuntime(ABC):
         return None
 
     def supports_manifest(self, manifest: ModelManifest) -> bool:
+        # A URI-backed manifest (`ollama://`, `external://`) has no file behind
+        # it. Only the bridge can serve it; a packaged runtime must never try to
+        # open the URI as weights, whatever the declared format says.
+        if is_uri_source(manifest.source_path) and self.affinity != RuntimeAffinity.EXTERNAL_ACCELERATOR:
+            return False
         return (
             manifest.format_type in self.supported_formats
             and any(modality in self.supported_modalities for modality in manifest.modality)

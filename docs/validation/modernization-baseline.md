@@ -117,6 +117,38 @@ the step record.
 Rollback: revert the step commit; nothing stored changes. Next eligible step:
 04, external discovery and routing.
 
+## Step 04 — complete
+
+Commit: this step's commit, immediately after step 03 commit `18f4123`.
+Full record: [modernization-step-04.md](modernization-step-04.md).
+
+Behavior implemented: `lewlm scan` inventories every enabled named endpoint's
+`/v1/models` (bounded concurrency, per-endpoint failures) and registers
+endpoint-qualified manifests with `external://<endpoint_id>/<upstream_id>`
+sources, exact upstream ids, evidence-only formats (`ModelFormat.EXL3` added),
+and `loopback_unverified` locality. Successful inventory has a 30 s TTL;
+failures keep the last-known list as `stale`. URI-backed manifests never enter
+conversion or packaged runtimes. Ollama manifests bind explicitly to the
+Ollama endpoint. Routing decisions and execution metadata record
+`endpoint_id`, `engine_profile`, `execution_locality`, and any preflight
+fallback; `external_fallback_policy=explicit_alias` with
+`external_fallback_aliases` is the only automatic substitution and never
+happens after submission. Passive bridge health now carries the static
+performance-feature snapshot, repairing two `test_operations` regressions
+introduced in step 01.
+
+Compatibility: additive settings and fields; Ollama ids/metadata preserved;
+default routing order unchanged.
+
+Commands run and results: step suite 13 passed; focused + registry/Ollama/
+routing/residency/cache set 314 passed; unit+integration 1058 passed with only
+the 6 step-00 document/`pyexpat` failures remaining. The integration-bundle
+schema snapshot was already failing before this step and is owned by step 10.
+
+Real-engine evidence: none claimed; deferred to steps 05–08 with commands in
+the step record. Rollback: revert the step commit. Next eligible step: 05,
+oMLX (Apple Silicon host available), or 06–08 pending Linux/NVIDIA.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

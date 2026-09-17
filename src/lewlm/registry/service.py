@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import ModelArtifactLayer, ModelArtifactRole, ModelInventory, ModelManifest, ModelModality, ModelScanSummary
@@ -14,7 +16,9 @@ from lewlm.core.errors import ModelNotFoundError, ModelScanError
 from lewlm.events.bus import EventBus
 from lewlm.events.schema import EventScope, EventType, StreamEvent
 from lewlm.registry.discovery import discover_models
+from lewlm.registry.external_inventory import ExternalInventoryResult, discover_external_models
 from lewlm.registry.ollama_inventory import OllamaInventoryResult, discover_ollama_models, is_ollama_source
+from lewlm.utils.model_identity import is_external_source, is_uri_source, parse_external_source
 from lewlm.security.audit import AuditLogger
 from lewlm.storage.metadata import MetadataStore
 
@@ -44,6 +48,14 @@ class ModelRegistry:
         self.metadata_store = metadata_store
         self.event_bus = event_bus
         self.audit_logger = audit_logger
+        # Named endpoint runtimes are built after the registry (they need the
+        # catalog); bootstrap binds them so `scan` can read `/v1/models` through
+        # the same runtime that will serve the requests. Unbound means no
+        # external inventory, never an error.
+        self._endpoint_runtime_provider: Callable[[], Mapping[str, Any]] | None = None
+
+    def bind_endpoint_runtimes(self, provider: Callable[[], Mapping[str, Any]] | None) -> None:
+        self._endpoint_runtime_provider = provider
 
     def inventory(self) -> ModelInventory:
         manifests = self._advertised_manifests(self.list_manifests())
@@ -75,6 +87,9 @@ class ModelRegistry:
         ollama_result = self._discover_ollama_models()
         if ollama_result is not None:
             manifests.extend(ollama_result.manifests)
+        external_results = self._discover_external_models()
+        for external_result in external_results:
+            manifests.extend(external_result.manifests)
         discovered_sources = {manifest.source_path for manifest in manifests}
 
         new_count = 0
@@ -96,17 +111,21 @@ class ModelRegistry:
         stale_sources = [
             source_path
             for source_path in existing_by_source
-            if not is_ollama_source(source_path)
+            if not is_uri_source(source_path)
             and self._is_under_roots(Path(source_path), resolved_roots)
             and source_path not in discovered_sources
         ]
         stale_sources.extend(
             self._stale_ollama_sources(existing_by_source, discovered_sources, ollama_result),
         )
+        stale_sources.extend(
+            self._stale_external_sources(existing_by_source, discovered_sources, external_results),
+        )
         self.metadata_store.replace_model_manifests(manifests, stale_source_paths=stale_sources)
         scanned_roots = [str(root) for root in resolved_roots]
         if ollama_result is not None:
             scanned_roots.append(ollama_result.endpoint)
+        scanned_roots.extend(f"{result.endpoint} ({result.endpoint_id})" for result in external_results)
         summary = ModelScanSummary(
             roots_scanned=tuple(scanned_roots),
             discovered_count=len(manifests),
@@ -115,7 +134,10 @@ class ModelRegistry:
             unchanged_count=unchanged_count,
             removed_count=len(stale_sources),
             manifests=manifests,
-            notes=self._ollama_scan_notes(ollama_result),
+            notes=[
+                *self._ollama_scan_notes(ollama_result),
+                *self._external_scan_notes(external_results, existing_by_source),
+            ],
         )
         self.metadata_store.set_value("last_model_scan", summary.model_dump(mode="json"))
         self._emit_event(
@@ -153,6 +175,91 @@ class ModelRegistry:
             return None
         return discover_ollama_models(self.settings)
 
+    def _discover_external_models(self) -> list[ExternalInventoryResult]:
+        """Read every enabled named endpoint, or nothing when none are bound."""
+
+        if self._endpoint_runtime_provider is None:
+            return []
+        runtimes = self._endpoint_runtime_provider()
+        if not runtimes:
+            return []
+        return discover_external_models(
+            runtimes,
+            max_concurrency=self.settings.external_inventory_concurrency,
+            refresh=True,
+        )
+
+    def _enabled_external_endpoint_ids(self) -> set[str]:
+        return {
+            endpoint.endpoint_id
+            for endpoint in self.settings.resolved_external_endpoints()
+            if endpoint.enabled and endpoint.profile != "ollama_local"
+        }
+
+    @staticmethod
+    def _external_scan_notes(
+        results: list[ExternalInventoryResult],
+        existing_by_source: dict[str, ModelManifest],
+    ) -> list[str]:
+        notes: list[str] = []
+        for result in results:
+            if result.succeeded:
+                notes.append(
+                    f"Endpoint `{result.endpoint_id}` ({result.profile}) advertised "
+                    f"{len(result.manifests)} model(s) at {result.endpoint}.",
+                )
+                continue
+            retained = sum(
+                1 for source in existing_by_source
+                if (parsed := parse_external_source(source)) is not None and parsed[0] == result.endpoint_id
+            )
+            # Unreachable is not deleted: the registered models stay, flagged stale.
+            notes.append(
+                f"Endpoint `{result.endpoint_id}` could not be read ({result.error}); "
+                f"keeping {retained} previously registered model(s) as stale.",
+            )
+        return notes
+
+    def _stale_external_sources(
+        self,
+        existing_by_source: dict[str, ModelManifest],
+        discovered_sources: set[str],
+        results: list[ExternalInventoryResult],
+    ) -> list[str]:
+        """Which registered `external://` models this scan should forget.
+
+        An endpoint that is no longer configured or enabled retires its
+        namespace, so disabling an engine actually removes its advertised
+        models instead of stranding unroutable rows. A successful read retires
+        exactly what it no longer advertises. A failed read retires nothing.
+        A scan that could not read endpoints at all (no runtimes bound)
+        retires nothing either.
+        """
+
+        registered = [source for source in existing_by_source if is_external_source(source)]
+        if not registered:
+            return []
+        if self._endpoint_runtime_provider is None:
+            return []
+        enabled_ids = self._enabled_external_endpoint_ids()
+        results_by_id = {result.endpoint_id: result for result in results}
+        stale: list[str] = []
+        for source in registered:
+            parsed = parse_external_source(source)
+            if parsed is None:
+                stale.append(source)
+                continue
+            endpoint_id = parsed[0]
+            if endpoint_id not in enabled_ids:
+                stale.append(source)
+                continue
+            result = results_by_id.get(endpoint_id)
+            if result is None or not result.succeeded:
+                continue
+            if source not in discovered_sources:
+                stale.append(source)
+        return stale
+
     @staticmethod
     def _ollama_scan_notes(ollama_result: OllamaInventoryResult | None) -> list[str]:
         if ollama_result is None:
@@ -165,6 +272,8 @@ class ModelRegistry:
         notes = [
             f"Ollama discovery read {len(ollama_result.manifests)} model(s) from {ollama_result.endpoint}.",
         ]
+        if ollama_result.binding_note:
+            notes.append(ollama_result.binding_note)
         if ollama_result.skipped_cloud:
             notes.append(
                 f"Skipped {len(ollama_result.skipped_cloud)} cloud-backed Ollama model(s) that execute "

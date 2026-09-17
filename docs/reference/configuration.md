@@ -109,6 +109,10 @@ Built-in feature pack names: `documents`.
 | `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` | unset | adapter endpoint |
 | `LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS` | `10` | adapter timeout |
 | `LEWLM_EXTERNAL_ENDPOINTS` | unset | JSON array of named local adapter endpoints |
+| `LEWLM_EXTERNAL_INVENTORY_TTL_SECONDS` | `30` | how long a successful `/v1/models` read is trusted before a lookup re-reads it; `0` caches for the life of the process |
+| `LEWLM_EXTERNAL_INVENTORY_CONCURRENCY` | `4` | endpoints read concurrently by `lewlm scan` |
+| `LEWLM_EXTERNAL_FALLBACK_POLICY` | `none` | `none` surfaces an unroutable endpoint-bound model as an error; `explicit_alias` substitutes the registered model named in the aliases map, before submission only |
+| `LEWLM_EXTERNAL_FALLBACK_ALIASES` | `{}` | JSON object mapping an endpoint-bound model id to the registered model id that may stand in for it |
 
 The four singular `LEWLM_EXTERNAL_ACCELERATOR_*` settings remain the compatible
 single-endpoint form. LewLM resolves them as the internal endpoint ID
@@ -132,6 +136,45 @@ Do not combine an explicit collection with
 URL into one named entry, then remove or disable the singular enable flag. An
 explicit empty array means no named endpoints; it does not restore the legacy
 configuration.
+
+### Endpoint model inventory
+
+`lewlm scan` asks every enabled named endpoint (except `ollama_local`, which has
+its own richer inventory below) for `GET /v1/models`, through the same runtime
+and transport that later serves the requests, and registers one manifest per
+advertised model:
+
+- **Identity is endpoint-qualified.** The LewLM model id is
+  `<upstream-slug>-<endpoint-id>-<8-hex>` and `source_path` is
+  `external://<endpoint_id>/<percent-encoded upstream id>`. The exact upstream
+  id is kept in `metadata.external_upstream_model_id`. Two endpoints advertising
+  the same name are two models; LewLM never assumes they are the same artifact.
+- **Format is evidence, not a label.** `format_type` is `gguf` when the record
+  says so or the server can only serve GGUF (`llamacpp_server`), `exl3` only
+  when the record carries `format: exl3`, otherwise `unknown`. An unknown
+  format does not block serving through the owning endpoint; it does keep the
+  model out of conversion and packaged runtimes, which never open a URI as
+  weights.
+- **Locality is `loopback_unverified`.** A loopback URL proves the first hop
+  only. Ollama models keep their own `host_local` / `off_host` classification.
+- **Unreachable is not deleted.** A failed read keeps the endpoint's previously
+  registered models, the scan says so in `notes`, and the runtime reports
+  `inventory_state: "stale"` in health until a read succeeds. A successful read
+  retires exactly what the endpoint no longer advertises. Disabling or removing
+  an endpoint retires its namespace on the next scan.
+- **Refresh.** `lewlm scan` always re-reads. Between scans a lookup re-reads
+  after `LEWLM_EXTERNAL_INVENTORY_TTL_SECONDS`; a failed read is retried after
+  a short fixed interval.
+
+Every routing decision and execution-metadata envelope records the
+`endpoint_id`, `engine_profile`, and `execution_locality` that served it, and a
+`fallback_from_model_id` / `fallback_reason` when the explicit fallback policy
+substituted the model. Fallback happens only under
+`LEWLM_EXTERNAL_FALLBACK_POLICY=explicit_alias`, only for a model listed in
+`LEWLM_EXTERNAL_FALLBACK_ALIASES`, only to a runnable registered model that
+satisfies the same request, and only before anything is submitted upstream. A
+request that fails after generation starts is surfaced as a failure; LewLM
+never replays it.
 
 Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
 `openai_compatible`, `vmlx`, `omlx`, `vllm_mlx`, `vllm_local`, `sglang_local`, `tensorrt_llm_server`, `openvino_model_server`, `ollama_local`, and `llamacpp_server`.

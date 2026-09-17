@@ -303,6 +303,9 @@ def _build_runtime_core_services(
         runtime_overrides=runtime_overrides,
     )
     runtime_catalog.model_residency_manager = model_residency_manager
+    # `lewlm scan` reads each named endpoint's `/v1/models` through the runtime
+    # that will serve it, so inventory and execution share one transport.
+    model_registry.bind_endpoint_runtimes(runtime_catalog.endpoint_runtimes)
     model_router = ModelRouter(
         model_registry=model_registry,
         runtime_catalog=runtime_catalog,

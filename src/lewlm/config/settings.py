@@ -7,7 +7,7 @@ from types import UnionType
 from typing import Any, Literal, Self, Union, get_args, get_origin
 from urllib.parse import urlparse
 
-from pydantic import SecretStr, computed_field, model_validator
+from pydantic import Field, SecretStr, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lewlm._version import __version__
@@ -163,6 +163,21 @@ class LewLMSettings(BaseSettings):
     # None means legacy configuration. An explicit empty collection disables
     # all named endpoints rather than silently restoring a legacy endpoint.
     external_endpoints: tuple[ExternalEndpoint, ...] | None = None
+    # How long a successful `/v1/models` read is trusted before the next lookup
+    # re-reads it. 0 keeps the old behavior (cached for the life of the process;
+    # only `lewlm scan` or an explicit refresh re-reads). Failed reads keep the
+    # last-known inventory as stale and retry after a short fixed interval.
+    external_inventory_ttl_seconds: float = 30.0
+    # Endpoints read concurrently during `lewlm scan`; each endpoint fails on
+    # its own without blocking the others.
+    external_inventory_concurrency: int = 4
+    # Automatic substitution when an explicitly requested endpoint-bound model
+    # has no ready runtime. `none` (default) surfaces the failure; the caller
+    # decides. `explicit_alias` routes to the registered model named in
+    # `external_fallback_aliases` -- only before generation is submitted, only
+    # to a runnable registered model, and always recorded in the decision.
+    external_fallback_policy: Literal["none", "explicit_alias"] = "none"
+    external_fallback_aliases: dict[str, str] = Field(default_factory=dict)
     # Ollama is a model *source*, not a LewLM-owned runtime. When enabled, discovery
     # asks a locally installed Ollama daemon what it has and publishes those models
     # as bridge-backed manifests; the existing external accelerator adapter executes
@@ -308,6 +323,15 @@ class LewLMSettings(BaseSettings):
                 raise ValueError("external_endpoints endpoint_id values must be unique.")
             if "legacy-default" in ids:
                 raise ValueError("legacy-default is reserved for legacy external accelerator configuration.")
+        if self.external_inventory_ttl_seconds < 0:
+            raise ValueError("external_inventory_ttl_seconds cannot be negative.")
+        if self.external_inventory_concurrency < 1:
+            raise ValueError("external_inventory_concurrency must be at least 1.")
+        for source, target in self.external_fallback_aliases.items():
+            if not source.strip() or not target.strip():
+                raise ValueError("external_fallback_aliases keys and values must be non-empty model ids.")
+            if source == target:
+                raise ValueError(f"external_fallback_aliases cannot map `{source}` to itself.")
         if self.ollama_discovery_timeout_seconds < 1:
             raise ValueError("ollama_discovery_timeout_seconds must be at least 1.")
         if self.ollama_discovery_enabled:

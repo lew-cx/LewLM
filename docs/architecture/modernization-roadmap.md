@@ -138,6 +138,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** two live fake endpoints and Ollama can coexist; identical upstream names remain distinct; inventory refresh adds/removes only the correct records; failure preserves the last known inventory with stale status. Test explicit routing, preflight fallback, unsupported-format rejection, cloud-disabled behavior, and no mid-stream retry. Run registry, Ollama, routing, model-inventory, residency, and cache-isolation tests.
 
+**Implementation status:** completed on 2026-09-17; portable acceptance passed. See the [validation record](../validation/modernization-step-04.md). Real-engine inventory and EXL3 format evidence are validated in steps 05–08.
+
 ## Step 05 — Validate and document oMLX
 
 **Depends on:** 02 and 04. **Touch:** existing `omlx` profile, install/readiness reporting; **proposed** `examples/backends/omlx/` and `docs/operations/backends/omlx.md`.

@@ -127,6 +127,55 @@ Turning `LEWLM_OLLAMA_DISCOVERY_ENABLED` off and rescanning retires every `ollam
 that is merely unreachable retires nothing — the scan says so in its `notes` and leaves the registry
 alone, because a component LewLM does not manage being down is not evidence your models are gone.
 
+Ollama models bind to the endpoint that *is* the daemon: with named endpoints, the one `ollama_local`
+entry whose URL matches `LEWLM_OLLAMA_BASE_URL`; with the singular settings, `legacy-default` only
+when its profile is `ollama_local` and its URL is the daemon's. Otherwise the models are still
+registered but stay unroutable and the scan says why — they are never sent to some other accelerator
+that happens to be configured.
+
+## Models advertised by named endpoints
+
+Any other enabled entry in `LEWLM_EXTERNAL_ENDPOINTS` (vLLM, SGLang, oMLX, llama.cpp-server, a
+generic OpenAI-compatible server) is inventoried the same way: `lewlm scan` reads its `/v1/models`
+and registers each advertised model with an endpoint-qualified id and an
+`external://<endpoint_id>/<upstream id>` source. Two endpoints serving `shared-name` give you two
+models with two ids; pick the one on the engine you mean and routing goes there exactly. The
+[configuration reference](../reference/configuration.md#endpoint-model-inventory) describes the
+identity, format evidence, staleness, and refresh rules.
+
+```bash
+export LEWLM_EXTERNAL_ENDPOINTS='[{"endpoint_id":"gpu","profile":"vllm_local","base_url":"http://127.0.0.1:8001"}]'
+lewlm scan && lewlm list-models          # e.g. qwen2-5-0-5b-instruct-gpu-3f9a1c2b
+lewlm chat --model qwen2-5-0-5b-instruct-gpu-3f9a1c2b --prompt "Hello"
+```
+
+Every response's execution metadata names the endpoint, engine profile, and execution locality
+(`host_local`, `off_host`, or `loopback_unverified`) that served it, so a host app can display where a
+reply came from without parsing runtime names.
+
+### When an endpoint is down
+
+By default an explicitly requested model on an unreachable endpoint fails with a routing error that
+names the endpoint and its inventory state; nothing is substituted, and the other endpoints, native
+llama.cpp, and Ollama keep serving their own models. If you want an automatic stand-in, opt in per
+model:
+
+```bash
+export LEWLM_EXTERNAL_FALLBACK_POLICY=explicit_alias
+export LEWLM_EXTERNAL_FALLBACK_ALIASES='{"qwen2-5-0-5b-instruct-gpu-3f9a1c2b":"qwen2.5-0.5b-instruct-q4_k_m"}'
+```
+
+The alias must be a registered, runnable model that satisfies the same request; the substitution is
+decided before anything is sent upstream and is recorded in the routing decision
+(`fallback_from_model_id`, `fallback_reason`). A stream that fails after it has started is reported
+as a failure — LewLM does not replay it against another engine.
+
+Testing this without an engine: `tests/unit/test_external_inventory.py` runs two fake loopback
+`/v1/models` servers and a stubbed Ollama daemon through the real bootstrap. To try it by hand,
+point one entry at any OpenAI-compatible server on loopback, `lewlm scan`, stop the server,
+`lewlm scan` again (the models stay, marked stale), then `lewlm chat` against one of them and read
+the error's `endpoint_id`.
+
 ### Ollama Cloud
 
 An Ollama daemon serves both models it runs here and models it relays to Ollama's cloud, over the

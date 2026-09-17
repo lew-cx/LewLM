@@ -65,6 +65,7 @@ from lewlm.security.persistence import ENCRYPTED_FILE_MAGIC
 from lewlm.security.sandbox import run_in_subprocess
 from lewlm.security.workspace import secure_workspace
 from lewlm.storage.metadata import MetadataStore
+from lewlm.utils.model_identity import is_uri_source
 
 
 class ConversionService:
@@ -158,6 +159,7 @@ class ConversionService:
         """Return non-executing conversion target options for one registered model."""
 
         manifest = self.model_registry.get_manifest(model_id)
+        _reject_uri_backed_source(manifest)
         cache_key = self._build_cache_key(
             manifest.fingerprint,
             policy,
@@ -201,6 +203,7 @@ class ConversionService:
 
     def submit(self, request: ConversionJobRequest) -> JobRecord:
         manifest = self.model_registry.get_manifest(request.model_id)
+        _reject_uri_backed_source(manifest)
         cache_key = self._build_cache_key(
             manifest.fingerprint,
             request.policy,
@@ -1165,6 +1168,27 @@ class ConversionService:
 
     def _emit_event(self, event_type: EventType, payload: dict[str, object]) -> None:
         self.event_bus.publish_threadsafe(StreamEvent(type=event_type, scope=EventScope.JOB, payload=payload))
+
+
+def _reject_uri_backed_source(manifest: ModelManifest) -> None:
+    """A server-advertised model has no local weights to convert.
+
+    `ollama://` and `external://` sources name what an operator-managed server
+    serves. Conversion is an explicit offline action on a local artifact; it
+    must not be extended into fetching or re-packaging an endpoint's weights.
+    """
+
+    if not is_uri_source(manifest.source_path):
+        return
+    raise ConversionError(
+        "This model is served by an external endpoint and has no local artifact to convert.",
+        details={
+            "model_id": manifest.model_id,
+            "source_path": manifest.source_path,
+            "source_kind": manifest.metadata.get("source_kind"),
+            "guidance": "Convert the original checkpoint on the host that owns it, then register the result locally.",
+        },
+    )
 
 
 def _planning_backend_order(manifest: ModelManifest) -> tuple[ConversionBackend, ...]:
