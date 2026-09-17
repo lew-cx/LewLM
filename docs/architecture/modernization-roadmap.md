@@ -103,6 +103,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** extend `test_external_adapter_runtime.py` with real loopback fake-server tests for fragmented SSE, tool-only replies, structured output, sampling, secrets, redirects, timeouts, 401/429/5xx, and malformed/truncated streams. A slow consumer must not cause unbounded buffered output. Cancellation must close the fake upstream connection and restore lease/admission counts within a bounded test deadline; a second stream must continue. Run chat/responses, tool-call, async-client, and cancellation regression tests. No GPU is required for this step.
 
+**Implementation status:** completed on 2026-09-17. See the [bridge contract](backend-bridge-contract.md) and [validation record](../validation/modernization-step-02.md). Engine-specific GPU abort remains unverified until steps 05–08 run on their required hardware.
+
 ## Step 03 — Make CPU/CUDA installation and rebuilding inexpensive
 
 **Depends on:** 00; integrate with 01–02 before release. **Touch:** `pyproject.toml`, `Dockerfile`, `Dockerfile.cuda`, `.dockerignore`, `docker-compose.yml`, `.env.example`, `.github/workflows/ci.yml`, `install_profiles.py`, `runtime/llamacpp/build_flavor.py`, installation/Docker docs.

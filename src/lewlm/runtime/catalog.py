@@ -424,6 +424,14 @@ class RuntimeCatalog:
             for loaded_manifest in runtime.loaded_manifests():
                 await runtime.unload_model(loaded_manifest.model_id)
 
+    async def aclose(self) -> None:
+        """Close runtime-owned connection pools and other async resources."""
+
+        for runtime in self.all_runtimes():
+            closer = getattr(runtime, "aclose", None)
+            if callable(closer):
+                await closer()
+
     def describe_manifest_targets(self, manifest: ModelManifest) -> list[ModelTargetPlatformReport]:
         host_platform = self.host_platform_snapshot()
         reports: list[ModelTargetPlatformReport] = []

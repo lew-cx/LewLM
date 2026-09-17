@@ -92,6 +92,7 @@ class LewLMServices:
         # Backends loaded through explicit benchmark/probe paths may not have a
         # residency record. Preserve the existing best-effort shutdown sweep.
         await self.runtime_catalog.unload_all_models()
+        await self.runtime_catalog.aclose()
         self.conversion_service.close()
 
     def close(self) -> None:

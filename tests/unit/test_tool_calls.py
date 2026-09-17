@@ -77,6 +77,15 @@ def test_parses_bare_whole_text_tool_call() -> None:
     assert result.remaining_text == ""
 
 
+def test_preserves_backend_tool_call_id() -> None:
+    output = '{"tool_call": {"id": "upstream_42", "name": "get_weather", "arguments": {"city": "Oslo"}}}'
+
+    result = parse_tool_calls(output, tools=[_WEATHER_TOOL])
+
+    assert result.status == "parsed"
+    assert result.tool_calls[0].call_id == "upstream_42"
+
+
 def test_accepts_input_alias_for_arguments() -> None:
     output = '{"tool_call": {"name": "search_notes", "input": {"query": "receipts"}}}'
 

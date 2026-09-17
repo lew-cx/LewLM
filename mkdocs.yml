@@ -44,6 +44,7 @@ nav:
   - Architecture:
       - Overview: architecture/overview.md
       - Modernization roadmap: architecture/modernization-roadmap.md
+      - Backend bridge contract: architecture/backend-bridge-contract.md
       - Runtime routing and serving: architecture/runtime-routing-and-serving.md
       - Storage and state: architecture/storage-and-state.md
   - Operations:

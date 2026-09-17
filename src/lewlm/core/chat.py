@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
+import json
 import math
 from pathlib import Path
 import time
@@ -49,6 +50,8 @@ from lewlm.core.contracts import (
     ReasoningOutput,
     ReasoningVisibility,
     RoutingDecision,
+    RuntimeStreamEvent,
+    RuntimeToolCallDelta,
     RuntimeContract,
     utc_now,
 )
@@ -58,6 +61,7 @@ from lewlm.core.execution_metadata import (
     build_routed_execution_metadata,
     milliseconds_from_seconds,
 )
+from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.core.serving_core import (
     ServingCore,
     ServingPhase,
@@ -69,6 +73,7 @@ from lewlm.core.serving_core import (
 from lewlm.core.reasoning import (
     ReasoningStreamProcessor,
     apply_reasoning_visibility,
+    build_reasoning_output,
     reasoning_available,
     reasoning_exposed,
 )
@@ -155,6 +160,8 @@ class ChatStreamSession:
     usage: dict[str, int] = field(default_factory=dict)
     #: False when the backend exposed no tokenizer and counts were estimated.
     usage_measured: bool = True
+    finish_reason: str = "stop"
+    native_tool_calls_streamed: bool = False
 
 
 @dataclass(slots=True)
@@ -163,6 +170,7 @@ class ChatStreamDelta:
 
     content: str | None = None
     reasoning: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -518,6 +526,25 @@ class ChatOrchestrator:
                 **(
                     {"prompt_trace": prompt_trace.model_dump(mode="json", by_alias=True)}
                     if prompt_request is not None and prompt_request.include_trace
+                    else {}
+                ),
+                **(
+                    {
+                        "bridge_tools": [
+                            {
+                                "name": entry.name,
+                                "description": entry.description,
+                                "input_schema": entry.input_schema,
+                            }
+                            for entry in prompt_trace.tool_plan
+                        ],
+                    }
+                    if prompt_trace.tool_plan
+                    else {}
+                ),
+                **(
+                    {"tool_choice": prompt_request.tool_choice}
+                    if prompt_request is not None and prompt_request.tool_choice is not None
                     else {}
                 ),
                 **(
@@ -1919,10 +1946,62 @@ class ChatOrchestrator:
             emitted_delta_count = 0
             emitted_characters = 0
             emitted_stream_progress = False
+            native_tool_calls: dict[int, dict[str, str | None]] = {}
+            native_reasoning_parts: list[str] = []
             reasoning_processor = ReasoningStreamProcessor(context.reasoning_visibility)
             citation_processor = CitationStreamProcessor(context.citation_context)
             try:
-                async for raw_delta in context.runtime.stream_generate(context.request):
+                async for runtime_event in _runtime_stream_events(context.runtime, context.request):
+                    if runtime_event.error is not None:
+                        raise RuntimeUnavailableError(
+                            runtime_event.error.message,
+                            details={
+                                "runtime": context.runtime.name,
+                                "error_kind": runtime_event.error.error_kind,
+                                **runtime_event.error.details,
+                            },
+                        )
+                    if runtime_event.usage:
+                        stream_session.usage = dict(runtime_event.usage)
+                        stream_session.usage_measured = True
+                    if runtime_event.finish_reason:
+                        stream_session.finish_reason = runtime_event.finish_reason
+                    if runtime_event.tool_call is not None:
+                        stream_session.native_tool_calls_streamed = True
+                        _accumulate_runtime_tool_call(native_tool_calls, runtime_event.tool_call)
+                        await stream_queue.put(
+                            ChatStreamDelta(tool_calls=[_tool_call_delta_payload(runtime_event.tool_call)]),
+                        )
+                    if runtime_event.reasoning:
+                        native_reasoning_parts.append(runtime_event.reasoning)
+                        if not emitted_stream_progress:
+                            emitted_stream_progress = True
+                            await self._publish_progress(
+                                request_id=context.request_id,
+                                operation="text.streaming",
+                                stage="first_delta_emitted",
+                                completed_steps=4,
+                                total_steps=5,
+                                reasoning_visibility=context.reasoning_visibility,
+                                model_id=context.manifest.model_id,
+                                runtime=context.runtime.name,
+                                **batch_payload,
+                            )
+                        await self._publish(
+                            EventType.REASONING_DELTA,
+                            {
+                                "request_id": context.request_id,
+                                "model_id": context.manifest.model_id,
+                                "runtime": context.runtime.name,
+                                "delta": runtime_event.reasoning,
+                                "reasoning_visibility": context.reasoning_visibility.value,
+                            },
+                        )
+                        if context.reasoning_visibility == ReasoningVisibility.RAW_MODEL_EMITTED:
+                            await stream_queue.put(ChatStreamDelta(reasoning=runtime_event.reasoning))
+                    raw_delta = runtime_event.content
+                    if not raw_delta:
+                        continue
                     for delta in reasoning_processor.consume(raw_delta):
                         visible_content = citation_processor.consume(delta.content) if delta.content is not None else None
                         if visible_content == "":
@@ -1966,6 +2045,12 @@ class ChatOrchestrator:
                             ChatStreamDelta(content=visible_content, reasoning=delta.reasoning),
                         )
                 stream_reasoning = reasoning_processor.finalize()
+                if native_reasoning_parts:
+                    stream_reasoning = build_reasoning_output(
+                        visibility=context.reasoning_visibility,
+                        reasoning_text="".join(native_reasoning_parts),
+                        reasoning_detected=True,
+                    )
                 trailing_content, citations = citation_processor.finalize()
                 if trailing_content:
                     emitted_delta_count += 1
@@ -2030,6 +2115,11 @@ class ChatOrchestrator:
                 self._refresh_execution_serving_metadata(request=context.request, metadata=stream_metadata)
                 stream_session.reasoning = stream_reasoning
                 stream_session.citations = citations
+                if native_tool_calls:
+                    stream_session.tool_calls = _tool_call_result(
+                        stream_session.prompt_trace,
+                        _runtime_tool_calls_as_text(native_tool_calls),
+                    )
                 if stream_session.request_metadata is not None:
                     stream_session.request_metadata.clear()
                     stream_session.request_metadata.update(context.request.metadata)
@@ -2042,7 +2132,11 @@ class ChatOrchestrator:
                 )
                 await self._publish(
                     EventType.REQUEST_COMPLETED,
-                    {"request_id": context.request_id, "model_id": context.manifest.model_id, "finish_reason": "stop"},
+                    {
+                        "request_id": context.request_id,
+                        "model_id": context.manifest.model_id,
+                        "finish_reason": stream_session.finish_reason,
+                    },
                 )
                 await stream_queue.put(_STREAM_END)
             except Exception as exc:
@@ -2705,10 +2799,11 @@ class ChatOrchestrator:
             stream_session.tool_calls = _tool_call_result(
                 stream_session.prompt_trace,
                 output_text,
-            )
-            usage, measured = self._stream_usage(context=context, output_text=output_text)
-            stream_session.usage = usage
-            stream_session.usage_measured = measured
+            ) if stream_session.tool_calls is None else stream_session.tool_calls
+            if not stream_session.usage:
+                usage, measured = self._stream_usage(context=context, output_text=output_text)
+                stream_session.usage = usage
+                stream_session.usage_measured = measured
 
         stream_session.stream_items = _stream_items_with_structured_output(
             _queued_item_stream(
@@ -3107,3 +3202,69 @@ class ChatOrchestrator:
                 "overrides": [override.model_dump(mode="json") for override in prompt_trace.overrides],
             },
         )
+
+
+async def _runtime_stream_events(
+    runtime: RuntimeContract,
+    request: GenerateRequest,
+) -> AsyncIterator[RuntimeStreamEvent]:
+    """Use structured runtime streams when present and adapt legacy strings."""
+
+    structured_stream = getattr(runtime, "stream_generate_events", None)
+    if callable(structured_stream):
+        async for event in structured_stream(request):
+            if isinstance(event, RuntimeStreamEvent):
+                yield event
+            else:
+                yield RuntimeStreamEvent.model_validate(event)
+        return
+    async for content in runtime.stream_generate(request):
+        yield RuntimeStreamEvent(content=content)
+
+
+def _tool_call_delta_payload(delta: RuntimeToolCallDelta) -> dict[str, Any]:
+    function: dict[str, Any] = {}
+    if delta.name is not None:
+        function["name"] = delta.name
+    if delta.arguments is not None:
+        function["arguments"] = delta.arguments
+    payload: dict[str, Any] = {
+        "index": delta.index,
+        "type": "function",
+        "function": function,
+    }
+    if delta.call_id is not None:
+        payload["id"] = delta.call_id
+    return payload
+
+
+def _accumulate_runtime_tool_call(
+    accumulator: dict[int, dict[str, str | None]],
+    delta: RuntimeToolCallDelta,
+) -> None:
+    current = accumulator.setdefault(delta.index, {"id": None, "name": None, "arguments": ""})
+    if delta.call_id:
+        current["id"] = delta.call_id
+    if delta.name:
+        current["name"] = (current.get("name") or "") + delta.name
+    if delta.arguments:
+        current["arguments"] = (current.get("arguments") or "") + delta.arguments
+
+
+def _runtime_tool_calls_as_text(accumulator: dict[int, dict[str, str | None]]) -> str:
+    calls: list[dict[str, Any]] = []
+    for index in sorted(accumulator):
+        item = accumulator[index]
+        name = item.get("name")
+        if not name:
+            continue
+        arguments_text = item.get("arguments") or "{}"
+        try:
+            arguments: Any = json.loads(arguments_text)
+        except json.JSONDecodeError:
+            arguments = arguments_text
+        call: dict[str, Any] = {"name": name, "arguments": arguments}
+        if item.get("id"):
+            call["id"] = item["id"]
+        calls.append(call)
+    return json.dumps({"tool_calls": calls}, separators=(",", ":"))

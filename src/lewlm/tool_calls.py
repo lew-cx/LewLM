@@ -258,8 +258,11 @@ def _validate_call_payload(
                 message=f"Tool `{name}` arguments failed input-schema validation: {details}",
                 candidate_index=candidate_index,
             )
+    call_id = call_payload.get("id")
+    if not isinstance(call_id, str) or not call_id:
+        call_id = f"call_{call_number}"
     return (
-        ParsedToolCall(call_id=f"call_{call_number}", name=name, arguments=arguments),
+        ParsedToolCall(call_id=call_id, name=name, arguments=arguments),
         None,
     )
 

@@ -6,11 +6,11 @@ import asyncio
 import base64
 from io import BytesIO
 import json
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from secrets import token_hex
-import threading
 from time import monotonic
-from typing import Any, cast
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -32,6 +32,8 @@ from lewlm.core.contracts import (
     EmbeddingVector,
     GenerateRequest,
     GenerateResponse,
+    RuntimeStreamEvent,
+    RuntimeToolCallDelta,
     ModelFormat,
     ModelManifest,
     ModelModality,
@@ -48,6 +50,8 @@ from lewlm.core.contracts import (
 )
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
+from lewlm.runtime.adapters.http_transport import AsyncBridgeTransport
+from lewlm.runtime.sampling import attach_sampling_report, resolve_sampling_controls
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -435,6 +439,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._capability_reason_cache: dict[CapabilityName, str | None] = {}
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
         self._model_capability_reason_cache: dict[tuple[str, CapabilityName], str | None] = {}
+        self._transport = AsyncBridgeTransport(endpoint=self.endpoint, runtime_name=self.name)
+
+    async def aclose(self) -> None:
+        """Close the reusable bridge connection pool."""
+
+        await self._transport.aclose()
 
     @property
     def cache_namespace(self) -> str:
@@ -674,31 +684,23 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         return await self._generate_with_manifest(manifest, request)
 
     async def _stream_generate(self, request: GenerateRequest):
+        tool_calls: dict[int, dict[str, str | None]] = {}
+        async for event in self._stream_generate_events(request):
+            if event.content:
+                yield event.content
+            if event.tool_call is not None:
+                _accumulate_tool_call_delta(tool_calls, event.tool_call)
+        tool_text = _accumulated_tool_calls_as_text(tool_calls)
+        if tool_text:
+            yield tool_text
+
+    async def _stream_generate_events(self, request: GenerateRequest):
         manifest = self._loaded_manifests[request.model_id]
         self._record_structured_output_runtime(request)
         remote_model_id = self._require_remote_model_id(manifest)
         payload = self._chat_payload(remote_model_id=remote_model_id, request=request, stream=True)
-        queue: asyncio.Queue[object] = asyncio.Queue()
-        sentinel = object()
-        loop = asyncio.get_running_loop()
-
-        def _worker() -> None:
-            try:
-                for delta in self._stream_chat_completion(payload):
-                    loop.call_soon_threadsafe(queue.put_nowait, delta)
-            except Exception as exc:  # pragma: no cover - surfaced through queue
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
-
-        threading.Thread(target=_worker, daemon=True).start()
-        while True:
-            item = await queue.get()
-            if item is sentinel:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield cast(str, item)
+        async for event in self._stream_chat_completion(payload):
+            yield event
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         self._ensure_available()
@@ -717,8 +719,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                     "capability": CapabilityName.EMBEDDINGS.value,
                 },
             )
-        payload = await asyncio.to_thread(
-            self._request_json,
+        payload = await self._request_json_async(
             "POST",
             _SEMANTIC_ENDPOINTS[CapabilityName.EMBEDDINGS],
             {"model": remote_model_id, "input": request.inputs},
@@ -769,8 +770,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                     "capability": CapabilityName.RERANK.value,
                 },
             )
-        payload = await asyncio.to_thread(
-            self._request_json,
+        payload = await self._request_json_async(
             "POST",
             _SEMANTIC_ENDPOINTS[CapabilityName.RERANK],
             {
@@ -803,8 +803,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                     capability=CapabilityName.AUDIO_TRANSCRIPTION,
                 ),
             )
-        payload = await asyncio.to_thread(
-            self._request_multipart_json,
+        payload = await self._request_multipart_json_async(
             "POST",
             _SEMANTIC_ENDPOINTS[CapabilityName.AUDIO_TRANSCRIPTION],
             {
@@ -839,8 +838,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                     capability=CapabilityName.AUDIO_SPEECH,
                 ),
             )
-        audio_bytes, media_type = await asyncio.to_thread(
-            self._request_bytes,
+        audio_bytes, media_type = await self._request_bytes_async(
             "POST",
             _SEMANTIC_ENDPOINTS[CapabilityName.AUDIO_SPEECH],
             {
@@ -876,12 +874,14 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         host = parsed.hostname
         if host not in _LOOPBACK_HOSTS:
             return False, "External accelerator base URL must target a loopback-only local host."
+        if self.endpoint.api_key_env is not None and not os.environ.get(self.endpoint.api_key_env):
+            return False, f"Set {self.endpoint.api_key_env} for external endpoint `{self.endpoint.endpoint_id}`."
         return True, None
 
     async def _generate_with_manifest(self, manifest: ModelManifest, request: GenerateRequest) -> GenerateResponse:
         remote_model_id = self._require_remote_model_id(manifest)
         payload = self._chat_payload(remote_model_id=remote_model_id, request=request, stream=False)
-        response_payload = await asyncio.to_thread(self._request_json, "POST", "/v1/chat/completions", payload)
+        response_payload = await self._request_json_async("POST", "/v1/chat/completions", payload)
         choices = response_payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise RuntimeUnavailableError(
@@ -890,6 +890,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             )
         message = choices[0].get("message", {})
         output_text = _normalize_content_text(message.get("content"))
+        if not output_text:
+            output_text = _native_tool_calls_as_text(message.get("tool_calls"))
         usage = response_payload.get("usage", {})
         if not isinstance(usage, dict):
             usage = {}
@@ -1063,39 +1065,156 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         return supported, reason
 
     def _chat_payload(self, *, remote_model_id: str, request: GenerateRequest, stream: bool) -> dict[str, Any]:
-        return {
+        sampling, report = resolve_sampling_controls(
+            request.sampling,
+            runtime_name=self.name,
+            family=(
+                "external_bridge_extended"
+                if self.endpoint.profile in {"vllm_local", "vllm_mlx", "sglang_local"}
+                else "external_bridge"
+            ),
+        )
+        attach_sampling_report(request.metadata, report)
+        tools = _bridge_tools(request.metadata.get("bridge_tools"))
+        structured_output = _bridge_structured_output(request.structured_output)
+        messages = [_message_payload(message) for message in request.messages]
+        if tools:
+            messages = [message for message in messages if not _is_prompt_tool_scaffolding(message)]
+        if structured_output is not None:
+            messages = [message for message in messages if not _is_prompt_structured_output_scaffolding(message)]
+        payload: dict[str, Any] = {
             "model": remote_model_id,
-            "messages": [_message_payload(message) for message in request.messages],
+            "messages": messages,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": stream,
+            **sampling,
         }
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = request.metadata.get("tool_choice", "auto")
+        if structured_output is not None:
+            payload["response_format"] = structured_output
+            request.metadata["structured_output_bridge"] = {
+                "forwarded": True,
+                "type": request.structured_output.type if request.structured_output is not None else "text",
+            }
+            request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+                runtime=self.name,
+                mode=request.structured_output.type if request.structured_output is not None else "text",
+                enforcement="decode_time",
+                decoder_enforced=True,
+                fallback_used=False,
+            ).model_dump(mode="json")
+        elif (
+            request.structured_output is not None
+            and request.structured_output.type == "grammar"
+            and self.endpoint.profile in {"vllm_local", "sglang_local", "vllm_mlx"}
+        ):
+            payload["structured_outputs"] = {"grammar": request.structured_output.grammar}
+            messages = [message for message in messages if not _is_prompt_structured_output_scaffolding(message)]
+            payload["messages"] = messages
+            request.metadata["structured_output_bridge"] = {
+                "forwarded": True,
+                "type": "grammar",
+            }
+            request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
+                runtime=self.name,
+                mode="grammar",
+                enforcement="decode_time",
+                decoder_enforced=True,
+                fallback_used=False,
+            ).model_dump(mode="json")
+        return payload
 
-    def _stream_chat_completion(self, payload: dict[str, Any]):
-        with self._request("POST", "/v1/chat/completions", payload=payload) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="ignore").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeUnavailableError(
-                        "External accelerator returned malformed streaming JSON.",
-                        details={"runtime": self.name, "line": data},
-                    ) from exc
-                choices = event.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                delta = choices[0].get("delta", {})
-                if not isinstance(delta, dict):
-                    continue
-                content = _normalize_content_text(delta.get("content"))
-                if content:
-                    yield content
+    async def _stream_chat_completion(self, payload: dict[str, Any]):
+        saw_done = False
+        async for message in self._transport.stream_sse(
+            "POST",
+            "/v1/chat/completions",
+            payload=payload,
+        ):
+            data = message.data.strip()
+            if data == "[DONE]":
+                saw_done = True
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise RuntimeUnavailableError(
+                    "External accelerator returned malformed streaming JSON.",
+                    details={"runtime": self.name, "error_kind": "malformed_stream"},
+                ) from exc
+            if not isinstance(event, dict):
+                raise RuntimeUnavailableError(
+                    "External accelerator returned an unexpected streaming payload.",
+                    details={"runtime": self.name, "payload_type": type(event).__name__, "error_kind": "malformed_stream"},
+                )
+            usage = _normalize_usage(event.get("usage"))
+            if usage:
+                yield RuntimeStreamEvent(usage=usage)
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                # OpenAI-style usage-only terminal events intentionally carry
+                # an empty choices array.
+                continue
+            delta = choices[0].get("delta", {})
+            if not isinstance(delta, dict):
+                continue
+            content = _normalize_content_text(delta.get("content"))
+            reasoning = _normalize_content_text(delta.get("reasoning_content", delta.get("reasoning")))
+            if content or reasoning:
+                yield RuntimeStreamEvent(content=content or None, reasoning=reasoning or None)
+            tool_calls = delta.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    normalized = _runtime_tool_call_delta(tool_call)
+                    if normalized is not None:
+                        yield RuntimeStreamEvent(tool_call=normalized)
+            finish_reason = choices[0].get("finish_reason")
+            if isinstance(finish_reason, str) and finish_reason:
+                yield RuntimeStreamEvent(finish_reason=finish_reason)
+        if not saw_done:
+            raise RuntimeUnavailableError(
+                "External accelerator event stream ended before the `[DONE]` marker.",
+                details={"runtime": self.name, "path": "/v1/chat/completions", "error_kind": "premature_eof"},
+            )
+
+    async def _request_json_async(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        # Preserve instance-level test/probe injection while production calls
+        # use the shared async pool.
+        if "_request_json" in self.__dict__:
+            return await asyncio.to_thread(self._request_json, method, path, payload)
+        return await self._transport.request_json(method, path, payload=payload)
+
+    async def _request_multipart_json_async(
+        self,
+        method: str,
+        path: str,
+        fields: dict[str, Any],
+        files: dict[str, tuple[str, bytes, str]],
+    ) -> dict[str, Any]:
+        if "_request_multipart_json" in self.__dict__:
+            return await asyncio.to_thread(self._request_multipart_json, method, path, fields, files)
+        filtered_fields = {key: value for key, value in fields.items() if value is not None}
+        return await self._transport.request_json(method, path, data=filtered_fields, files=files)
+
+    async def _request_bytes_async(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[bytes, str]:
+        if "_request_bytes" in self.__dict__:
+            return await asyncio.to_thread(self._request_bytes, method, path, payload)
+        return await self._transport.request_bytes(method, path, payload=payload, accept="audio/*,application/octet-stream")
 
     def _request_multipart_json(
         self,
@@ -1178,6 +1297,10 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         if payload is not None and body is not None:
             raise ValueError("payload and body cannot both be provided to the external accelerator request helper.")
         request_headers = {"Accept": accept, **(headers or {})}
+        if self.endpoint.api_key_env is not None:
+            api_key = os.environ.get(self.endpoint.api_key_env)
+            if api_key:
+                request_headers["Authorization"] = f"Bearer {api_key}"
         data: bytes | None = None
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
@@ -1194,7 +1317,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         try:
             return urlopen(request, timeout=self._settings.external_accelerator_timeout_seconds)
         except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="ignore")
+            body = self._redact_backend_secret(exc.read().decode("utf-8", errors="ignore"))
             raise RuntimeUnavailableError(
                 f"External accelerator request failed with HTTP {exc.code}.",
                 details={"runtime": self.name, "path": path, "body": body, "status_code": exc.code},
@@ -1239,6 +1362,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             f"{self._settings.external_accelerator_timeout_seconds}s. Raise "
             "LEWLM_EXTERNAL_ACCELERATOR_TIMEOUT_SECONDS when the server loads models on first request."
         )
+
+    def _redact_backend_secret(self, value: str) -> str:
+        if self.endpoint.api_key_env is None:
+            return value
+        secret = os.environ.get(self.endpoint.api_key_env)
+        return value.replace(secret, "[REDACTED]") if secret else value
 
 
 def _profile_feature_map(settings: LewLMSettings) -> dict[str, tuple[PerformanceFeatureOwnership, str]]:
@@ -1629,6 +1758,144 @@ def _message_payload(message: Any) -> dict[str, Any]:
         "role": getattr(message, "role", "user"),
         "content": parts if parts else getattr(message, "content", ""),
     }
+
+
+def _bridge_tools(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    tools: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        function: dict[str, Any] = {
+            "name": name,
+            "parameters": item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {},
+        }
+        if isinstance(item.get("description"), str):
+            function["description"] = item["description"]
+        tools.append({"type": "function", "function": function})
+    return tools
+
+
+def _bridge_structured_output(contract: StructuredOutputRequest | None) -> dict[str, Any] | None:
+    if contract is None or contract.type != "json_schema":
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": contract.name or "lewlm_response",
+            "schema": contract.schema_payload,
+            "strict": contract.strict,
+        },
+    }
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _is_prompt_tool_scaffolding(message: dict[str, Any]) -> bool:
+    if message.get("role") != "system":
+        return False
+    text = _message_text(message)
+    return text.startswith((
+        "Declared tools:\n",
+        "Local MCP tool listings:\n",
+        "To call a tool, reply with a JSON object in one of these shapes and nothing else:",
+    ))
+
+
+def _is_prompt_structured_output_scaffolding(message: dict[str, Any]) -> bool:
+    return message.get("role") == "system" and _message_text(message).startswith("Structured output contract:\n")
+
+
+def _native_tool_calls_as_text(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    calls: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            continue
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                pass
+        call: dict[str, Any] = {"name": function["name"], "arguments": arguments}
+        if isinstance(item.get("id"), str) and item["id"]:
+            call["id"] = item["id"]
+        calls.append(call)
+    if not calls:
+        return ""
+    return json.dumps({"tool_calls": calls}, separators=(",", ":"))
+
+
+def _runtime_tool_call_delta(value: Any) -> RuntimeToolCallDelta | None:
+    if not isinstance(value, dict):
+        return None
+    function = value.get("function")
+    if not isinstance(function, dict):
+        function = {}
+    index = value.get("index", 0)
+    if not isinstance(index, int) or isinstance(index, bool):
+        index = 0
+    call_id = value.get("id")
+    name = function.get("name")
+    arguments = function.get("arguments")
+    return RuntimeToolCallDelta(
+        index=index,
+        call_id=call_id if isinstance(call_id, str) else None,
+        name=name if isinstance(name, str) else None,
+        arguments=arguments if isinstance(arguments, str) else None,
+    )
+
+
+def _accumulate_tool_call_delta(
+    accumulator: dict[int, dict[str, str | None]],
+    delta: RuntimeToolCallDelta,
+) -> None:
+    current = accumulator.setdefault(delta.index, {"id": None, "name": None, "arguments": ""})
+    if delta.call_id:
+        current["id"] = delta.call_id
+    if delta.name:
+        current["name"] = (current.get("name") or "") + delta.name
+    if delta.arguments:
+        current["arguments"] = (current.get("arguments") or "") + delta.arguments
+
+
+def _accumulated_tool_calls_as_text(accumulator: dict[int, dict[str, str | None]]) -> str:
+    calls: list[dict[str, Any]] = []
+    for index in sorted(accumulator):
+        item = accumulator[index]
+        name = item.get("name")
+        if not name:
+            continue
+        arguments_text = item.get("arguments") or "{}"
+        try:
+            arguments: Any = json.loads(arguments_text)
+        except json.JSONDecodeError:
+            arguments = arguments_text
+        call: dict[str, Any] = {"name": name, "arguments": arguments}
+        if item.get("id"):
+            call["id"] = item["id"]
+        calls.append(call)
+    return json.dumps({"tool_calls": calls}, separators=(",", ":")) if calls else ""
 
 
 def _image_message_parts(attachment: Any) -> list[dict[str, Any]]:

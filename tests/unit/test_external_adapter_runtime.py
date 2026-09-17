@@ -314,7 +314,7 @@ def test_external_adapter_runtime_supports_modern_bridge_profiles(
     assert snapshot["constrained_decoding"]["metrics"]["adapter_profile"] == profile
 
 
-def test_external_adapter_runtime_records_prompt_guided_structured_output_metadata(
+def test_external_adapter_runtime_records_forwarded_structured_output_metadata(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -359,10 +359,10 @@ def test_external_adapter_runtime_records_prompt_guided_structured_output_metada
     assert response.output_text == '{"summary":"ok"}'
     status = request.metadata["structured_output_runtime"]
     assert status["runtime"] == runtime.name
-    assert status["enforcement"] == "prompt_guided"
-    assert status["decoder_enforced"] is False
-    assert status["fallback_used"] is True
-    assert "adapter boundary" in status["fallback_reason"]
+    assert status["enforcement"] == "decode_time"
+    assert status["decoder_enforced"] is True
+    assert status["fallback_used"] is False
+    assert request.metadata["structured_output_bridge"] == {"forwarded": True, "type": "json_schema"}
 
 
 def test_external_adapter_runtime_reports_prompt_guided_structured_output_status(

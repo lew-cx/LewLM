@@ -51,11 +51,19 @@ _EXTERNAL_BRIDGE_PARAMETERS: dict[str, str] = {
     "stop": "stop",
 }
 
+_EXTENDED_EXTERNAL_BRIDGE_PARAMETERS: dict[str, str] = {
+    **_EXTERNAL_BRIDGE_PARAMETERS,
+    "top_k": "top_k",
+    "min_p": "min_p",
+    "repetition_penalty": "repetition_penalty",
+}
+
 SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "llamacpp": _LLAMACPP_PARAMETERS,
     "mlx_text": _MLX_TEXT_PARAMETERS,
     "onnx_genai": _ONNX_GENAI_PARAMETERS,
     "external_bridge": _EXTERNAL_BRIDGE_PARAMETERS,
+    "external_bridge_extended": _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS,
 }
 
 

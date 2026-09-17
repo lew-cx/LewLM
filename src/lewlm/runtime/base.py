@@ -463,6 +463,23 @@ class ManagedTextRuntime(ManagedRuntime):
         async for delta in self._stream_generate(request):
             yield delta
 
+    async def stream_generate_events(self, request: GenerateRequest):
+        """Yield structured events, adapting existing string runtimes."""
+
+        from lewlm.core.contracts import RuntimeStreamEvent
+
+        self._ensure_available()
+        self._ensure_loaded(request.model_id)
+        self._touch_model(request.model_id)
+        async for event in self._stream_generate_events(request):
+            yield event
+
+    async def _stream_generate_events(self, request: GenerateRequest):
+        from lewlm.core.contracts import RuntimeStreamEvent
+
+        async for delta in self._stream_generate(request):
+            yield RuntimeStreamEvent(content=delta)
+
     def structured_output_runtime_status(
         self,
         contract: StructuredOutputRequest | None,

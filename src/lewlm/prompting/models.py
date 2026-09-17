@@ -131,6 +131,7 @@ class PromptCompilationRequest(BaseModel):
     output_schema_path: str | None = None
     tools: list[PromptToolDefinition] = Field(default_factory=list)
     tools_path: str | None = None
+    tool_choice: Literal["auto", "none", "required"] | dict[str, Any] | None = None
     mcp_tools: list[PromptMCPToolDefinition] = Field(default_factory=list)
     mcp_tools_path: str | None = None
     include_trace: bool = False
@@ -160,6 +161,7 @@ class PromptCompilationRequest(BaseModel):
                 self.requests_structured_output(),
                 bool(self.tools),
                 self.tools_path is not None,
+                self.tool_choice is not None,
                 bool(self.mcp_tools),
                 self.mcp_tools_path is not None,
             ),

@@ -1608,6 +1608,34 @@ class GenerateResponse(BaseModel):
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
 
 
+class RuntimeToolCallDelta(BaseModel):
+    """One backend-native tool-call fragment from a streaming response."""
+
+    index: int = 0
+    call_id: str | None = None
+    name: str | None = None
+    arguments: str | None = None
+
+
+class RuntimeStreamError(BaseModel):
+    """Typed terminal error from a runtime stream."""
+
+    message: str
+    error_kind: str = "runtime_error"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeStreamEvent(BaseModel):
+    """Optional structured stream contract used by capable runtimes."""
+
+    content: str | None = None
+    reasoning: str | None = None
+    tool_call: RuntimeToolCallDelta | None = None
+    usage: dict[str, int] | None = None
+    finish_reason: str | None = None
+    error: RuntimeStreamError | None = None
+
+
 class EmbeddingRequest(BaseModel):
     """Runtime-agnostic embedding request."""
 

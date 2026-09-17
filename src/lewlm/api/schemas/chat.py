@@ -120,6 +120,7 @@ class ChatCompletionRequest(BaseModel):
     output_schema_path: str | None = None
     tools: list[PromptToolDefinition] = Field(default_factory=list)
     tools_path: str | None = None
+    tool_choice: Literal["auto", "none", "required"] | dict[str, Any] | None = None
     mcp_tools: list[PromptMCPToolDefinition] = Field(default_factory=list)
     mcp_tools_path: str | None = None
     include_prompt_trace: bool = False
@@ -135,6 +136,8 @@ class ChatCompletionRequest(BaseModel):
                 "Specify either `response_format` / `response_format_path` or legacy "
                 "`output_schema` / `output_schema_path`, not both.",
             )
+        if self.tool_choice is not None and not (self.tools or self.tools_path or self.mcp_tools or self.mcp_tools_path):
+            raise ValueError("`tool_choice` requires at least one declared tool or tool definition path.")
         return self
 
 
@@ -170,6 +173,7 @@ class ChatCompletionDelta(BaseModel):
     role: str | None = None
     content: str | None = None
     reasoning: ReasoningOutput | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class ChatCompletionChunkChoice(BaseModel):
@@ -238,6 +242,7 @@ class ResponseCreateRequest(BaseModel):
     output_schema_path: str | None = None
     tools: list[PromptToolDefinition] = Field(default_factory=list)
     tools_path: str | None = None
+    tool_choice: Literal["auto", "none", "required"] | dict[str, Any] | None = None
     mcp_tools: list[PromptMCPToolDefinition] = Field(default_factory=list)
     mcp_tools_path: str | None = None
     include_prompt_trace: bool = False
@@ -253,6 +258,8 @@ class ResponseCreateRequest(BaseModel):
                 "Specify either `response_format` / `response_format_path` or legacy "
                 "`output_schema` / `output_schema_path`, not both.",
             )
+        if self.tool_choice is not None and not (self.tools or self.tools_path or self.mcp_tools or self.mcp_tools_path):
+            raise ValueError("`tool_choice` requires at least one declared tool or tool definition path.")
         return self
 
 
@@ -286,6 +293,7 @@ class ResponseChunk(BaseModel):
     model: str
     delta: str | None = None
     reasoning: ReasoningOutput | None = None
+    tool_call_delta: list[dict[str, Any]] | None = None
     done: bool = False
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
     usage: CompletionUsage | None = Field(
