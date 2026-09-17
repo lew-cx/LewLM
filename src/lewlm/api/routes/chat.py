@@ -29,10 +29,11 @@ from lewlm.api.schemas.chat import (
     ResponseCreateRequest,
     ResponseCreateResponse,
     ResponseOutputText,
+    StreamErrorEnvelope,
 )
 from lewlm.core.chat import ChatStreamDelta
 from lewlm.core.contracts import GenerateMessage, ReasoningOutput, ReasoningVisibility
-from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import ConfigurationError, LewLMError
 from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace
 from lewlm.runtime.cancellation import request_cancelled
 from lewlm.runtime.request_context import apply_body_correlation_id
@@ -561,12 +562,12 @@ def _session_completion_callback(
 async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=None) -> AsyncIterator[str]:
     source_stream = None
     delivered_final_chunk = False
+    deltas: list[str] = []
     try:
         if request_cancelled():
             return
         sent_role = False
         sent_serving_profile = False
-        deltas: list[str] = []
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
             if request_cancelled():
@@ -626,6 +627,23 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
         yield f"data: {final_chunk.model_dump_json()}\n\n"
         delivered_final_chunk = True
         yield "data: [DONE]\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    except Exception as exc:  # noqa: BLE001 - every failure becomes a terminal event
+        # The response has already started, so an exception here cannot become
+        # an HTTP error; without this the client sees a reset socket. Emit a
+        # terminal chunk that names the failure and never replay the request.
+        error = _stream_error_envelope(exc, partial_output=bool(deltas), request_id=stream_session.request_id)
+        error_chunk = ChatCompletionChunk(
+            id=stream_session.request_id,
+            created=stream_session.created_at,
+            model=stream_session.model_id,
+            choices=[ChatCompletionChunkChoice(delta=ChatCompletionDelta(), finish_reason="error")],
+            error=error,
+        )
+        yield f"data: {error_chunk.model_dump_json()}\n\n"
+        delivered_final_chunk = True
+        yield "data: [DONE]\n\n"
     finally:
         # A disconnected client leaves this generator to be closed mid-iteration.
         # Closing the source explicitly makes cancellation deterministic instead
@@ -648,10 +666,10 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
 async def _response_stream(stream_session, *, on_close=None, on_complete=None) -> AsyncIterator[str]:
     source_stream = None
     delivered_final_chunk = False
+    deltas: list[str] = []
     try:
         if request_cancelled():
             return
-        deltas: list[str] = []
         sent_serving_profile = False
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
@@ -699,6 +717,20 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             serving_profile=stream_session.serving_profile if not sent_serving_profile else None,
         )
         yield f"data: {final_chunk.model_dump_json()}\n\n"
+        delivered_final_chunk = True
+        yield "data: [DONE]\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    except Exception as exc:  # noqa: BLE001 - every failure becomes a terminal event
+        error = _stream_error_envelope(exc, partial_output=bool(deltas), request_id=stream_session.request_id)
+        error_chunk = ResponseChunk(
+            id=stream_session.request_id,
+            created=stream_session.created_at,
+            model=stream_session.model_id,
+            done=True,
+            error=error,
+        )
+        yield f"data: {error_chunk.model_dump_json()}\n\n"
         delivered_final_chunk = True
         yield "data: [DONE]\n\n"
     finally:
@@ -760,6 +792,26 @@ def _safe_upload_name(*, index: int, file_name: str | None) -> str:
     sanitized = "".join(character if character.isalnum() or character in {".", "-", "_"} else "-" for character in base_name)
     cleaned = sanitized.strip("-.") or f"upload-{index}"
     return f"{index}-{cleaned}"
+
+
+def _stream_error_envelope(exc: BaseException, *, partial_output: bool, request_id: str) -> StreamErrorEnvelope:
+    """Structured, redacted description of why a stream ended early."""
+
+    if isinstance(exc, LewLMError):
+        logger.warning(
+            "Stream ended with a structured error.",
+            extra={"request_id": request_id, "error_code": exc.code, "partial_output": partial_output},
+        )
+        # Upstream bodies may echo prompts or credentials; keep them out of the wire.
+        details = {key: value for key, value in exc.details.items() if key != "body"}
+        return StreamErrorEnvelope(code=exc.code, message=str(exc), details=details, partial_output=partial_output)
+    logger.exception("Stream ended with an unexpected error.", extra={"request_id": request_id})
+    return StreamErrorEnvelope(
+        code="internal_error",
+        message="The stream ended because of an internal error.",
+        details={"exception": type(exc).__name__},
+        partial_output=partial_output,
+    )
 
 
 async def _close_abandoned_stream(source_stream, *, completed: bool, request_id: str) -> None:

@@ -36,7 +36,7 @@ from lewlm.core.contracts import (
 )
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.adapters import LocalOpenAICompatibleAdapterRuntime, summarize_feature_preservation
-from lewlm.structured_output import JSONSchemaResponseFormat
+from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
 
 
 def test_external_adapter_runtime_requires_loopback_endpoint(tmp_path: Path) -> None:
@@ -359,10 +359,16 @@ def test_external_adapter_runtime_records_forwarded_structured_output_metadata(
     assert response.output_text == '{"summary":"ok"}'
     status = request.metadata["structured_output_runtime"]
     assert status["runtime"] == runtime.name
+    # Forwarded natively: the *server's* decoder enforces it. LewLM names the
+    # path but never claims to have observed that decoder.
     assert status["enforcement"] == "decode_time"
-    assert status["decoder_enforced"] is True
+    assert status["decoder_enforced"] is False
+    assert status["enforcement_evidence"] == "upstream_native"
     assert status["fallback_used"] is False
     assert request.metadata["structured_output_bridge"] == {"forwarded": True, "type": "json_schema"}
+    # The capability prediction is the same verdict, so it cannot drift from the outcome.
+    predicted = runtime.structured_output_runtime_status(request.structured_output)
+    assert predicted is not None and predicted.model_dump(mode="json") == status
 
 
 def test_external_adapter_runtime_reports_prompt_guided_structured_output_status(
@@ -390,10 +396,21 @@ def test_external_adapter_runtime_reports_prompt_guided_structured_output_status
 
     assert status is not None
     assert status.runtime == runtime.name
-    assert status.enforcement == "prompt_guided"
+    assert status.enforcement == "decode_time"
     assert status.decoder_enforced is False
-    assert status.fallback_used is True
-    assert "adapter contract" in status.fallback_reason
+    assert status.enforcement_evidence == "upstream_native"
+    assert status.fallback_used is False
+
+    # A grammar on a profile that has no native grammar transport stays prompt-guided.
+    generic = LocalOpenAICompatibleAdapterRuntime(
+        settings=settings.model_copy(update={"external_accelerator_profile": "openai_compatible"}),
+    )
+    grammar_status = generic.structured_output_runtime_status(GrammarResponseFormat(grammar='root ::= "x"'))
+    assert grammar_status is not None
+    assert grammar_status.enforcement == "prompt_guided"
+    assert grammar_status.enforcement_evidence == "prompt"
+    assert grammar_status.fallback_used is True
+    assert "loopback adapter boundary" in grammar_status.fallback_reason
 
 
 def test_external_adapter_runtime_matches_advertised_model_metadata_paths(

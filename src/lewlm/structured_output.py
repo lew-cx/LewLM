@@ -67,6 +67,14 @@ class StructuredOutputValidation(BaseModel):
     issues: list[StructuredOutputIssue] = Field(default_factory=list)
 
 
+#: Who constrained the output, as far as LewLM can see. ``decoder``: a packaged
+#: runtime constrained its own decoder. ``upstream_native``: the contract was
+#: forwarded natively to an external server that accepted it; the decoder is
+#: the server's and LewLM validates conformance after generation instead of
+#: claiming it. ``prompt``: prompt guidance plus post-generation validation.
+StructuredOutputEnforcementEvidence = Literal["decoder", "upstream_native", "prompt"]
+
+
 class StructuredOutputRuntimeStatus(BaseModel):
     """Runtime-side enforcement status recorded during generation."""
 
@@ -76,6 +84,7 @@ class StructuredOutputRuntimeStatus(BaseModel):
     decoder_enforced: bool = False
     fallback_used: bool = False
     fallback_reason: str | None = None
+    enforcement_evidence: StructuredOutputEnforcementEvidence | None = None
     #: Bounds a decoder could not be constrained to and that LewLM therefore
     #: checked after generation instead — `properties.summary.maxLength (5000)`.
     #: Decode-time enforcement of the surrounding structure still holds.
@@ -89,6 +98,7 @@ class StructuredOutputResult(BaseModel):
     contract: StructuredOutputRequest | None = None
     enforcement: Literal["none", "prompt_guided", "decode_time"] = "none"
     decoder_enforced: bool = False
+    enforcement_evidence: StructuredOutputEnforcementEvidence | None = None
     fallback_used: bool = False
     fallback_reason: str | None = None
     grammar_relaxations: list[str] = Field(default_factory=list)
@@ -165,6 +175,7 @@ def analyze_structured_output(
             contract=contract,
             enforcement=status.enforcement,
             decoder_enforced=status.decoder_enforced,
+            enforcement_evidence=_enforcement_evidence(status),
             fallback_used=status.fallback_used,
             fallback_reason=status.fallback_reason,
             grammar_relaxations=list(status.grammar_relaxations),
@@ -193,11 +204,18 @@ def analyze_structured_output(
         contract=contract,
         enforcement=status.enforcement,
         decoder_enforced=status.decoder_enforced,
+        enforcement_evidence=_enforcement_evidence(status),
         fallback_used=status.fallback_used,
         fallback_reason=status.fallback_reason,
         grammar_relaxations=list(status.grammar_relaxations),
         validation=validation,
     )
+
+
+def _enforcement_evidence(status: StructuredOutputRuntimeStatus) -> StructuredOutputEnforcementEvidence:
+    if status.enforcement_evidence is not None:
+        return status.enforcement_evidence
+    return "decoder" if status.decoder_enforced else "prompt"
 
 
 def _runtime_status(

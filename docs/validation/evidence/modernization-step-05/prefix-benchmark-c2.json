@@ -1,0 +1,254 @@
+{
+  "format": "lewlm-bridge-prefix-benchmark-v1",
+  "captured_at": "2026-09-17T16:19:26Z",
+  "label": "oMLX 0.7.0.dev3 + Qwen2.5-0.5B-Instruct-4bit, M2 Max, concurrency 2",
+  "host": {
+    "system": "Darwin",
+    "release": "25.2.0",
+    "machine": "arm64"
+  },
+  "settings": {
+    "requests": 12,
+    "warmups": 3,
+    "concurrency": 2,
+    "prefix_tokens_approx": 600,
+    "prefix_chars": 4550,
+    "max_tokens": 32,
+    "lewlm_response_cache": "not applicable to chat",
+    "engine_prefix_cache_hits": "unknown (not exposed through the bridge)"
+  },
+  "via_lewlm": {
+    "cold_first_request": {
+      "status": 200,
+      "ttfc_ms": 165.3,
+      "total_ms": 165.6,
+      "chunks": 2
+    },
+    "warmups": [
+      {
+        "status": 200,
+        "ttfc_ms": 140.9,
+        "total_ms": 141.3,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 142.4,
+        "total_ms": 142.7,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 141.1,
+        "total_ms": 141.4,
+        "chunks": 2
+      }
+    ],
+    "measured_count": 12,
+    "succeeded": 12,
+    "ttfc_ms": {
+      "p50": 267.2,
+      "p95": 267.4,
+      "mean": 249.0
+    },
+    "total_ms": {
+      "p50": 267.6,
+      "p95": 269.8,
+      "mean": 259.1
+    },
+    "runs": [
+      {
+        "status": 200,
+        "ttfc_ms": 215.6,
+        "total_ms": 282.6,
+        "chunks": 3
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 215.2,
+        "total_ms": 265.3,
+        "chunks": 3
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 152.5,
+        "total_ms": 152.9,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 269.4,
+        "total_ms": 269.8,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.2,
+        "total_ms": 267.5,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 266.6,
+        "total_ms": 266.9,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 266.3,
+        "total_ms": 266.6,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.3,
+        "total_ms": 267.6,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.3,
+        "total_ms": 267.6,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 266.5,
+        "total_ms": 266.9,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.2,
+        "total_ms": 267.6,
+        "chunks": 2
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.4,
+        "total_ms": 267.7,
+        "chunks": 2
+      }
+    ]
+  },
+  "direct": {
+    "cold_first_request": {
+      "status": 200,
+      "ttfc_ms": 135.6,
+      "total_ms": 135.9,
+      "chunks": 5
+    },
+    "warmups": [
+      {
+        "status": 200,
+        "ttfc_ms": 136.6,
+        "total_ms": 136.9,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 137.5,
+        "total_ms": 137.7,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 137.1,
+        "total_ms": 137.4,
+        "chunks": 5
+      }
+    ],
+    "measured_count": 12,
+    "succeeded": 12,
+    "ttfc_ms": {
+      "p50": 267.7,
+      "p95": 272.6,
+      "mean": 249.0
+    },
+    "total_ms": {
+      "p50": 268.9,
+      "p95": 272.9,
+      "mean": 258.7
+    },
+    "runs": [
+      {
+        "status": 200,
+        "ttfc_ms": 206.4,
+        "total_ms": 269.8,
+        "chunks": 6
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 206.1,
+        "total_ms": 256.1,
+        "chunks": 6
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 150.7,
+        "total_ms": 151.0,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 271.2,
+        "total_ms": 271.5,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.5,
+        "total_ms": 267.8,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.6,
+        "total_ms": 267.9,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 268.6,
+        "total_ms": 268.9,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 268.8,
+        "total_ms": 269.1,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.7,
+        "total_ms": 268.0,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 267.7,
+        "total_ms": 268.0,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 272.7,
+        "total_ms": 273.0,
+        "chunks": 5
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 272.6,
+        "total_ms": 272.9,
+        "chunks": 5
+      }
+    ]
+  },
+  "middleware_overhead": {
+    "ttfc_p95_delta_ms": -5.2,
+    "ttfc_p50_delta_ms": -0.5,
+    "roadmap_target_ms": 27.3,
+    "within_target": true
+  }
+}

@@ -655,14 +655,40 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
     ) -> StructuredOutputRuntimeStatus | None:
         if contract is None or contract.type == "text":
             return None
+        # This is the same verdict `_chat_payload` records, so the capability
+        # prediction and the generation outcome cannot drift apart.
+        if contract.type == "json_schema" or self._forwards_grammar_natively():
+            return self._upstream_native_status(contract.type)
         _, reason = _profile_feature_map(self._settings)["constrained_decoding"]
         return StructuredOutputRuntimeStatus(
             runtime=self.name,
             mode=contract.type,
             enforcement="prompt_guided",
             decoder_enforced=False,
+            enforcement_evidence="prompt",
             fallback_used=True,
             fallback_reason=f"{reason} This remains a loopback adapter boundary rather than packaged decode-time parity.",
+        )
+
+    def _forwards_grammar_natively(self) -> bool:
+        return self.endpoint.profile in {"vllm_local", "sglang_local", "vllm_mlx"}
+
+    def _upstream_native_status(self, mode: str) -> StructuredOutputRuntimeStatus:
+        """The contract is forwarded to the server as-is; the server's decoder enforces it.
+
+        `decode_time` names the path (no prompt scaffolding), `decoder_enforced`
+        stays False because LewLM never observes the upstream decoder, and the
+        output is validated after generation. Consumers that need a guarantee
+        read `validation`, not this flag.
+        """
+
+        return StructuredOutputRuntimeStatus(
+            runtime=self.name,
+            mode=mode,  # type: ignore[arg-type]
+            enforcement="decode_time",
+            decoder_enforced=False,
+            enforcement_evidence="upstream_native",
+            fallback_used=False,
         )
 
     def supports_capability(self, capability: CapabilityName) -> bool:
@@ -752,7 +778,22 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             )
 
     async def _unload_model(self, model_id: str) -> None:
+        # Nothing to free here: the external server owns the weights. Only
+        # LewLM's lease bookkeeping changes, and the lifecycle result says so.
         return None
+
+    def lifecycle_note(self, operation: str) -> str | None:
+        if operation == "unload":
+            return (
+                "This released LewLM's bridge lease only; the external server owns model residency and LewLM "
+                "did not free its memory (upstream residency: unknown)."
+            )
+        if operation == "warm":
+            return "Warm sent a one-token probe to the external server; residency and eviction remain the server's."
+        return None
+
+    def lifecycle_backend_operation_performed(self, operation: str) -> bool:
+        return operation != "unload"
 
     async def _warm_model(self, model_id: str) -> None:
         manifest = self._loaded_manifests[model_id]
@@ -1211,12 +1252,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 "forwarded": True,
                 "type": request.structured_output.type if request.structured_output is not None else "text",
             }
-            request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
-                runtime=self.name,
-                mode=request.structured_output.type if request.structured_output is not None else "text",
-                enforcement="decode_time",
-                decoder_enforced=True,
-                fallback_used=False,
+            request.metadata["structured_output_runtime"] = self._upstream_native_status(
+                request.structured_output.type if request.structured_output is not None else "text",
             ).model_dump(mode="json")
         elif (
             request.structured_output is not None
@@ -1230,13 +1267,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 "forwarded": True,
                 "type": "grammar",
             }
-            request.metadata["structured_output_runtime"] = StructuredOutputRuntimeStatus(
-                runtime=self.name,
-                mode="grammar",
-                enforcement="decode_time",
-                decoder_enforced=True,
-                fallback_used=False,
-            ).model_dump(mode="json")
+            request.metadata["structured_output_runtime"] = self._upstream_native_status("grammar").model_dump(mode="json")
         return payload
 
     async def _stream_chat_completion(self, payload: dict[str, Any]):

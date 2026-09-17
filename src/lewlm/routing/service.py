@@ -566,6 +566,19 @@ class ModelRouter:
                 f"`{runtime.name}` enforces {' and '.join(f'`{mode}`' for mode in decode_time_modes)} "
                 "at decode time on this host."
             )
+        elif any(
+            status is not None and status.enforcement_evidence == "upstream_native"
+            for status in (json_schema_status, grammar_status)
+        ):
+            native_modes = [
+                mode for mode, status in (("json_schema", json_schema_status), ("grammar", grammar_status))
+                if status is not None and status.enforcement_evidence == "upstream_native"
+            ]
+            reason = (
+                f"`{runtime.name}` forwards {' and '.join(f'`{mode}`' for mode in native_modes)} natively to the "
+                "external server, whose decoder enforces it; LewLM does not observe that decoder and validates the "
+                "output after generation instead of claiming decode-time enforcement."
+            )
         else:
             reason = (
                 f"`{runtime.name}` records the contract but falls back to prompt-guided generation; "

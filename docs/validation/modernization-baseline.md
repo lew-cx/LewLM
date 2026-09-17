@@ -149,6 +149,34 @@ Real-engine evidence: none claimed; deferred to steps 05–08 with commands in
 the step record. Rollback: revert the step commit. Next eligible step: 05,
 oMLX (Apple Silicon host available), or 06–08 pending Linux/NVIDIA.
 
+## Step 05 — complete; Apple Silicon lane passed
+
+Commit: this step's commit, immediately after step 04 commit `24aafb4`.
+Full record: [modernization-step-05.md](modernization-step-05.md).
+
+Behavior implemented: `examples/backends/omlx/` recipe (pinned commit,
+isolated install, loopback launch with explicit limits, LewLM env, lock);
+`docs/operations/backends/omlx.md`; `scripts/backend_acceptance.py` (the
+common real-engine suite over LewLM's HTTP API) and
+`scripts/bridge_prefix_benchmark.py`; `omlx` promoted to `validated` with
+environment pins, lock sha256, evidence path, and scoped notes (`notes`
+added to the validated contract). Fixes the run surfaced: structured-output
+prediction/outcome now agree with a new `enforcement_evidence` field and no
+false decoder claim for bridges; streams that fail after output started end
+with a terminal `StreamErrorEnvelope` chunk instead of a reset socket;
+bridge lifecycle results say the unload released a lease only.
+
+Real-engine evidence: oMLX 0.7.0.dev3 @ b45fb7e, mlx 0.32.2, Python 3.11.15,
+Apple M2 Max / macOS Darwin 25.2.0, Qwen2.5-0.5B-Instruct-4bit @ a5339a4 —
+acceptance 10 passed / 0 failed / tools inconclusive / fallback done by hand;
+engine stop, stale inventory, restart, and mid-stream kill all observed;
+LewLM first-content overhead +4.8 ms p50 at concurrency 1, none at 2.
+
+Deferred: tools on a larger model, vision/embeddings/rerank probes, custom
+kernels, the full step-09 benchmark protocol, upstream abort verification
+from oMLX's log. Rollback: revert the step commit. Next eligible steps: 06–08
+need Linux/NVIDIA; 09–10 can proceed on this host.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

@@ -169,6 +169,25 @@ class ChatCompletionResponse(BaseModel):
     serving_profile: ServingProfileApplication | None = None
 
 
+class StreamErrorEnvelope(BaseModel):
+    """Why a stream ended before its normal terminal chunk.
+
+    Carried on a final chunk whose `finish_reason` is `error` (chat) or whose
+    `done` is true (responses), followed by `[DONE]`, so a client sees a
+    structured failure instead of a dropped connection. Any output already
+    delivered stands; LewLM never replays the request. Raw backend payloads
+    and credentials are never included.
+    """
+
+    code: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    partial_output: bool = Field(
+        default=False,
+        description="True when at least one content delta had been delivered before the failure.",
+    )
+
+
 class ChatCompletionDelta(BaseModel):
     role: str | None = None
     content: str | None = None
@@ -196,6 +215,10 @@ class ChatCompletionChunk(BaseModel):
     metadata: ExecutionMetadata | None = None
     structured_output: StructuredOutputResult | None = None
     tool_calls: ToolCallParseResult | None = None
+    error: StreamErrorEnvelope | None = Field(
+        default=None,
+        description="Present only on a terminal chunk with finish_reason `error`: the stream ended incompletely.",
+    )
     prompt_trace: PromptCompilationTrace | None = Field(
         default=None,
         description=(
@@ -303,6 +326,10 @@ class ResponseChunk(BaseModel):
     metadata: ExecutionMetadata | None = None
     structured_output: StructuredOutputResult | None = None
     tool_calls: ToolCallParseResult | None = None
+    error: StreamErrorEnvelope | None = Field(
+        default=None,
+        description="Present only on a terminal chunk (`done` true) when the stream ended incompletely.",
+    )
     prompt_trace: PromptCompilationTrace | None = Field(
         default=None,
         description=(

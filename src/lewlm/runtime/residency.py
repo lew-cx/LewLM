@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -342,7 +342,9 @@ class ModelResidencyManager:
             capability="model_lifecycle",
         ):
             await runtime.warm_model(manifest.model_id)
-        return result.model_copy(update={"reason": "Model is loaded and its backend warm hook completed."})
+        return result.model_copy(
+            update={"reason": _with_lifecycle_note(runtime, "warm", "Model is loaded and its backend warm hook completed.")},
+        )
 
     async def unload(
         self,
@@ -541,9 +543,9 @@ class ModelResidencyManager:
             runtime=runtime.name,
             previous_state=previous_state,
             active_usage_count=0,
-            backend_operation_performed=True,
+            backend_operation_performed=_lifecycle_backend_operation(runtime, "unload"),
             joined_existing_operation=joined_existing_operation,
-            reason="Model drained and unloaded." if drain else "Model unloaded.",
+            reason=_with_lifecycle_note(runtime, "unload", "Model drained and unloaded." if drain else "Model unloaded."),
         )
 
     async def list_residencies(self) -> list[ModelResidencySnapshot]:
@@ -732,3 +734,25 @@ class ModelResidencyManager:
         if task.cancelled():
             return
         task.exception()
+
+
+def _with_lifecycle_note(runtime: Any, operation: str, reason: str) -> str:
+    """Let a runtime qualify what a lifecycle operation actually did to its backend.
+
+    A bridge runtime holds a lease, not the weights: its "unload" releases
+    LewLM's bookkeeping and must not read as having freed the server's memory.
+    """
+
+    note = getattr(runtime, "lifecycle_note", None)
+    if not callable(note):
+        return reason
+    text = note(operation)
+    return f"{reason} {text}" if isinstance(text, str) and text else reason
+
+
+def _lifecycle_backend_operation(runtime: Any, operation: str) -> bool:
+    performed = getattr(runtime, "lifecycle_backend_operation_performed", None)
+    if not callable(performed):
+        return True
+    return bool(performed(operation))
+

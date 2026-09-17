@@ -1,0 +1,60 @@
+{
+  "format": "lewlm-engine-environment-v1",
+  "engine": {
+    "name": "omlx",
+    "version": "0.7.0.dev3",
+    "source": "https://github.com/jundot/omlx",
+    "revision": "b45fb7e5a127355c0769d0b7c828849db17492e7"
+  },
+  "install": {
+    "command": "python3.11 -m venv venv && venv/bin/pip install ./src",
+    "wall_seconds": 116.7,
+    "network": "PyPI + GitHub (mlx-lm, mlx-embeddings, mlx-vlm from pinned commits)",
+    "custom_kernels_built": false,
+    "packages": 109,
+    "lock": "examples/backends/omlx/requirements.lock.txt"
+  },
+  "server": {
+    "command": "omlx serve --model-dir <dir> --host 127.0.0.1 --port <port> --api-key <env> --memory-guard safe --memory-guard-gb 16 --max-concurrent-requests 4 --hot-cache-max-size 2GB --paged-ssd-cache-dir <dir> --paged-ssd-cache-max-size 2GB",
+    "ready_seconds_cold": 2,
+    "ready_seconds_restart": 1.7,
+    "advertised": {
+      "object": "list",
+      "data": [
+        {
+          "id": "Qwen2.5-0.5B-Instruct-4bit",
+          "object": "model",
+          "created": 1789661167,
+          "owned_by": "omlx",
+          "max_model_len": 32768
+        }
+      ]
+    }
+  },
+  "host": {
+    "system": "Darwin",
+    "release": "25.2.0",
+    "machine": "arm64",
+    "cpu": "Apple M2 Max",
+    "memory_gib": 96,
+    "engine_python": "3.11.15",
+    "lewlm_python": "3.14.7"
+  },
+  "model": {
+    "repository": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+    "revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
+    "model_safetensors_sha256_verified": "ddffab9cbc7bf6dde941c6724841eeca8981fcfa81ca20ff8efff1396326d153"
+  },
+  "lewlm": {
+    "endpoint": {
+      "endpoint_id": "omlx",
+      "profile": "omlx",
+      "api_key_env": "OMLX_API_KEY",
+      "read_timeout_seconds": 120
+    },
+    "model_id": "qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48",
+    "source_path": "external://omlx/Qwen2.5-0.5B-Instruct-4bit",
+    "format_type": "unknown",
+    "context_length": 32768
+  }
+}

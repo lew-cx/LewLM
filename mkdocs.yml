@@ -50,4 +50,6 @@ nav:
   - Operations:
       - Security: security.md
       - Docker: operations/docker.md
+      - Backends:
+          - oMLX: operations/backends/omlx.md
       - Troubleshooting: operations/troubleshooting.md

@@ -70,6 +70,9 @@ class ValidatedRecipe(EvidenceModel):
     candidate: CandidatePins
     environment: EnvironmentPins
     evidence_path: NonEmpty
+    # Exactly which cases passed, and which were inconclusive or not probed.
+    # A validated recipe is a passing configuration, never a blanket claim.
+    notes: list[NonEmpty] = Field(default_factory=list)
 
 
 class FailedRecipe(EvidenceModel):

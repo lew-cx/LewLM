@@ -1,112 +1,136 @@
 {
-  "format": "lewlm-backend-compatibility-v1",
-  "recipes": [
-    {
-      "profile": "omlx",
-      "status": "deferred",
-      "candidate": {
-        "sources": {
-          "jundot/omlx": "b45fb7e5a127355c0769d0b7c828849db17492e7"
-        },
-        "model": {
-          "repository": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-          "revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
-          "tokenizer_revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
-          "license": "apache-2.0",
-          "format": "mlx",
-          "quantization": "4bit",
-          "files_sha256": {
-            "model.safetensors": "ddffab9cbc7bf6dde941c6724841eeca8981fcfa81ca20ff8efff1396326d153",
-            "added_tokens.json": "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
-            "tokenizer_config.json": "f7c61e32b7a17d19bf8e7037dcb74079a833e53ea9801f24008cac68458f03b7",
-            "special_tokens_map.json": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
-            "config.json": "b045e57ea90b8f1b35f89f954b176a5c1faa02bd0af2c89bcec191239d66cef4",
-            "tokenizer.json": "a8506e7111b80c6d8635951a02eab0f4e1a8e4e5772da83846579e97b16f61bf",
-            "README.md": "8cd48183a9d10279e02291f12f03a2db5585c222a0cf77f97dca3c87f79bd5e1",
-            "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
-            ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
-            "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
-            "model.safetensors.index.json": "54001cb4c11197119c206dde28e7be08e5872aab6c6d271aed339ec77e84f870"
-          },
-          "context_tokens": 2048,
-          "output_tokens": 64
-        }
-      },
-      "reason": "Engine not installed; current LewLM Python 3.14 environment is not a validated engine environment.",
-      "next_step": "Follow modernization roadmap step 05; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+ "format": "lewlm-backend-compatibility-v1",
+ "recipes": [
+  {
+   "profile": "omlx",
+   "status": "validated",
+   "candidate": {
+    "sources": {
+     "jundot/omlx": "b45fb7e5a127355c0769d0b7c828849db17492e7"
     },
-    {
-      "profile": "exllamav3_tabby",
-      "status": "deferred",
-      "candidate": {
-        "sources": {
-          "turboderp-org/exllamav3": "02aef45cd681b960a00afcd0749a4ab99e6c1bfe",
-          "theroyallab/tabbyAPI": "53da7919d4e45c63f4acbcbbc00cbe0f60a1ce65"
-        },
-        "model": {
-          "repository": "Qwen/Qwen2.5-0.5B-Instruct",
-          "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "license": "apache-2.0",
-          "format": "huggingface",
-          "quantization": "bf16",
-          "files_sha256": {
-            "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
-          },
-          "context_tokens": 2048,
-          "output_tokens": 64
-        }
-      },
-      "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-      "next_step": "Follow modernization roadmap step 06; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
-    },
-    {
-      "profile": "vllm_local",
-      "status": "deferred",
-      "candidate": {
-        "sources": {
-          "vllm-project/vllm": "42919b49c573aa0b06710616a3b9785674f36ef5"
-        },
-        "model": {
-          "repository": "Qwen/Qwen2.5-0.5B-Instruct",
-          "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "license": "apache-2.0",
-          "format": "huggingface",
-          "quantization": "bf16",
-          "files_sha256": {
-            "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
-          },
-          "context_tokens": 2048,
-          "output_tokens": 64
-        }
-      },
-      "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-      "next_step": "Follow modernization roadmap step 07; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
-    },
-    {
-      "profile": "sglang_local",
-      "status": "deferred",
-      "candidate": {
-        "sources": {
-          "sgl-project/sglang": "1b78083b428a095d7b0599141b350ac7f09a2bf0"
-        },
-        "model": {
-          "repository": "Qwen/Qwen2.5-0.5B-Instruct",
-          "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
-          "license": "apache-2.0",
-          "format": "huggingface",
-          "quantization": "bf16",
-          "files_sha256": {
-            "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
-          },
-          "context_tokens": 2048,
-          "output_tokens": 64
-        }
-      },
-      "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-      "next_step": "Follow modernization roadmap step 08; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+    "model": {
+     "repository": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+     "revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
+     "tokenizer_revision": "a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
+     "license": "apache-2.0",
+     "format": "mlx",
+     "quantization": "4bit",
+     "files_sha256": {
+      "model.safetensors": "ddffab9cbc7bf6dde941c6724841eeca8981fcfa81ca20ff8efff1396326d153",
+      "added_tokens.json": "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
+      "tokenizer_config.json": "f7c61e32b7a17d19bf8e7037dcb74079a833e53ea9801f24008cac68458f03b7",
+      "special_tokens_map.json": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+      "config.json": "b045e57ea90b8f1b35f89f954b176a5c1faa02bd0af2c89bcec191239d66cef4",
+      "tokenizer.json": "a8506e7111b80c6d8635951a02eab0f4e1a8e4e5772da83846579e97b16f61bf",
+      "README.md": "8cd48183a9d10279e02291f12f03a2db5585c222a0cf77f97dca3c87f79bd5e1",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "model.safetensors.index.json": "54001cb4c11197119c206dde28e7be08e5872aab6c6d271aed339ec77e84f870"
+     },
+     "context_tokens": 2048,
+     "output_tokens": 64
     }
-  ]
+   },
+   "environment": {
+    "python": "3.11.15",
+    "system": "Darwin",
+    "machine": "arm64 (Apple M2 Max, 12 cores, 96 GiB unified memory)",
+    "accelerator": "Apple M2 Max GPU via Metal (unified memory)",
+    "driver": "macOS Darwin 25.2.0 Metal",
+    "toolkit": "Xcode Command Line Tools; oMLX native custom kernels not built (OMLX_WITH_CUSTOM_KERNEL unset)",
+    "engine_versions": {
+     "omlx": "0.7.0.dev3 @ b45fb7e5a127355c0769d0b7c828849db17492e7",
+     "mlx": "0.32.2",
+     "mlx-lm": "0.31.3 @ ab1806e8f5d6aa035973af194a1b9198ab4754dc",
+     "transformers": "5.17.0",
+     "llguidance": "1.8.0"
+    },
+    "installation": {
+     "kind": "lock",
+     "path": "examples/backends/omlx/requirements.lock.txt",
+     "sha256": "2f9d9b1a06b8d4fc3fe7b3ed1747eb47d8a79aeb7001b715555a2416f36f73b0"
+    }
+   },
+   "evidence_path": "docs/validation/evidence/modernization-step-05/",
+   "notes": [
+    "Validated for text chat (non-streaming and streaming), sampling (top_p/seed/stop applied; seeded determinism observed), json_schema structured output forwarded natively and validated after generation, hidden reasoning, cancellation, two concurrent streams, error mapping, lifecycle lease semantics, engine stop/restart, and mid-stream engine loss.",
+    "Tool calling is inconclusive on this 0.5B model (it emitted a malformed <tool_call> block); vision, embeddings, and rerank were not probed. None of these are claimed.",
+    "Middleware overhead on repeated-prefix requests: +4.8 ms p50 / +4.9 ms p95 time-to-first-content at concurrency 1, within the roadmap target; no measurable overhead at concurrency 2."
+   ]
+  },
+  {
+   "profile": "exllamav3_tabby",
+   "status": "deferred",
+   "candidate": {
+    "sources": {
+     "turboderp-org/exllamav3": "02aef45cd681b960a00afcd0749a4ab99e6c1bfe",
+     "theroyallab/tabbyAPI": "53da7919d4e45c63f4acbcbbc00cbe0f60a1ce65"
+    },
+    "model": {
+     "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+     "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "license": "apache-2.0",
+     "format": "huggingface",
+     "quantization": "bf16",
+     "files_sha256": {
+      "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+     },
+     "context_tokens": 2048,
+     "output_tokens": 64
+    }
+   },
+   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
+   "next_step": "Follow modernization roadmap step 06; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+  },
+  {
+   "profile": "vllm_local",
+   "status": "deferred",
+   "candidate": {
+    "sources": {
+     "vllm-project/vllm": "42919b49c573aa0b06710616a3b9785674f36ef5"
+    },
+    "model": {
+     "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+     "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "license": "apache-2.0",
+     "format": "huggingface",
+     "quantization": "bf16",
+     "files_sha256": {
+      "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+     },
+     "context_tokens": 2048,
+     "output_tokens": 64
+    }
+   },
+   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
+   "next_step": "Follow modernization roadmap step 07; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+  },
+  {
+   "profile": "sglang_local",
+   "status": "deferred",
+   "candidate": {
+    "sources": {
+     "sgl-project/sglang": "1b78083b428a095d7b0599141b350ac7f09a2bf0"
+    },
+    "model": {
+     "repository": "Qwen/Qwen2.5-0.5B-Instruct",
+     "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "tokenizer_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+     "license": "apache-2.0",
+     "format": "huggingface",
+     "quantization": "bf16",
+     "files_sha256": {
+      "model.safetensors": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+     },
+     "context_tokens": 2048,
+     "output_tokens": 64
+    }
+   },
+   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
+   "next_step": "Follow modernization roadmap step 08; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+  }
+ ]
 }

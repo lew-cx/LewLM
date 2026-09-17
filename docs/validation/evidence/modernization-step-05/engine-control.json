@@ -1,0 +1,92 @@
+{
+  "format": "lewlm-engine-control-evidence-v1",
+  "engine": "oMLX 0.7.0.dev3 b45fb7e",
+  "model": "qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48",
+  "steps": [
+    {
+      "step": "engine_stopped_then_chat",
+      "status_code": 503,
+      "error_code": "runtime_unavailable",
+      "error_message": "Could not connect to the configured external accelerator endpoint.",
+      "endpoint_id": "omlx",
+      "fallback_policy": null,
+      "endpoint_inventory_state": null
+    },
+    {
+      "step": "scan_while_stopped",
+      "notes": [
+        "Endpoint `omlx` could not be read (The configured external accelerator endpoint `http://127.0.0.1:55543/v1/models` refused the connection.); keeping 1 previously registered model(s) as stale."
+      ],
+      "removed_count": 0,
+      "model_still_registered": true,
+      "endpoint": {
+        "inventory_state": "stale",
+        "inventory_error": "[Errno 61] Connection refused",
+        "advertised_model_ids": [
+          "Qwen2.5-0.5B-Instruct-4bit"
+        ],
+        "available": true
+      },
+      "native_runtimes_available": [
+        "frontier_experimental",
+        "llamacpp",
+        "mlx_audio",
+        "mlx_text",
+        "mlx_vision"
+      ]
+    },
+    {
+      "step": "engine_restarted",
+      "engine_ready_seconds": 1.7,
+      "chat_status": 200,
+      "chat_content": "Yes, I can say with confidence that",
+      "scan_notes": [
+        "Endpoint `omlx` (omlx) advertised 1 model(s) at http://127.0.0.1:55543."
+      ],
+      "endpoint": {
+        "inventory_state": "advertised",
+        "inventory_error": null,
+        "advertised_model_ids": [
+          "Qwen2.5-0.5B-Instruct-4bit"
+        ],
+        "available": true
+      }
+    },
+    {
+      "step": "engine_killed_mid_stream",
+      "stream_status": 200,
+      "events_received": 3,
+      "saw_done": true,
+      "stream_end": "closed cleanly",
+      "terminal_finish_reason": "error",
+      "terminal_error": {
+        "code": "runtime_unavailable",
+        "message": "External accelerator stream failed.",
+        "partial_output": true
+      },
+      "lewlm_requests_delta": 1,
+      "lewlm_failures_delta": 1,
+      "endpoint_after": {
+        "inventory_state": "advertised",
+        "inventory_error": null,
+        "advertised_model_ids": [
+          "Qwen2.5-0.5B-Instruct-4bit"
+        ],
+        "available": true
+      }
+    },
+    {
+      "step": "engine_restarted_again",
+      "engine_ready_seconds": 1.7,
+      "chat_status": 200,
+      "endpoint": {
+        "inventory_state": "advertised",
+        "inventory_error": null,
+        "advertised_model_ids": [
+          "Qwen2.5-0.5B-Instruct-4bit"
+        ],
+        "available": true
+      }
+    }
+  ]
+}

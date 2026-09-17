@@ -322,6 +322,14 @@
           "minLength": 1,
           "title": "Evidence Path",
           "type": "string"
+        },
+        "notes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
         }
       },
       "required": [

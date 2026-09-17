@@ -151,6 +151,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** portable profile/translation tests run everywhere. On Apple Silicon, execute the common real-engine acceptance suite below, repeated-prefix measurements, server restart/refresh, and two simultaneous chats. Defer that hardware lane on other hosts. Publish the exact passing model/configuration, not a blanket oMLX support claim.
 
+**Implementation status:** completed on 2026-09-17 with the Apple Silicon lane executed for real. `omlx` is `validated` in `examples/backends/compatibility.json` for oMLX `b45fb7e` + `mlx-community/Qwen2.5-0.5B-Instruct-4bit` on this host; see the [validation record](../validation/modernization-step-05.md), the [recipe](../../examples/backends/omlx/README.md), and the [operator doc](../operations/backends/omlx.md). Tools are inconclusive on the 0.5B model; vision/embeddings/rerank are not probed. The common suite lives in `scripts/backend_acceptance.py` and the prefix measurement in `scripts/bridge_prefix_benchmark.py`, both HTTP-only, for reuse by steps 06–08 and Chap.
+
 ## Step 06 — Add ExLlamaV3 through TabbyAPI
 
 **Depends on:** 02 and 04. **Touch:** shared adapter profile registry/settings, format/evidence reporting; **proposed** `examples/backends/exllamav3-tabby/` and matching operator documentation.
