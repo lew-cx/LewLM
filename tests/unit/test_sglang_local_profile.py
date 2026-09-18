@@ -203,7 +203,7 @@ def test_stopped_sglang_is_a_structured_endpoint_failure_that_keeps_native_candi
         fake.stop()
         runtime = services.runtime_catalog.get_endpoint_runtime("sglang")
         runtime.invalidate_discovery_cache()
-        with pytest.raises(RoutingError) as excinfo:
+        with pytest.raises(RuntimeUnavailableError) as excinfo:
             services.model_router.route_chat(manifest.model_id)
         assert excinfo.value.details["endpoint_id"] == "sglang"
         assert excinfo.value.details["engine_profile"] == "sglang_local"

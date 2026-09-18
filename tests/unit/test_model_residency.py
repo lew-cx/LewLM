@@ -346,3 +346,47 @@ async def test_residency_events_distinguish_joined_load_usage_and_drain() -> Non
         "model.unloaded",
     ]
     assert len({event.payload["operation_id"] for event in drain_events}) == 1
+
+
+async def test_a_waiter_about_to_lease_is_counted_until_its_lease_is_taken() -> None:
+    """The `balanced` policy unloads a runtime's *other* idle models after each
+    request. A model whose load just finished has no active lease for an
+    instant before its waiter takes one; that waiter counts as pending until
+    `acquire` converts it into usage under the same lock, so the model never
+    looks idle in between."""
+
+    runtime = ControlledRuntime()
+    runtime.allow_load.clear()
+    residency = manager()
+    selected = manifest("model-b")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def use() -> None:
+        async with residency.acquire(runtime, selected):
+            entered.set()
+            await release.wait()
+
+    waiter = asyncio.create_task(use())
+    await runtime.load_started.wait()
+    snapshot = await residency.get_residency("model-b")
+    assert snapshot is not None and snapshot.state == ModelResidencyState.LOADING
+    assert snapshot.pending_lease_count == 1, "the caller waiting on the load is visible"
+    with pytest.raises(ModelLifecycleConflictError) as excinfo:
+        await residency.unload(runtime, selected)
+    assert excinfo.value.details["pending_lease_count"] == 1
+
+    runtime.allow_load.set()
+    await entered.wait()
+    snapshot = await residency.get_residency("model-b")
+    assert snapshot is not None and snapshot.state == ModelResidencyState.READY
+    assert snapshot.active_usage_count == 1 and snapshot.pending_lease_count == 0, "pending became the lease, never idle in between"
+    with pytest.raises(ModelLifecycleConflictError):
+        await residency.unload(runtime, selected)
+
+    release.set()
+    await waiter
+    snapshot = await residency.get_residency("model-b")
+    assert snapshot is not None and snapshot.active_usage_count == 0 and snapshot.pending_lease_count == 0
+    await residency.unload(runtime, selected)
+    assert runtime.unload_calls == 1

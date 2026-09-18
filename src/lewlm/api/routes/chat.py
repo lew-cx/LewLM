@@ -559,18 +559,46 @@ def _session_completion_callback(
     return callback
 
 
+def _cancelled_chat_chunk(stream_session) -> str:
+    """The terminal frame for a named cancel: the client is still connected and
+    must be able to tell "stopped on request" from a dropped connection."""
+
+    chunk = ChatCompletionChunk(
+        id=stream_session.request_id,
+        created=stream_session.created_at,
+        model=stream_session.model_id,
+        choices=[ChatCompletionChunkChoice(delta=ChatCompletionDelta(), finish_reason="cancelled")],
+        metadata=stream_session.metadata,
+    )
+    return f"data: {chunk.model_dump_json()}\n\ndata: [DONE]\n\n"
+
+
+def _cancelled_response_chunk(stream_session) -> str:
+    chunk = ResponseChunk(
+        id=stream_session.request_id,
+        created=stream_session.created_at,
+        model=stream_session.model_id,
+        done=True,
+        finish_reason="cancelled",
+        metadata=stream_session.metadata,
+    )
+    return f"data: {chunk.model_dump_json()}\n\ndata: [DONE]\n\n"
+
+
 async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=None) -> AsyncIterator[str]:
     source_stream = None
     delivered_final_chunk = False
     deltas: list[str] = []
     try:
         if request_cancelled():
+            yield _cancelled_chat_chunk(stream_session)
             return
         sent_role = False
         sent_serving_profile = False
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
             if request_cancelled():
+                yield _cancelled_chat_chunk(stream_session)
                 return
             if item is None:
                 yield ": keep-alive\n\n"
@@ -597,6 +625,7 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
             sent_serving_profile = True
             yield f"data: {chunk.model_dump_json()}\n\n"
         if request_cancelled():
+            yield _cancelled_chat_chunk(stream_session)
             return
         if on_complete is not None:
             try:
@@ -669,11 +698,13 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
     deltas: list[str] = []
     try:
         if request_cancelled():
+            yield _cancelled_response_chunk(stream_session)
             return
         sent_serving_profile = False
         source_stream = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
         async for item in _stream_with_heartbeat(source_stream):
             if request_cancelled():
+                yield _cancelled_response_chunk(stream_session)
                 return
             if item is None:
                 yield ": keep-alive\n\n"
@@ -693,6 +724,7 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             sent_serving_profile = True
             yield f"data: {chunk.model_dump_json()}\n\n"
         if request_cancelled():
+            yield _cancelled_response_chunk(stream_session)
             return
         if on_complete is not None:
             try:
@@ -708,6 +740,7 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             model=stream_session.model_id,
             reasoning=stream_session.reasoning,
             done=True,
+            finish_reason=getattr(stream_session, "finish_reason", "stop"),
             citations=stream_session.citations,
             usage=_stream_usage(stream_session),
             metadata=stream_session.metadata,
@@ -728,6 +761,7 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             created=stream_session.created_at,
             model=stream_session.model_id,
             done=True,
+            finish_reason="error",
             error=error,
         )
         yield f"data: {error_chunk.model_dump_json()}\n\n"

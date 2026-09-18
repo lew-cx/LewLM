@@ -20,7 +20,7 @@ from lewlm.config.endpoints import ExternalEndpoint
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.bootstrap import bootstrap_services
 from lewlm.core.contracts import ModelFormat, ModelModality, RuntimeAffinity
-from lewlm.core.errors import ConversionError, RoutingError
+from lewlm.core.errors import ConversionError, RoutingError, RuntimeUnavailableError
 from lewlm.core.execution_metadata import build_routed_execution_metadata
 from lewlm.registry import ollama_inventory
 from lewlm.registry.external_inventory import build_external_manifest
@@ -350,7 +350,7 @@ def test_unavailable_endpoint_surfaces_failure_by_default_and_leaves_other_paths
         alpha.stop()
         alpha_runtime.invalidate_discovery_cache()
 
-        with pytest.raises(RoutingError) as excinfo:
+        with pytest.raises(RuntimeUnavailableError) as excinfo:
             services.model_router.route_chat(alpha_only.model_id)
         assert excinfo.value.details["endpoint_id"] == "alpha"
         assert excinfo.value.details["fallback_policy"] == "none"
@@ -387,8 +387,9 @@ def test_explicit_alias_policy_substitutes_only_the_configured_registered_model(
         assert metadata.routing.fallback_from_model_id == alpha_only.model_id
         assert metadata.model.requested_model_id == alpha_only.model_id and metadata.model.resolved_model_id == beta_shared.model_id
 
-        # An alias to an unregistered model is not a fallback; the failure surfaces.
-        with pytest.raises(RoutingError) as excinfo:
+        # An alias to an unregistered model is not a fallback; the outage surfaces
+        # as the endpoint's unavailability, with the unusable alias named.
+        with pytest.raises(RuntimeUnavailableError) as excinfo:
             services.model_router.route_chat(alpha_shared.model_id)
         assert any("does-not-exist" in item for item in excinfo.value.details["alternatives"])
 

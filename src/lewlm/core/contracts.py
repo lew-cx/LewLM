@@ -321,6 +321,14 @@ class ModelCapabilityAvailability(BaseModel):
     ready_capabilities: list["CapabilityName"] = Field(default_factory=list)
     blocked_capabilities: list["CapabilityName"] = Field(default_factory=list)
     reason: str
+    #: Where a chat for this model executes: the named endpoint and engine
+    #: profile for a bridge-backed model, `None` for a packaged runtime.
+    endpoint_id: str | None = None
+    engine_profile: str | None = None
+    execution_locality: str | None = None
+    #: `packaged` for a LewLM-run model; for a bridge, the endpoint's cached
+    #: inventory state (`advertised`, `stale`, `failed`, `unknown`) — no probe.
+    engine_state: str | None = None
 
 
 class ModelInventory(BaseModel):

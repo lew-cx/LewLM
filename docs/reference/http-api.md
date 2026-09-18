@@ -12,7 +12,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/health` | service, storage, configuration, install-profile, pack, and capability-readiness health |
+| `GET` | `/v1/health` | service, storage, configuration, install-profile, pack, and capability-readiness health; `engines[]` is each configured external engine's cached inventory state (`advertised`, `stale`, `failed`, `unknown`) — service status never implies an engine is reachable |
 | `GET` | `/v1/cache/stats` | cache and performance-feature snapshot |
 | `GET` | `/v1/runtime` | stable process identity, compact live counts, and `startup` — the three startup phases (`lewlm_ready_seconds`, per-endpoint engine `state`/`first_advertised_at` from the cached inventory, process-local `warm_models`/`loading_models`) read without probing an engine or loading a model |
 | `GET` | `/v1/runtime/stats` | readiness, runtime, scheduler, residency, and runtime-strategy stats |
@@ -43,7 +43,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/models` | list registry manifests, annotated with per-model serving readiness |
+| `GET` | `/v1/models` | list registry manifests, annotated with per-model serving readiness; `capability_availability[]` adds `endpoint_id`, `engine_profile`, `execution_locality` (null for packaged runtimes) and `engine_state` (`packaged`, or the endpoint's cached state) so a picker can show where a model runs and whether its engine is up |
 | `GET` | `/v1/models/{model_id}` | one manifest plus its readiness annotation |
 | `GET` | `/v1/models/{model_id}/capabilities` | per-model capability, readiness, and runtime report |
 | `POST` | `/v1/models/scan` | scan roots and refresh registry |
@@ -231,7 +231,7 @@ Backends differ in what they expose, so LewLM never silently drops a control. `m
 
 ### Streaming usage
 
-The final streaming chunk carries `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Earlier chunks have `usage: null`, since the totals are not knowable before the stream ends. `usage.measured` is `true` when the counts came from the model's own tokenizer and `false` when the backend exposed none and LewLM had to estimate. `usage.cached_tokens` is present only when the backend itself reported prompt tokens served from its prefix cache (OpenAI-style `prompt_tokens_details.cached_tokens`, e.g. SGLang with `--enable-cache-report` or vLLM with `--enable-prompt-tokens-details`); absent means unknown, never zero — LewLM does not infer cache hits.
+Exactly one streaming chunk carries a non-null `finish_reason`: `stop`, `length`, `tool_calls`, `cancelled` (a named cancel stopped it; delivered text stands; no `error`), or `error` (the stream ended incompletely and the chunk carries an `error` envelope). `/v1/responses` chunks carry the same `finish_reason` on their `done: true` chunk. Every stream, however it ended, finishes with `data: [DONE]`. The final streaming chunk carries `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Earlier chunks have `usage: null`, since the totals are not knowable before the stream ends. `usage.measured` is `true` when the counts came from the model's own tokenizer and `false` when the backend exposed none and LewLM had to estimate. `usage.cached_tokens` is present only when the backend itself reported prompt tokens served from its prefix cache (OpenAI-style `prompt_tokens_details.cached_tokens`, e.g. SGLang with `--enable-cache-report` or vLLM with `--enable-prompt-tokens-details`); absent means unknown, never zero — LewLM does not infer cache hits.
 
 Abandoning a stream closes it deterministically: LewLM closes the source stream on the way out rather than waiting for garbage collection, so the backend learns the consumer is gone and stops generating.
 

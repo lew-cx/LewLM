@@ -24,6 +24,7 @@ nav:
       - Models and routing: guides/models-and-routing.md
       - App readiness: guides/app-readiness.md
       - Host-app integration: guides/host-app-integration.md
+      - Chap validation: guides/chap-validation.md
       - Chat and responses: guides/chat-and-responses.md
       - Prompting and MCP-style tools: guides/prompting-and-mcp-tools.md
       - Documents: guides/documents.md

@@ -612,7 +612,7 @@
           "type": "string"
         },
         "SamplingControls": {
-          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently — a caller that asked for a seed needs to know whether it\nactually got determinism.",
+          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently \u2014 a caller that asked for a seed needs to know whether it\nactually got determinism.",
           "properties": {
             "top_p": {
               "anyOf": [
@@ -968,6 +968,27 @@
           "default": null,
           "title": "Tools Path"
         },
+        "tool_choice": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "none",
+                "required"
+              ],
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Choice"
+        },
         "mcp_tools": {
           "items": {
             "$ref": "#/$defs/PromptMCPToolDefinition"
@@ -1074,6 +1095,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -1305,6 +1339,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -1372,6 +1442,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -2199,6 +2293,7 @@
                 "disabled",
                 "not_found",
                 "runtime_mismatch",
+                "stale",
                 "unavailable"
               ],
               "title": "Status",
@@ -2219,6 +2314,11 @@
               "title": "Workload Class",
               "type": "string"
             },
+            "preset": {
+              "default": "interactive",
+              "title": "Preset",
+              "type": "string"
+            },
             "profile_id": {
               "anyOf": [
                 {
@@ -2230,6 +2330,37 @@
               ],
               "default": null,
               "title": "Profile Id"
+            },
+            "stale_inputs": {
+              "additionalProperties": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                ],
+                "type": "array"
+              },
+              "title": "Stale Inputs",
+              "type": "object"
             },
             "runtime": {
               "anyOf": [
@@ -2464,6 +2595,23 @@
               "default": false,
               "title": "Decoder Enforced",
               "type": "boolean"
+            },
+            "enforcement_evidence": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "decoder",
+                    "upstream_native",
+                    "prompt"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enforcement Evidence"
             },
             "fallback_used": {
               "default": false,
@@ -2823,6 +2971,22 @@
                 }
               ],
               "default": null
+            },
+            "tool_calls": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tool Calls"
             }
           },
           "title": "ChatCompletionDelta",
@@ -2850,6 +3014,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -3081,6 +3258,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -3148,6 +3361,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -3975,6 +4212,7 @@
                 "disabled",
                 "not_found",
                 "runtime_mismatch",
+                "stale",
                 "unavailable"
               ],
               "title": "Status",
@@ -3995,6 +4233,11 @@
               "title": "Workload Class",
               "type": "string"
             },
+            "preset": {
+              "default": "interactive",
+              "title": "Preset",
+              "type": "string"
+            },
             "profile_id": {
               "anyOf": [
                 {
@@ -4006,6 +4249,37 @@
               ],
               "default": null,
               "title": "Profile Id"
+            },
+            "stale_inputs": {
+              "additionalProperties": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                ],
+                "type": "array"
+              },
+              "title": "Stale Inputs",
+              "type": "object"
             },
             "runtime": {
               "anyOf": [
@@ -4155,6 +4429,36 @@
           "title": "ServingProfileRejectedSetting",
           "type": "object"
         },
+        "StreamErrorEnvelope": {
+          "description": "Why a stream ended before its normal terminal chunk.\n\nCarried on a final chunk whose `finish_reason` is `error` (chat) or whose\n`done` is true (responses), followed by `[DONE]`, so a client sees a\nstructured failure instead of a dropped connection. Any output already\ndelivered stands; LewLM never replays the request. Raw backend payloads\nand credentials are never included.",
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "details": {
+              "additionalProperties": true,
+              "title": "Details",
+              "type": "object"
+            },
+            "partial_output": {
+              "default": false,
+              "description": "True when at least one content delta had been delivered before the failure.",
+              "title": "Partial Output",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "StreamErrorEnvelope",
+          "type": "object"
+        },
         "StructuredOutputIssue": {
           "description": "Single structured-output validation issue.",
           "properties": {
@@ -4240,6 +4544,23 @@
               "default": false,
               "title": "Decoder Enforced",
               "type": "boolean"
+            },
+            "enforcement_evidence": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "decoder",
+                    "upstream_native",
+                    "prompt"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enforcement Evidence"
             },
             "fallback_used": {
               "default": false,
@@ -4502,6 +4823,18 @@
             }
           ],
           "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Present only on a terminal chunk with finish_reason `error`: the stream ended incompletely."
         },
         "prompt_trace": {
           "anyOf": [
@@ -5138,7 +5471,7 @@
           "type": "object"
         },
         "SamplingControls": {
-          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently — a caller that asked for a seed needs to know whether it\nactually got determinism.",
+          "description": "Caller-requested decode controls beyond temperature.\n\nBackends differ in which of these they expose, so LewLM passes through what\na runtime supports and reports the rest as unsupported rather than dropping\nthem silently \u2014 a caller that asked for a seed needs to know whether it\nactually got determinism.",
           "properties": {
             "top_p": {
               "anyOf": [
@@ -5501,6 +5834,27 @@
           "default": null,
           "title": "Tools Path"
         },
+        "tool_choice": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "none",
+                "required"
+              ],
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Choice"
+        },
         "mcp_tools": {
           "items": {
             "$ref": "#/$defs/PromptMCPToolDefinition"
@@ -5556,6 +5910,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -5787,6 +6154,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -5854,6 +6257,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -6711,6 +7138,7 @@
                 "disabled",
                 "not_found",
                 "runtime_mismatch",
+                "stale",
                 "unavailable"
               ],
               "title": "Status",
@@ -6731,6 +7159,11 @@
               "title": "Workload Class",
               "type": "string"
             },
+            "preset": {
+              "default": "interactive",
+              "title": "Preset",
+              "type": "string"
+            },
             "profile_id": {
               "anyOf": [
                 {
@@ -6742,6 +7175,37 @@
               ],
               "default": null,
               "title": "Profile Id"
+            },
+            "stale_inputs": {
+              "additionalProperties": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                ],
+                "type": "array"
+              },
+              "title": "Stale Inputs",
+              "type": "object"
             },
             "runtime": {
               "anyOf": [
@@ -6976,6 +7440,23 @@
               "default": false,
               "title": "Decoder Enforced",
               "type": "boolean"
+            },
+            "enforcement_evidence": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "decoder",
+                    "upstream_native",
+                    "prompt"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enforcement Evidence"
             },
             "fallback_used": {
               "default": false,
@@ -7296,6 +7777,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -7527,6 +8021,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -7594,6 +8124,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -8421,6 +8975,7 @@
                 "disabled",
                 "not_found",
                 "runtime_mismatch",
+                "stale",
                 "unavailable"
               ],
               "title": "Status",
@@ -8441,6 +8996,11 @@
               "title": "Workload Class",
               "type": "string"
             },
+            "preset": {
+              "default": "interactive",
+              "title": "Preset",
+              "type": "string"
+            },
             "profile_id": {
               "anyOf": [
                 {
@@ -8452,6 +9012,37 @@
               ],
               "default": null,
               "title": "Profile Id"
+            },
+            "stale_inputs": {
+              "additionalProperties": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                ],
+                "type": "array"
+              },
+              "title": "Stale Inputs",
+              "type": "object"
             },
             "runtime": {
               "anyOf": [
@@ -8601,6 +9192,36 @@
           "title": "ServingProfileRejectedSetting",
           "type": "object"
         },
+        "StreamErrorEnvelope": {
+          "description": "Why a stream ended before its normal terminal chunk.\n\nCarried on a final chunk whose `finish_reason` is `error` (chat) or whose\n`done` is true (responses), followed by `[DONE]`, so a client sees a\nstructured failure instead of a dropped connection. Any output already\ndelivered stands; LewLM never replays the request. Raw backend payloads\nand credentials are never included.",
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "details": {
+              "additionalProperties": true,
+              "title": "Details",
+              "type": "object"
+            },
+            "partial_output": {
+              "default": false,
+              "description": "True when at least one content delta had been delivered before the failure.",
+              "title": "Partial Output",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "StreamErrorEnvelope",
+          "type": "object"
+        },
         "StructuredOutputIssue": {
           "description": "Single structured-output validation issue.",
           "properties": {
@@ -8686,6 +9307,23 @@
               "default": false,
               "title": "Decoder Enforced",
               "type": "boolean"
+            },
+            "enforcement_evidence": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "decoder",
+                    "upstream_native",
+                    "prompt"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enforcement Evidence"
             },
             "fallback_used": {
               "default": false,
@@ -8913,10 +9551,39 @@
           ],
           "default": null
         },
+        "tool_call_delta": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Delta"
+        },
         "done": {
           "default": false,
           "title": "Done",
           "type": "boolean"
+        },
+        "finish_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why the stream ended, on the terminal chunk (`done` true) only: `stop`, `length`, `tool_calls`, `cancelled` (a named cancel stopped it; delivered text stands), or `error`.",
+          "title": "Finish Reason"
         },
         "citations": {
           "items": {
@@ -8969,6 +9636,18 @@
             }
           ],
           "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Present only on a terminal chunk (`done` true) when the stream ended incompletely."
         },
         "prompt_trace": {
           "anyOf": [
@@ -9061,6 +9740,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -9319,6 +10011,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -9386,6 +10114,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -9583,6 +10335,66 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -9988,6 +10800,19 @@
               "description": "True when counts came from the model's own tokenizer. False when the backend exposed no tokenizer and LewLM had to estimate.",
               "title": "Measured",
               "type": "boolean"
+            },
+            "cached_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Prompt tokens the backend reported as served from its own prefix cache (OpenAI-style prompt_tokens_details.cached_tokens). Absent when the backend exposes no such counter; LewLM never infers it.",
+              "title": "Cached Tokens"
             }
           },
           "title": "CompletionUsage",
@@ -10340,6 +11165,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -10407,6 +11268,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -10845,6 +11730,66 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -11289,6 +12234,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -11356,6 +12337,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -11583,6 +12588,66 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -12566,6 +13631,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -12633,6 +13734,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -14144,6 +15269,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -14211,6 +15372,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -15934,6 +17119,42 @@
                 }
               ],
               "default": null
+            },
+            "endpoint_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endpoint Id"
+            },
+            "engine_profile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Engine Profile"
+            },
+            "execution_locality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Locality"
             }
           },
           "title": "ExecutionModelMetadata",
@@ -16001,6 +17222,30 @@
               },
               "title": "Alternatives",
               "type": "array"
+            },
+            "fallback_from_model_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback From Model Id"
+            },
+            "fallback_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fallback Reason"
             }
           },
           "required": [
@@ -17847,5 +19092,3517 @@
       "retryable": false,
       "description": "Raised when a request or file payload uses an unsupported media type."
     }
-  ]
+  ],
+  "chap": {
+    "generated_by": "scripts/export_integration_bundle.py",
+    "smoke_script": "examples/chap_backend_smoke.py",
+    "fixture": "python -m lewlm.testing.fake_backend --port 8080",
+    "field_notes": {
+      "identity": "One base URL. `x-request-id` (optional, caller-chosen) is echoed on every response and is the cancellation handle; `x-lewlm-correlation-id` is echoed and lands in `metadata.correlation_id`; `x-lewlm-application-id: chap` labels metrics and audit and grants nothing.",
+      "service_vs_engine_vs_model": "`GET /v1/health.status` is this service. Engine reachability is `health.engines[].state` and `GET /v1/runtime.startup.engines[]` (cached inventory: advertised | stale | failed | unknown; no probe). Model warmth is `runtime.startup.warm_models[]` / `GET /v1/runtime/residencies`. A 200 from health never implies an engine is up or a model is warm.",
+      "model_picker": "`GET /v1/models.capability_availability[]` gives, per model: `chat_ready`, `reason`, `endpoint_id`/`engine_profile`/`execution_locality` (null for packaged runtimes), and `engine_state` (`packaged`, or the endpoint's cached state). `GET /v1/models/{id}/capabilities.structured_output` predicts enforcement before a request is spent.",
+      "chat_metadata": "`metadata.model` names `resolved_model_id`, `runtime_name`, `endpoint_id`, `engine_profile`, `execution_locality`; `metadata.routing.fallback_from_model_id`/`fallback_reason` are set only when an explicit fallback alias substituted the model before generation; `metadata.serving.runtime_adapter_kind` is `backend_native_batch` for engines that batch themselves.",
+      "usage": "`usage` is on the non-streaming body and on the terminal streaming chunk only; earlier chunks carry `usage: null`. `usage.measured` is false when counts were estimated. `usage.cached_tokens` is present only when the backend reported prefix-cache hits; absent means unknown.",
+      "streaming": "SSE `data:` frames of `chat.stream` chunks, then `data: [DONE]`. Exactly one chunk carries a non-null `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`, or `error`). Native tool-call fragments arrive as `delta.tool_calls[]` with `index`; arguments are concatenated per index.",
+      "incomplete_stream": "If generation fails after output has started, the stream still returns HTTP 200: the last chunk has `finish_reason: \"error\"` and an `error` envelope (`code`, `message`, redacted `details`, `partial_output: true`), followed by `[DONE]`. Delivered text stands; LewLM never replays. A cancelled stream ends with `finish_reason: \"cancelled\"`.",
+      "errors": "Every non-2xx body is `{\"error\": {code, message, details}}`; codes and fixed statuses are in `errors`. An unreachable engine behind an explicitly requested model is `503 runtime_unavailable` with `details.endpoint_id`; an unknown model is `404 model_not_found`. Raw backend payloads and credentials are never included.",
+      "absent_fields": "Optional fields are omitted or null rather than fabricated: `usage.cached_tokens`, `structured_output` (only when a contract was requested), `tool_calls` (only when tools were offered), `prompt_trace` (only with `include_prompt_trace`), `metadata.routing.fallback_*`, `startup.engines[].first_advertised_at` (until first inventory read)."
+    },
+    "examples": {
+      "health": {
+        "status": "ok",
+        "service": "LewLM",
+        "version": "0.4.2",
+        "runtime_instance_id": "runtime-example",
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "process_id": 0,
+        "hostname": "host-example",
+        "time": "2026-01-01T00:00:00+00:00",
+        "install_profiles": {
+          "active_profile_ids": [
+            "core_only",
+            "mlx_local_backend",
+            "gguf_fallback_backend",
+            "external_accelerator_bridge_backend",
+            "documents_enabled_backend"
+          ],
+          "recommended_profile_id": "mlx_local_backend",
+          "recommended_feature_paths": [
+            {
+              "feature_class": "chat",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the packaged Apple MLX path as the default chat and streaming route on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If the MLX profile is unavailable on this host, switch to the packaged GGUF profile for chat."
+              ]
+            },
+            {
+              "feature_class": "semantic_text",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX path for embeddings and rerank on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If you need a loopback semantic backend instead, use the external accelerator bridge with compatible `/v1/embeddings` and `/v1/rerank` endpoints."
+              ]
+            },
+            {
+              "feature_class": "vision",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX vision path for image-conditioned chat on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If MLX vision is unavailable, the external accelerator bridge can still serve OpenAI-style image content blocks through LewLM's shared chat surfaces."
+              ]
+            },
+            {
+              "feature_class": "audio",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX audio path for transcription and speech on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If MLX audio is unavailable, the external accelerator bridge can serve audio through compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints."
+              ]
+            },
+            {
+              "feature_class": "structured_output",
+              "profile": "gguf_fallback_backend",
+              "label": "Cross-platform GGUF backend",
+              "support_path": "packaged",
+              "summary": "Use the packaged GGUF/llama.cpp path when you need decode-time JSON-schema or grammar enforcement; Apple MLX remains prompt-guided fallback for structured output.",
+              "fallback_guidance": [
+                "If GGUF is unavailable, LewLM still records structured-output contracts on MLX, but enforcement falls back to prompt-guided generation plus validation metadata."
+              ]
+            }
+          ],
+          "standards_acceptance_contract": {
+            "format": "lewlm-standards-acceptance-contract-v1",
+            "acceptance_states": [
+              {
+                "state": "lewlm_owned",
+                "summary": "LewLM implements, controls, and can directly validate the behavior on the documented path."
+              },
+              {
+                "state": "backend_native",
+                "summary": "The backend owns the behavior and LewLM only detects, preserves, or reports it honestly."
+              },
+              {
+                "state": "partial",
+                "summary": "Only part of the intended behavior is preserved, observable, or contractually exposed."
+              },
+              {
+                "state": "fallback",
+                "summary": "LewLM keeps the public request contract but downgrades to a narrower or translated execution path."
+              },
+              {
+                "state": "unsupported",
+                "summary": "LewLM does not claim the behavior on that path or host today."
+              },
+              {
+                "state": "unverified",
+                "summary": "The vocabulary term is reserved, but LewLM does not yet have host proof or probe-backed evidence for a stronger claim."
+              }
+            ],
+            "vocabulary": [
+              {
+                "name": "kv_offload",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV cache state can move to a secondary residency tier while preserving honest ownership boundaries.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "kv_quantization",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV cache compression or quantized KV residency is available on the selected path.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "hybrid_memory",
+                "category": "memory_and_context",
+                "summary": "Reports whether model or cache residency can span device, host, or other local memory tiers under one serving contract.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "pd_disaggregation",
+                "category": "memory_and_context",
+                "summary": "Reports whether prefill and decode can be separated into distinct execution or scheduling stages.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "distributed_kv_transfer",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV state can be transferred or shared across cooperating local workers or bridge-visible runtimes.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "strict_tool_parser",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether tool calls are emitted or validated through a strict parser or grammar-backed path instead of prompt-only heuristics.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "reasoning_tags",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a runtime or bridge can surface machine-readable reasoning tags or segments separately from final answer text.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "parallel_tool_calls",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a single response can preserve multiple tool-call records without flattening them into plain text.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "streaming_tool_calls",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether tool-call deltas stay machine-readable while the response is still streaming.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "responses_api_events",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a path preserves Responses-style event envelopes rather than only chat-completions style output.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "mtp_speculation",
+                "category": "speculation",
+                "summary": "Reports whether multi-token prediction style speculative decoding is available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "eagle_speculation",
+                "category": "speculation",
+                "summary": "Reports whether EAGLE-style speculative decoding families are available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "dflash_speculation",
+                "category": "speculation",
+                "summary": "Reports whether DFLASH-style speculative decoding is available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "ngram_draft_speculation",
+                "category": "speculation",
+                "summary": "Reports whether n-gram, prompt-lookup, or other draft-assisted speculation can be surfaced honestly.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "reasoning_budget_speculation",
+                "category": "speculation",
+                "summary": "Reports whether speculation policy can react to explicit reasoning or token-budget controls.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "transformers_v5_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for the Transformers v5 dependency baseline.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "cuda13_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for CUDA 13 dependent builds or binaries.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "pytorch211_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for the PyTorch 2.11 baseline.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "cxx20_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path depends on or has been validated against current C++20 runtime/toolchain expectations.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "multimodal_omni",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether one local model path can honestly cover mixed text, image, audio, or document-adjacent interaction.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "document_ocr_transformer",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether transformer-style OCR or document-parsing backends are available on a local-first or bridge-compatible path.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "long_context_embedding",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether semantic guidance covers long-context embedding models rather than only short retrieval defaults.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "local_agent_sandbox",
+                "category": "agent_interoperability",
+                "summary": "Reports whether LewLM can describe the sandbox, locality, and permission boundaries expected by a host-managed local agent harness.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              }
+            ],
+            "related_signal_fields": [
+              "install_profiles.recommended_feature_paths[].support_path",
+              "runtime_support_strategy.paths[].performance_core_evidence[].mode",
+              "performance_features[].ownership_modes[]",
+              "measured_capabilities[].status",
+              "target_platforms[].verification_method"
+            ],
+            "notes": [
+              "Milestone 120 defines normalized vocabulary and acceptance states only; it does not claim that every term is already implemented on every runtime path.",
+              "Support-path labels such as packaged and bridge remain orthogonal to acceptance states such as lewlm_owned, backend_native, partial, fallback, unsupported, and unverified.",
+              "Later milestones should reuse these exact vocabulary keys instead of introducing new near-duplicates for runtime, bridge, semantic, document, or agent-surface reporting."
+            ]
+          },
+          "profiles": [
+            {
+              "profile": "core_only",
+              "label": "Core only",
+              "extras": [],
+              "install_spec": ".",
+              "installed": true,
+              "ready": true,
+              "summary": "Base middleware package with CLI, local API, registry, routing, and readiness surfaces but no optional runtime or document packages.",
+              "notes": [
+                "Add Apple MLX, cross-platform GGUF, or the external accelerator bridge before expecting local chat, embeddings, rerank, or audio execution."
+              ]
+            },
+            {
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "extras": [
+                "mlx"
+              ],
+              "install_spec": ".[mlx]",
+              "installed": true,
+              "ready": true,
+              "summary": "Apple Silicon runtime profile for LewLM's first-class MLX text, vision, and audio adapters on supported hosts.",
+              "notes": [
+                "Recommended packaged runtime on Apple Silicon hosts."
+              ]
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "label": "Cross-platform GGUF backend",
+              "extras": [
+                "llamacpp"
+              ],
+              "install_spec": ".[llamacpp]",
+              "installed": true,
+              "ready": true,
+              "summary": "Cross-platform packaged GGUF runtime profile backed by llama.cpp; LewLM's first-class non-Apple runtime family for chat, embeddings, and packaged rerank fallback.",
+              "notes": [
+                "Installed llama.cpp build reports GPU offload support (heuristic accelerator hints: metal). Hints are inventory evidence only; probes and benchmarks decide capability evidence.",
+                "Serving-only hosts can install `.[llamacpp_runtime]` instead: the same llama.cpp runtime without the Torch/Transformers conversion dependencies. `.[llamacpp]` keeps conversion available."
+              ]
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "label": "ONNX Runtime GenAI backend",
+              "extras": [
+                "onnx_genai"
+              ],
+              "install_spec": ".[onnx_genai]",
+              "installed": false,
+              "ready": false,
+              "summary": "Packaged ONNX Runtime GenAI profile for already-prepared model bundles, with Windows-native CPU, DirectML, and CUDA execution-provider planning metadata.",
+              "notes": [
+                "LewLM can load and generate from compatible ONNX GenAI bundles when the installed package exposes the expected Python API; per-model probes and benchmarks still upgrade evidence beyond package readiness.",
+                "Missing Python modules: onnxruntime_genai",
+                "Install `.[onnx_genai]` to prepare ONNX Runtime GenAI bundle probing on this host."
+              ]
+            },
+            {
+              "profile": "external_accelerator_bridge_backend",
+              "label": "Cross-platform external accelerator bridge",
+              "extras": [],
+              "install_spec": ".",
+              "installed": true,
+              "ready": true,
+              "summary": "Bridge profile for LewLM talking to a loopback-only OpenAI-compatible local server instead of importing an in-process runtime package.",
+              "notes": [
+                "Use this bridge when LewLM should front a loopback-only OpenAI-compatible local server rather than importing a runtime package directly.",
+                "Generic OpenAI-compatible bridge profile for a local loopback server.",
+                "LewLM does not install or manage the external server itself.",
+                "Text and streaming use `/v1/chat/completions`; image-conditioned chat uses the same route with OpenAI-style image content blocks.",
+                "Audio execution depends on the loopback server exposing `/v1/audio/transcriptions` and `/v1/audio/speech`, and LewLM probes those bridge endpoints separately.",
+                "This bridge is LewLM's current bridge-only non-Apple public audio parity path for transcription and speech requests.",
+                "LewLM reports narrower bridge depth explicitly; it does not claim MLX-level multimodal optimization or telemetry parity through this path.",
+                "Semantic text support on this bridge is adapter-backed: embeddings require a compatible local `/v1/embeddings` endpoint, and rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension.",
+                "Configured bridge profile: `openai_compatible`.",
+                "Darwin arm64 is configured for a loopback-only external accelerator endpoint."
+              ]
+            },
+            {
+              "profile": "documents_enabled_backend",
+              "label": "Documents add-on",
+              "extras": [
+                "documents"
+              ],
+              "install_spec": ".[documents]",
+              "installed": true,
+              "ready": true,
+              "summary": "Document ingest, rendering, and transform profile for PDF, DOCX, XLSX, OCR-oriented, and deterministic artifact workflows.",
+              "notes": [
+                "OCR-style flows still need a working local backend: The `tesseract` binary is not installed.",
+                "Python extras do not install the OCR engine itself; verify the local backend separately when you need OCR workflows.",
+                "This profile is additive; pair it with Apple MLX, cross-platform GGUF, or the external accelerator bridge when you also want local model execution."
+              ]
+            }
+          ],
+          "backend_inventory": [
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx",
+              "distribution": "mlx",
+              "installed": true,
+              "version": "0.31.1",
+              "detail": "Detected `mlx` version 0.31.1; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_lm",
+              "distribution": "mlx-lm",
+              "installed": true,
+              "version": "0.31.1",
+              "detail": "Detected `mlx-lm` version 0.31.1; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_vlm",
+              "distribution": "mlx-vlm",
+              "installed": true,
+              "version": "0.4.4",
+              "detail": "Detected `mlx-vlm` version 0.4.4; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_audio",
+              "distribution": "mlx-audio",
+              "installed": true,
+              "version": "0.4.2",
+              "detail": "Detected `mlx-audio` version 0.4.2; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "module": "llama_cpp",
+              "distribution": "llama-cpp-python",
+              "installed": true,
+              "version": "0.3.20",
+              "detail": "Detected `llama-cpp-python` version 0.3.20; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "module": "onnxruntime_genai",
+              "distribution": "onnxruntime-genai",
+              "installed": false,
+              "version": null,
+              "detail": "`onnxruntime_genai` is not importable on this host; backend version evidence stays unavailable until the matching extra is installed."
+            }
+          ],
+          "backend_feature_probes": [
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "ngram_draft_speculation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "kv_quantization_controls",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "kv_offload_controls",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "decode_time_grammar_enforcement",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "backend": "mlx_lm",
+              "feature": "draft_model_speculation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "backend": "mlx_lm",
+              "feature": "batched_generation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "backend": "onnxruntime_genai",
+              "feature": "generation_api",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "backend": "onnxruntime_genai",
+              "feature": "multimodal_processor",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            }
+          ],
+          "llamacpp_build": {
+            "installed": true,
+            "gpu_offload_supported": true,
+            "accelerator_hints": [
+              "metal"
+            ],
+            "system_info": "MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | DOTPROD = 1 | ACCELERATE = 1 | REPACK = 1 | ",
+            "detection_state": "detected",
+            "reason": "llama.cpp build flavor detected from the installed backend's own reporting APIs. Accelerator hints are heuristic inventory evidence only; probes and benchmarks decide capability evidence."
+          },
+          "container": {
+            "in_container": false,
+            "runtime": null,
+            "indicators": [],
+            "reason": "No container markers were visible to this process, so LewLM treats this as a native host. Container images that strip the usual markers can still be reported this way.",
+            "image_flavor": null
+          },
+          "storage_access": {
+            "data_dir": "/path/to/lewlm/state",
+            "exists": true,
+            "writable": true,
+            "owner": "lew (uid 501)",
+            "reason": "A probe file was created and removed successfully."
+          },
+          "notes": [
+            "This Apple Silicon host can use MLX as LewLM's first-class local runtime profile."
+          ],
+          "external_endpoints": [
+            {
+              "endpoint_id": "fixture",
+              "profile": "openai_compatible",
+              "enabled": true,
+              "base_url": "http://127.0.0.1:PORT/v1",
+              "credential_configured": false,
+              "evidence_state": "unverified"
+            }
+          ]
+        },
+        "readiness": {
+          "status": "partial",
+          "host_platform": {
+            "system": "Darwin",
+            "release": "25.2.0",
+            "machine": "arm64",
+            "python_version": "3.14.7",
+            "total_memory_mb": 98304,
+            "total_memory_source": "posix_sysconf",
+            "total_memory_reason": null
+          },
+          "discovered_model_count": 1,
+          "runnable_model_count": 1,
+          "capability_count": 7,
+          "ready_capability_count": 2,
+          "capabilities": [
+            {
+              "capability": "chat",
+              "ready": true,
+              "readiness_state": "ready",
+              "reason": "LewLM can serve `chat` on this host through a bridge-backed local runtime.",
+              "available_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "available_support_paths": [
+                "bridge"
+              ],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "bridge_only": true,
+              "candidate_model_count": 1,
+              "runnable_model_count": 1,
+              "ready_model_ids": [
+                "fixture-chat-fixture-6953e947"
+              ],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": [
+                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+              ]
+            },
+            {
+              "capability": "streaming",
+              "ready": true,
+              "readiness_state": "ready",
+              "reason": "LewLM can serve `streaming` on this host through a bridge-backed local runtime.",
+              "available_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "available_support_paths": [
+                "bridge"
+              ],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "bridge_only": true,
+              "candidate_model_count": 1,
+              "runnable_model_count": 1,
+              "ready_model_ids": [
+                "fixture-chat-fixture-6953e947"
+              ],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": [
+                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+              ]
+            },
+            {
+              "capability": "vision",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `vision`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "embeddings",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `embeddings`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "rerank",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `rerank`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "audio_transcription",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `audio_transcription`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "audio_speech",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `audio_speech`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            }
+          ],
+          "notes": [
+            "Some capabilities are currently available only through bridge-backed local runtimes."
+          ]
+        },
+        "storage": {
+          "healthy": true,
+          "database_path": "/path/to/lewlm/state/metadata.sqlite3",
+          "schema_version": 10,
+          "model_count": 1
+        },
+        "configuration": {
+          "data_dir": "/path/to/lewlm/state",
+          "models_dir": [
+            "/path/to/lewlm/models"
+          ],
+          "runtime_packs": [
+            {
+              "name": "mlx",
+              "kind": "runtime",
+              "description": "Apple MLX runtime pack for text, vision, and audio workloads on Apple Silicon macOS.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `mlx` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "mlx",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "mlx_text",
+                "mlx_vision",
+                "mlx_audio"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "llamacpp",
+              "kind": "runtime",
+              "description": "Cross-platform GGUF runtime pack through llama-cpp-python.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `llamacpp` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "llamacpp",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "llamacpp"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "onnx_genai",
+              "kind": "runtime",
+              "description": "Windows-native ONNX Runtime GenAI pack for CPU, DirectML, and CUDA-ready model bundles.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `onnx_genai` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "onnx_genai",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "onnx_genai"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "external_accelerator",
+              "kind": "runtime",
+              "description": "Bridge runtime pack for loopback-only OpenAI-compatible local servers that LewLM fronts instead of importing in-process.",
+              "active": true,
+              "status": "active",
+              "reason": "Pack is active; per-runtime readiness is reported separately.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "external_accelerator"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "experimental",
+              "kind": "runtime",
+              "description": "Planning-only experimental runtime surfaces.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `experimental` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "experimental"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "distributed_experimental",
+              "kind": "runtime",
+              "description": "Proof-oriented distributed runtime surfaces.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `distributed_experimental` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "distributed_experimental"
+              ],
+              "surfaces": []
+            }
+          ],
+          "feature_packs": [
+            {
+              "name": "documents",
+              "kind": "feature",
+              "description": "Additive documents pack for ingest, generation, transform, tool, and skill surfaces.",
+              "active": true,
+              "status": "active",
+              "reason": "Pack is active.",
+              "optional_dependency_group": "documents",
+              "missing_modules": [],
+              "runtime_affinities": [],
+              "surfaces": [
+                "documents_api",
+                "document_cli",
+                "tool_catalog",
+                "skill_catalog"
+              ]
+            }
+          ],
+          "privacy_mode": false,
+          "telemetry_enabled": false,
+          "allow_outbound_network": false,
+          "audit_log_enabled": false,
+          "persistence_encryption_enabled": false,
+          "tool_authorization_required": false,
+          "parser_sandbox_enabled": true,
+          "tool_sandbox_enabled": true,
+          "conversion_sandbox_enabled": true
+        },
+        "cluster": {
+          "role": "standalone",
+          "enabled": false,
+          "cluster_name": "default",
+          "node_name": "node",
+          "coordinator_url": null,
+          "public_base_url": "http://127.0.0.1:PORT",
+          "ready_worker_count": 0,
+          "stale_worker_count": 0,
+          "plan_count": 0,
+          "worker_heartbeat_timeout_seconds": 30,
+          "worker_session": null,
+          "workers": [],
+          "latest_execution_metrics": {},
+          "notes": [
+            "Experimental pipeline-parallel proof path only; tensor-parallel execution and backend-native shard kernels remain follow-up work.",
+            "Cluster coordination is disabled until `cluster_role` is set to `coordinator` or `worker`."
+          ]
+        },
+        "engines": [
+          {
+            "endpoint_id": "fixture",
+            "profile": "openai_compatible",
+            "enabled": true,
+            "state": "advertised",
+            "inventory_age_seconds": 0,
+            "advertised_model_count": 1,
+            "inventory_error": null
+          }
+        ]
+      },
+      "runtime": {
+        "runtime_instance_id": "runtime-example",
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "ready_at": "2026-01-01T00:00:00+00:00",
+        "process_id": 0,
+        "hostname": "host-example",
+        "version": "0.4.2",
+        "build": {
+          "package_version": "0.4.2",
+          "api_schema_version": "v1",
+          "source_commit": "a6f90cf928c9f631199c059eb8d04c57859f6d83",
+          "source_dirty": true,
+          "distribution_digest": null,
+          "install_kind": "installed",
+          "release_build": false
+        },
+        "status": "ready",
+        "loaded_model_count": 0,
+        "active_request_count": 0,
+        "startup": {
+          "lewlm_ready_at": "2026-01-01T00:00:00+00:00",
+          "lewlm_ready_seconds": 0,
+          "engines": [
+            {
+              "endpoint_id": "fixture",
+              "profile": "openai_compatible",
+              "enabled": true,
+              "state": "advertised",
+              "inventory_age_seconds": 0,
+              "advertised_model_count": 1,
+              "first_advertised_at": "2026-01-01T00:00:00+00:00"
+            }
+          ],
+          "warm_models": [],
+          "loading_models": []
+        },
+        "enabled_features": []
+      },
+      "models.capability_availability": [
+        {
+          "model_id": "fixture-chat-fixture-example",
+          "servable": true,
+          "chat_ready": true,
+          "ready_capabilities": [
+            "chat",
+            "streaming"
+          ],
+          "blocked_capabilities": [],
+          "reason": "Every advertised capability has a compatible runtime on this host.",
+          "endpoint_id": "fixture",
+          "engine_profile": "openai_compatible",
+          "execution_locality": "loopback_unverified",
+          "engine_state": "advertised"
+        }
+      ],
+      "model.capabilities": {
+        "model_id": "fixture-chat-fixture-example",
+        "display_name": "fixture-chat",
+        "architecture_family": "unknown",
+        "format_type": "unknown",
+        "modality": [
+          "text"
+        ],
+        "quantization": null,
+        "quantization_profile": null,
+        "validation_key": "fixture-chat:unknown:unknown:na:text",
+        "conversion_status": "runnable",
+        "host_platform": {
+          "system": "Darwin",
+          "release": "25.2.0",
+          "machine": "arm64",
+          "python_version": "3.14.7",
+          "total_memory_mb": 98304,
+          "total_memory_source": "posix_sysconf",
+          "total_memory_reason": null
+        },
+        "runtime_candidates": [
+          {
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "readiness_state": "ready",
+            "registered": true,
+            "available": true,
+            "availability_reason": null,
+            "host_platform_supported": true,
+            "supported_systems": [
+              "Darwin",
+              "Linux",
+              "Windows"
+            ],
+            "supported_machines": [],
+            "support_path": "bridge",
+            "supports_manifest": true,
+            "metadata": {
+              "endpoint": {
+                "endpoint_id": "fixture",
+                "profile": "openai_compatible",
+                "enabled": true,
+                "inventory_state": "advertised",
+                "inventory_error": null,
+                "inventory_age_seconds": 0,
+                "inventory_ttl_seconds": 30.0,
+                "advertised_model_ids": [
+                  "fixture-chat"
+                ],
+                "capability_evidence": [],
+                "first_advertised_at": "2026-01-01T00:00:00+00:00",
+                "upstream_residency": "unknown",
+                "upstream_cancellation": "unknown"
+              }
+            }
+          }
+        ],
+        "target_platforms": [
+          {
+            "system": "Darwin",
+            "machine": "arm64",
+            "supported": true,
+            "readiness_state": "verified",
+            "verification_method": "host_probe",
+            "runtime_affinities": [
+              "external_accelerator"
+            ],
+            "reason": "Verified on the current host via external_accelerator.",
+            "fallback_available": false,
+            "fallback_reason": null,
+            "install_hints": [
+              "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED and point LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
+            ],
+            "validation_manifest_count": 0,
+            "verified_hosts": [],
+            "notes": []
+          },
+          {
+            "system": "Linux",
+            "machine": "x86_64",
+            "supported": true,
+            "readiness_state": "declared",
+            "verification_method": "runtime_contract",
+            "runtime_affinities": [
+              "external_accelerator"
+            ],
+            "reason": "Declared compatible via runtime contract for external_accelerator.",
+            "fallback_available": false,
+            "fallback_reason": null,
+            "install_hints": [
+              "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED and point LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
+            ],
+            "validation_manifest_count": 0,
+            "verified_hosts": [],
+            "notes": []
+          },
+          {
+            "system": "Linux",
+            "machine": "arm64",
+            "supported": true,
+            "readiness_state": "declared",
+            "verification_method": "runtime_contract",
+            "runtime_affinities": [
+              "external_accelerator"
+            ],
+            "reason": "Declared compatible via runtime contract for external_accelerator.",
+            "fallback_available": false,
+            "fallback_reason": null,
+            "install_hints": [
+              "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED and point LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
+            ],
+            "validation_manifest_count": 0,
+            "verified_hosts": [],
+            "notes": []
+          },
+          {
+            "system": "Windows",
+            "machine": "AMD64",
+            "supported": true,
+            "readiness_state": "declared",
+            "verification_method": "runtime_contract",
+            "runtime_affinities": [
+              "external_accelerator"
+            ],
+            "reason": "Declared compatible via runtime contract for external_accelerator.",
+            "fallback_available": false,
+            "fallback_reason": null,
+            "install_hints": [
+              "Enable LEWLM_EXTERNAL_ACCELERATOR_ENABLED and point LEWLM_EXTERNAL_ACCELERATOR_BASE_URL at a loopback-only local OpenAI-compatible server on this host."
+            ],
+            "validation_manifest_count": 0,
+            "verified_hosts": [],
+            "notes": []
+          }
+        ],
+        "capabilities": [
+          {
+            "capability": "chat",
+            "supported": true,
+            "readiness_state": "ready",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "support_path": "bridge",
+            "reason": "Supported via bridge-backed `local_external_adapter:fixture`.",
+            "alternatives": [],
+            "estimated_memory_mb": null,
+            "notes": [
+              "Estimated for local_external_adapter:fixture using registry metadata only.",
+              "This capability is adapter-backed on this host through a loopback-only local server; LewLM keeps the upstream runtime boundary explicit.",
+              "Default `chat` report assumes `text_only` routing.",
+              "The request did not require multimodal conditioning."
+            ]
+          },
+          {
+            "capability": "streaming",
+            "supported": true,
+            "readiness_state": "ready",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "support_path": "bridge",
+            "reason": "Supported via bridge-backed `local_external_adapter:fixture`.",
+            "alternatives": [],
+            "estimated_memory_mb": null,
+            "notes": [
+              "Estimated for local_external_adapter:fixture using registry metadata only.",
+              "This capability is adapter-backed on this host through a loopback-only local server; LewLM keeps the upstream runtime boundary explicit.",
+              "Default `streaming` report assumes `text_only` routing.",
+              "The request did not require multimodal conditioning."
+            ]
+          }
+        ],
+        "structured_output": {
+          "runtime_name": "local_external_adapter:fixture",
+          "json_schema": {
+            "runtime": "local_external_adapter:fixture",
+            "mode": "json_schema",
+            "enforcement": "decode_time",
+            "decoder_enforced": false,
+            "fallback_used": false,
+            "fallback_reason": null,
+            "enforcement_evidence": "upstream_native",
+            "grammar_relaxations": []
+          },
+          "grammar": {
+            "runtime": "local_external_adapter:fixture",
+            "mode": "grammar",
+            "enforcement": "prompt_guided",
+            "decoder_enforced": false,
+            "fallback_used": true,
+            "fallback_reason": "Structured-output requests can survive through prompt-guided fallback, but decoder-level constrained decoding is not preserved across the compatibility layer. This remains a loopback adapter boundary rather than packaged decode-time parity.",
+            "enforcement_evidence": "prompt",
+            "grammar_relaxations": []
+          },
+          "decode_time_modes": [],
+          "reason": "`local_external_adapter:fixture` forwards `json_schema` natively to the external server, whose decoder enforces it; LewLM does not observe that decoder and validates the output after generation instead of claiming decode-time enforcement."
+        },
+        "capability_evidence": [
+          {
+            "capability": "chat",
+            "state": "discovered",
+            "ownership": "bridge_verified",
+            "reason": "Supported via bridge-backed `local_external_adapter:fixture`.",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "provider": "openai_compatible",
+            "model_id": "fixture-chat-fixture-example",
+            "source": "routing",
+            "probe_key": null,
+            "benchmark_id": null,
+            "artifact_id": null,
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "details": {
+              "supported": true,
+              "readiness_state": "ready",
+              "support_path": "bridge",
+              "estimated_memory_mb": null,
+              "notes": [
+                "Estimated for local_external_adapter:fixture using registry metadata only.",
+                "This capability is adapter-backed on this host through a loopback-only local server; LewLM keeps the upstream runtime boundary explicit.",
+                "Default `chat` report assumes `text_only` routing.",
+                "The request did not require multimodal conditioning."
+              ]
+            }
+          },
+          {
+            "capability": "streaming",
+            "state": "discovered",
+            "ownership": "bridge_verified",
+            "reason": "Supported via bridge-backed `local_external_adapter:fixture`.",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "provider": "openai_compatible",
+            "model_id": "fixture-chat-fixture-example",
+            "source": "routing",
+            "probe_key": null,
+            "benchmark_id": null,
+            "artifact_id": null,
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "details": {
+              "supported": true,
+              "readiness_state": "ready",
+              "support_path": "bridge",
+              "estimated_memory_mb": null,
+              "notes": [
+                "Estimated for local_external_adapter:fixture using registry metadata only.",
+                "This capability is adapter-backed on this host through a loopback-only local server; LewLM keeps the upstream runtime boundary explicit.",
+                "Default `streaming` report assumes `text_only` routing.",
+                "The request did not require multimodal conditioning."
+              ]
+            }
+          }
+        ],
+        "measured_capabilities": [
+          {
+            "category": "batching",
+            "status": "unmeasured",
+            "reason": "No measured probe or benchmark evidence has been recorded for this category on this host yet.",
+            "record_count": 0,
+            "latest_recorded_at": null,
+            "runtime_names": [],
+            "sources": [],
+            "probes": []
+          },
+          {
+            "category": "cache_reuse",
+            "status": "unmeasured",
+            "reason": "No measured probe or benchmark evidence has been recorded for this category on this host yet.",
+            "record_count": 0,
+            "latest_recorded_at": null,
+            "runtime_names": [],
+            "sources": [],
+            "probes": []
+          },
+          {
+            "category": "speculation",
+            "status": "unmeasured",
+            "reason": "No measured probe or benchmark evidence has been recorded for this category on this host yet.",
+            "record_count": 0,
+            "latest_recorded_at": null,
+            "runtime_names": [],
+            "sources": [],
+            "probes": []
+          },
+          {
+            "category": "constrained_decoding",
+            "status": "rejected",
+            "reason": "Runtime probe could not verify decode-time constrained decoding on the routed runtime.",
+            "record_count": 1,
+            "latest_recorded_at": "2026-01-01T00:00:00+00:00",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "sources": [
+              "code_probe"
+            ],
+            "probes": [
+              {
+                "probe_key": "capability_probe:867bb2421818b035460d509d892f7f98d21821187977ed5ae0dfa30a391d93da",
+                "category": "constrained_decoding",
+                "probe_name": "prompt_guided_structured_output",
+                "status": "rejected",
+                "source": "code_probe",
+                "reason": "Runtime probe could not verify decode-time constrained decoding on the routed runtime.",
+                "runtime_name": "local_external_adapter:fixture",
+                "runtime_affinity": "external_accelerator",
+                "model_id": "fixture-chat-fixture-example",
+                "workload_class": null,
+                "details": {
+                  "enforcement": "decode_time",
+                  "decoder_enforced": false,
+                  "fallback_used": false,
+                  "fallback_reason": null,
+                  "capability": "chat"
+                },
+                "recorded_at": "2026-01-01T00:00:00+00:00"
+              }
+            ]
+          },
+          {
+            "category": "compile_kernels",
+            "status": "unmeasured",
+            "reason": "No measured probe or benchmark evidence has been recorded for this category on this host yet.",
+            "record_count": 0,
+            "latest_recorded_at": null,
+            "runtime_names": [],
+            "sources": [],
+            "probes": []
+          },
+          {
+            "category": "adapter_preservation",
+            "status": "unmeasured",
+            "reason": "No measured probe or benchmark evidence has been recorded for this category on this host yet.",
+            "record_count": 0,
+            "latest_recorded_at": null,
+            "runtime_names": [],
+            "sources": [],
+            "probes": []
+          }
+        ],
+        "standards_acceptance_contract": {
+          "format": "lewlm-standards-acceptance-contract-v1",
+          "acceptance_states": [
+            {
+              "state": "lewlm_owned",
+              "summary": "LewLM implements, controls, and can directly validate the behavior on the documented path."
+            },
+            {
+              "state": "backend_native",
+              "summary": "The backend owns the behavior and LewLM only detects, preserves, or reports it honestly."
+            },
+            {
+              "state": "partial",
+              "summary": "Only part of the intended behavior is preserved, observable, or contractually exposed."
+            },
+            {
+              "state": "fallback",
+              "summary": "LewLM keeps the public request contract but downgrades to a narrower or translated execution path."
+            },
+            {
+              "state": "unsupported",
+              "summary": "LewLM does not claim the behavior on that path or host today."
+            },
+            {
+              "state": "unverified",
+              "summary": "The vocabulary term is reserved, but LewLM does not yet have host proof or probe-backed evidence for a stronger claim."
+            }
+          ],
+          "vocabulary": [
+            {
+              "name": "kv_offload",
+              "category": "memory_and_context",
+              "summary": "Reports whether KV cache state can move to a secondary residency tier while preserving honest ownership boundaries.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "kv_quantization",
+              "category": "memory_and_context",
+              "summary": "Reports whether KV cache compression or quantized KV residency is available on the selected path.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "hybrid_memory",
+              "category": "memory_and_context",
+              "summary": "Reports whether model or cache residency can span device, host, or other local memory tiers under one serving contract.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "pd_disaggregation",
+              "category": "memory_and_context",
+              "summary": "Reports whether prefill and decode can be separated into distinct execution or scheduling stages.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "distributed_kv_transfer",
+              "category": "memory_and_context",
+              "summary": "Reports whether KV state can be transferred or shared across cooperating local workers or bridge-visible runtimes.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "strict_tool_parser",
+              "category": "structured_output_and_reasoning",
+              "summary": "Reports whether tool calls are emitted or validated through a strict parser or grammar-backed path instead of prompt-only heuristics.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "reasoning_tags",
+              "category": "structured_output_and_reasoning",
+              "summary": "Reports whether a runtime or bridge can surface machine-readable reasoning tags or segments separately from final answer text.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "parallel_tool_calls",
+              "category": "structured_output_and_reasoning",
+              "summary": "Reports whether a single response can preserve multiple tool-call records without flattening them into plain text.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "streaming_tool_calls",
+              "category": "structured_output_and_reasoning",
+              "summary": "Reports whether tool-call deltas stay machine-readable while the response is still streaming.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "responses_api_events",
+              "category": "structured_output_and_reasoning",
+              "summary": "Reports whether a path preserves Responses-style event envelopes rather than only chat-completions style output.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "mtp_speculation",
+              "category": "speculation",
+              "summary": "Reports whether multi-token prediction style speculative decoding is available or faithfully preserved.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "eagle_speculation",
+              "category": "speculation",
+              "summary": "Reports whether EAGLE-style speculative decoding families are available or faithfully preserved.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "dflash_speculation",
+              "category": "speculation",
+              "summary": "Reports whether DFLASH-style speculative decoding is available or faithfully preserved.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "ngram_draft_speculation",
+              "category": "speculation",
+              "summary": "Reports whether n-gram, prompt-lookup, or other draft-assisted speculation can be surfaced honestly.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "reasoning_budget_speculation",
+              "category": "speculation",
+              "summary": "Reports whether speculation policy can react to explicit reasoning or token-budget controls.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "transformers_v5_ready",
+              "category": "dependency_baseline",
+              "summary": "Reports whether a path has an explicit compatibility claim for the Transformers v5 dependency baseline.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "cuda13_ready",
+              "category": "dependency_baseline",
+              "summary": "Reports whether a path has an explicit compatibility claim for CUDA 13 dependent builds or binaries.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "pytorch211_ready",
+              "category": "dependency_baseline",
+              "summary": "Reports whether a path has an explicit compatibility claim for the PyTorch 2.11 baseline.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "cxx20_ready",
+              "category": "dependency_baseline",
+              "summary": "Reports whether a path depends on or has been validated against current C++20 runtime/toolchain expectations.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "multimodal_omni",
+              "category": "multimodal_document_and_semantic",
+              "summary": "Reports whether one local model path can honestly cover mixed text, image, audio, or document-adjacent interaction.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "document_ocr_transformer",
+              "category": "multimodal_document_and_semantic",
+              "summary": "Reports whether transformer-style OCR or document-parsing backends are available on a local-first or bridge-compatible path.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "long_context_embedding",
+              "category": "multimodal_document_and_semantic",
+              "summary": "Reports whether semantic guidance covers long-context embedding models rather than only short retrieval defaults.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            },
+            {
+              "name": "local_agent_sandbox",
+              "category": "agent_interoperability",
+              "summary": "Reports whether LewLM can describe the sandbox, locality, and permission boundaries expected by a host-managed local agent harness.",
+              "accepted_states": [
+                "lewlm_owned",
+                "backend_native",
+                "partial",
+                "fallback",
+                "unsupported",
+                "unverified"
+              ],
+              "notes": []
+            }
+          ],
+          "related_signal_fields": [
+            "install_profiles.recommended_feature_paths[].support_path",
+            "runtime_support_strategy.paths[].performance_core_evidence[].mode",
+            "performance_features[].ownership_modes[]",
+            "measured_capabilities[].status",
+            "target_platforms[].verification_method"
+          ],
+          "notes": [
+            "Milestone 120 defines normalized vocabulary and acceptance states only; it does not claim that every term is already implemented on every runtime path.",
+            "Support-path labels such as packaged and bridge remain orthogonal to acceptance states such as lewlm_owned, backend_native, partial, fallback, unsupported, and unverified.",
+            "Later milestones should reuse these exact vocabulary keys instead of introducing new near-duplicates for runtime, bridge, semantic, document, or agent-surface reporting."
+          ]
+        },
+        "performance_core_evidence": [
+          {
+            "family": "continuous_batching",
+            "mode": "fallback",
+            "reason": "Local scheduler overlap can be preserved, but batching visibility depends on the upstream server.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "continuous_batching"
+            ],
+            "measured_categories": [
+              "batching"
+            ],
+            "sources": [
+              "runtime_feature",
+              "measured_capability"
+            ],
+            "benchmark_backed": false,
+            "notes": [
+              "LewLM reports only the portable contract preserved across the loopback adapter boundary; deeper scheduler or cache internals remain owned by the upstream server.",
+              "No measured probe or benchmark evidence has been recorded for this category on this host yet."
+            ],
+            "metrics": {
+              "supported_component_count": 1,
+              "component_modes": "continuous_batching:fallback",
+              "measured_status": "unmeasured",
+              "measured_record_count": 0
+            }
+          },
+          {
+            "family": "tiered_kv",
+            "mode": "unsupported",
+            "reason": "No runtime currently reports portable tiered-KV residency evidence on this host.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "paged_kv_cache",
+              "kv_cache_quantization"
+            ],
+            "measured_categories": [],
+            "sources": [
+              "runtime_feature"
+            ],
+            "benchmark_backed": false,
+            "notes": [],
+            "metrics": {
+              "supported_component_count": 0,
+              "component_modes": "paged_kv_cache:unsupported,kv_cache_quantization:unsupported"
+            }
+          },
+          {
+            "family": "prefix_reuse",
+            "mode": "unsupported",
+            "reason": "No runtime currently reports portable prefix-reuse evidence on this host.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "prefix_cache",
+              "persistent_multi_context_cache"
+            ],
+            "measured_categories": [
+              "cache_reuse"
+            ],
+            "sources": [
+              "runtime_feature",
+              "measured_capability"
+            ],
+            "benchmark_backed": false,
+            "notes": [
+              "No measured probe or benchmark evidence has been recorded for this category on this host yet."
+            ],
+            "metrics": {
+              "supported_component_count": 0,
+              "component_modes": "prefix_cache:unsupported,persistent_multi_context_cache:unsupported",
+              "measured_status": "unmeasured",
+              "measured_record_count": 0
+            }
+          },
+          {
+            "family": "prefill_isolation",
+            "mode": "fallback",
+            "reason": "A runtime reports prefill acceleration hooks, but LewLM does not see the combined scheduler and chunking signals needed to claim portable prefill isolation.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "prefill_isolation",
+              "chunked_prefill",
+              "prefill_optimization"
+            ],
+            "measured_categories": [],
+            "sources": [
+              "runtime_feature"
+            ],
+            "benchmark_backed": false,
+            "notes": [
+              "LewLM reports only the portable contract preserved across the loopback adapter boundary; deeper scheduler or cache internals remain owned by the upstream server.",
+              "Prefill optimization is present, but LewLM keeps prefill isolation in fallback state until the runtime exposes truthful isolation hooks."
+            ],
+            "metrics": {
+              "supported_component_count": 1,
+              "component_modes": "prefill_isolation:unsupported,chunked_prefill:unsupported,prefill_optimization:fallback"
+            }
+          },
+          {
+            "family": "speculation",
+            "mode": "unsupported",
+            "reason": "No runtime currently reports portable speculation evidence on this host.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "speculative_decoding",
+              "prompt_lookup_speculation"
+            ],
+            "measured_categories": [
+              "speculation"
+            ],
+            "sources": [
+              "runtime_feature",
+              "measured_capability"
+            ],
+            "benchmark_backed": false,
+            "notes": [
+              "No measured probe or benchmark evidence has been recorded for this category on this host yet."
+            ],
+            "metrics": {
+              "supported_component_count": 0,
+              "component_modes": "speculative_decoding:unsupported,prompt_lookup_speculation:unsupported",
+              "measured_status": "unmeasured",
+              "measured_record_count": 0
+            }
+          },
+          {
+            "family": "constrained_decoding",
+            "mode": "fallback",
+            "reason": "Structured-output requests can survive through prompt-guided fallback, but decoder-level constrained decoding is not preserved across the compatibility layer.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "constrained_decoding"
+            ],
+            "measured_categories": [
+              "constrained_decoding"
+            ],
+            "sources": [
+              "runtime_feature",
+              "measured_capability"
+            ],
+            "benchmark_backed": true,
+            "notes": [
+              "LewLM reports only the portable contract preserved across the loopback adapter boundary; deeper scheduler or cache internals remain owned by the upstream server.",
+              "Runtime probe could not verify decode-time constrained decoding on the routed runtime."
+            ],
+            "metrics": {
+              "supported_component_count": 1,
+              "component_modes": "constrained_decoding:fallback",
+              "measured_status": "rejected",
+              "measured_record_count": 1
+            }
+          },
+          {
+            "family": "kernel_acceleration",
+            "mode": "unsupported",
+            "reason": "No runtime currently reports portable kernel-acceleration evidence on this host.",
+            "runtime_names": [
+              "local_external_adapter:fixture"
+            ],
+            "feature_names": [
+              "graph_compilation",
+              "attention_kernel_acceleration"
+            ],
+            "measured_categories": [
+              "compile_kernels"
+            ],
+            "sources": [
+              "runtime_feature",
+              "measured_capability"
+            ],
+            "benchmark_backed": false,
+            "notes": [
+              "No measured probe or benchmark evidence has been recorded for this category on this host yet."
+            ],
+            "metrics": {
+              "supported_component_count": 0,
+              "component_modes": "graph_compilation:unsupported,attention_kernel_acceleration:unsupported",
+              "measured_status": "unmeasured",
+              "measured_record_count": 0
+            }
+          }
+        ]
+      },
+      "chat.stream.text": {
+        "first_content_chunk": {
+          "id": "chatcmpl-example",
+          "object": "chat.completion.chunk",
+          "created": 0,
+          "model": "fixture-chat-fixture-example",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "one ",
+                "reasoning": null,
+                "tool_calls": null
+              },
+              "finish_reason": null
+            }
+          ],
+          "citations": [],
+          "usage": null,
+          "metadata": null,
+          "structured_output": null,
+          "tool_calls": null,
+          "error": null,
+          "prompt_trace": null,
+          "serving_profile": {
+            "status": "not_found",
+            "source": "persisted_autotune",
+            "capability": "chat",
+            "workload_class": "text_only",
+            "preset": "interactive",
+            "profile_id": null,
+            "stale_inputs": {},
+            "runtime": "local_external_adapter:fixture",
+            "reason": "No persisted serving profile is available for this host/model/runtime/workload tuple and the `interactive` preset.",
+            "recommendation_reason": null,
+            "recommended_at": null,
+            "artifact_id": null,
+            "accepted_settings": {},
+            "rejected_settings": {},
+            "effective_settings": {
+              "runtime_policy": "balanced",
+              "continuous_batch_window_milliseconds": 8,
+              "continuous_batch_max_batch_size": 4,
+              "kv_cache_page_size": 256,
+              "kv_cache_max_pages": 64,
+              "kv_cache_quantization_bits": null,
+              "gpu_offload_layers": null,
+              "prefill_token_batch_size": 512,
+              "mlx_graph_compile_enabled": false,
+              "mlx_attention_kernel_mode": "stock"
+            }
+          }
+        },
+        "terminal_chunk": {
+          "id": "chatcmpl-example",
+          "object": "chat.completion.chunk",
+          "created": 0,
+          "model": "fixture-chat-fixture-example",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": null,
+                "content": null,
+                "reasoning": {
+                  "visibility": "hidden",
+                  "available": false,
+                  "content": null,
+                  "summary": null
+                },
+                "tool_calls": null
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "citations": [],
+          "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 5,
+            "total_tokens": 17,
+            "measured": true,
+            "cached_tokens": 8
+          },
+          "metadata": {
+            "version": "v1",
+            "request_id": "req-example",
+            "correlation_id": null,
+            "created": 0,
+            "result_origin": "runtime",
+            "model": {
+              "requested_model_id": "fixture-chat-fixture-example",
+              "resolved_model_id": "fixture-chat-fixture-example",
+              "runtime_name": "local_external_adapter:fixture",
+              "runtime_affinity": "external_accelerator",
+              "endpoint_id": "fixture",
+              "engine_profile": "openai_compatible",
+              "execution_locality": "loopback_unverified"
+            },
+            "routing": {
+              "kind": "model_router",
+              "reason": "Using explicitly requested model `fixture-chat-fixture-6953e947` via bridge-backed `local_external_adapter:fixture` for `chat`; context fit 34/8192 tokens; context fit 34/8192 tokens; memory estimate unavailable; not yet loaded; the request did not require multimodal conditioning..",
+              "request_modality": "text_only",
+              "modality_path": "text_default",
+              "modality_path_reason": "The request did not require multimodal conditioning.",
+              "alternatives": [],
+              "fallback_from_model_id": null,
+              "fallback_reason": null
+            },
+            "timing": {
+              "queue_milliseconds": 0,
+              "load_milliseconds": 0,
+              "execute_milliseconds": 0,
+              "total_milliseconds": 0
+            },
+            "serving": {
+              "capability": "streaming",
+              "phase": "completed",
+              "streaming": true,
+              "streaming_owner": "lewlm",
+              "runtime_adapter_kind": "request_scoped",
+              "cancellation_requested": false,
+              "queue_residency_milliseconds": 0,
+              "queue_count": 0,
+              "batched": false,
+              "batch_size": 1
+            },
+            "components": [],
+            "sampling": {
+              "runtime": "local_external_adapter:fixture",
+              "requested": {},
+              "applied": {},
+              "unsupported": [],
+              "deterministic": false
+            },
+            "idempotency_key": null,
+            "idempotent_replay": false
+          },
+          "structured_output": null,
+          "tool_calls": null,
+          "error": null,
+          "prompt_trace": null,
+          "serving_profile": null
+        },
+        "ends_with": "[DONE]"
+      },
+      "chat.native_tool_call": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "fixture-chat-fixture-example",
+        "session_id": null,
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Lisbon\"},\"id\":\"call_fixture_1\"}]}",
+              "reasoning": {
+                "visibility": "hidden",
+                "available": false,
+                "content": null,
+                "summary": null
+              }
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 1,
+          "total_tokens": 13,
+          "measured": true,
+          "cached_tokens": 8
+        },
+        "metadata": {
+          "version": "v1",
+          "request_id": "req-example",
+          "correlation_id": null,
+          "created": 0,
+          "result_origin": "runtime",
+          "model": {
+            "requested_model_id": "fixture-chat-fixture-example",
+            "resolved_model_id": "fixture-chat-fixture-example",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "endpoint_id": "fixture",
+            "engine_profile": "openai_compatible",
+            "execution_locality": "loopback_unverified"
+          },
+          "routing": {
+            "kind": "model_router",
+            "reason": "Using explicitly requested model `fixture-chat-fixture-6953e947` via bridge-backed `local_external_adapter:fixture` for `chat`; context fit 43/8192 tokens; model already loaded; context fit 43/8192 tokens; memory estimate unavailable; already loaded; the request did not require multimodal conditioning..",
+            "request_modality": "text_only",
+            "modality_path": "text_default",
+            "modality_path_reason": "The request did not require multimodal conditioning.",
+            "alternatives": [],
+            "fallback_from_model_id": null,
+            "fallback_reason": null
+          },
+          "timing": {
+            "queue_milliseconds": 0,
+            "load_milliseconds": 0,
+            "execute_milliseconds": 0,
+            "total_milliseconds": 0
+          },
+          "serving": {
+            "capability": "chat",
+            "phase": "completed",
+            "streaming": false,
+            "streaming_owner": "none",
+            "runtime_adapter_kind": "request_scoped",
+            "cancellation_requested": false,
+            "queue_residency_milliseconds": 0,
+            "queue_count": 0,
+            "batched": false,
+            "batch_size": 1
+          },
+          "components": [],
+          "sampling": {
+            "runtime": "local_external_adapter:fixture",
+            "requested": {},
+            "applied": {},
+            "unsupported": [],
+            "deterministic": false
+          },
+          "idempotency_key": null,
+          "idempotent_replay": false
+        },
+        "citations": [],
+        "structured_output": null,
+        "tool_calls": {
+          "status": "parsed",
+          "parser": "lewlm_strict_tool_parser",
+          "tool_calls": [
+            {
+              "call_id": "call_fixture_1",
+              "name": "get_weather",
+              "arguments": {
+                "city": "Lisbon"
+              }
+            }
+          ],
+          "issues": [],
+          "remaining_text": "",
+          "parallel": false
+        },
+        "prompt_trace": null,
+        "serving_profile": {
+          "status": "not_found",
+          "source": "persisted_autotune",
+          "capability": "chat",
+          "workload_class": "text_only",
+          "preset": "interactive",
+          "profile_id": null,
+          "stale_inputs": {},
+          "runtime": "local_external_adapter:fixture",
+          "reason": "No persisted serving profile is available for this host/model/runtime/workload tuple and the `interactive` preset.",
+          "recommendation_reason": null,
+          "recommended_at": null,
+          "artifact_id": null,
+          "accepted_settings": {},
+          "rejected_settings": {},
+          "effective_settings": {
+            "runtime_policy": "balanced",
+            "continuous_batch_window_milliseconds": 8,
+            "continuous_batch_max_batch_size": 4,
+            "kv_cache_page_size": 256,
+            "kv_cache_max_pages": 64,
+            "kv_cache_quantization_bits": null,
+            "gpu_offload_layers": null,
+            "prefill_token_batch_size": 512,
+            "mlx_graph_compile_enabled": false,
+            "mlx_attention_kernel_mode": "stock"
+          }
+        }
+      },
+      "chat.json_output": {
+        "id": "chatcmpl-example",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "fixture-chat-fixture-example",
+        "session_id": null,
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"city\": \"Paris\", \"population\": 2000000}",
+              "reasoning": {
+                "visibility": "hidden",
+                "available": false,
+                "content": null,
+                "summary": null
+              }
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 4,
+          "total_tokens": 16,
+          "measured": true,
+          "cached_tokens": 8
+        },
+        "metadata": {
+          "version": "v1",
+          "request_id": "req-example",
+          "correlation_id": null,
+          "created": 0,
+          "result_origin": "runtime",
+          "model": {
+            "requested_model_id": "fixture-chat-fixture-example",
+            "resolved_model_id": "fixture-chat-fixture-example",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "endpoint_id": "fixture",
+            "engine_profile": "openai_compatible",
+            "execution_locality": "loopback_unverified"
+          },
+          "routing": {
+            "kind": "model_router",
+            "reason": "Using explicitly requested model `fixture-chat-fixture-6953e947` via bridge-backed `local_external_adapter:fixture` for `chat`; context fit 46/8192 tokens; model already loaded; context fit 46/8192 tokens; memory estimate unavailable; already loaded; the request did not require multimodal conditioning.; structured-output enforcement is not advertised on this path.",
+            "request_modality": "text_only",
+            "modality_path": "text_default",
+            "modality_path_reason": "The request did not require multimodal conditioning.",
+            "alternatives": [],
+            "fallback_from_model_id": null,
+            "fallback_reason": null
+          },
+          "timing": {
+            "queue_milliseconds": 0,
+            "load_milliseconds": 0,
+            "execute_milliseconds": 0,
+            "total_milliseconds": 0
+          },
+          "serving": {
+            "capability": "chat",
+            "phase": "completed",
+            "streaming": false,
+            "streaming_owner": "none",
+            "runtime_adapter_kind": "request_scoped",
+            "cancellation_requested": false,
+            "queue_residency_milliseconds": 0,
+            "queue_count": 0,
+            "batched": false,
+            "batch_size": 1
+          },
+          "components": [],
+          "sampling": {
+            "runtime": "local_external_adapter:fixture",
+            "requested": {},
+            "applied": {},
+            "unsupported": [],
+            "deterministic": false
+          },
+          "idempotency_key": null,
+          "idempotent_replay": false
+        },
+        "citations": [],
+        "structured_output": {
+          "requested": true,
+          "contract": {
+            "type": "json_schema",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                },
+                "population": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "city",
+                "population"
+              ],
+              "additionalProperties": false
+            },
+            "name": "city",
+            "strict": true
+          },
+          "enforcement": "decode_time",
+          "decoder_enforced": false,
+          "enforcement_evidence": "upstream_native",
+          "fallback_used": false,
+          "fallback_reason": null,
+          "grammar_relaxations": [],
+          "parsed_output": {
+            "city": "Paris",
+            "population": 2000000
+          },
+          "validation": {
+            "state": "valid",
+            "validator": "full_json_schema",
+            "message": "LewLM validated the parsed JSON against the requested JSON schema after generation.",
+            "issues": []
+          }
+        },
+        "tool_calls": null,
+        "prompt_trace": null,
+        "serving_profile": {
+          "status": "not_found",
+          "source": "persisted_autotune",
+          "capability": "chat",
+          "workload_class": "text_only",
+          "preset": "interactive",
+          "profile_id": null,
+          "stale_inputs": {},
+          "runtime": "local_external_adapter:fixture",
+          "reason": "No persisted serving profile is available for this host/model/runtime/workload tuple and the `interactive` preset.",
+          "recommendation_reason": null,
+          "recommended_at": null,
+          "artifact_id": null,
+          "accepted_settings": {},
+          "rejected_settings": {},
+          "effective_settings": {
+            "runtime_policy": "balanced",
+            "continuous_batch_window_milliseconds": 8,
+            "continuous_batch_max_batch_size": 4,
+            "kv_cache_page_size": 256,
+            "kv_cache_max_pages": 64,
+            "kv_cache_quantization_bits": null,
+            "gpu_offload_layers": null,
+            "prefill_token_batch_size": 512,
+            "mlx_graph_compile_enabled": false,
+            "mlx_attention_kernel_mode": "stock"
+          }
+        }
+      },
+      "chat.cancellation": {
+        "cancel_response_after_first_chunk": {
+          "request_id": "req-example",
+          "state": "cancelling",
+          "runtime_instance_id": "runtime-example",
+          "application_id": "chap",
+          "requested_at": "2026-01-01T00:00:00+00:00",
+          "expires_at": null,
+          "completed_at": null
+        },
+        "cancel_response_after_stream_ended": {
+          "request_id": "req-example",
+          "state": "cancelled",
+          "runtime_instance_id": "runtime-example",
+          "application_id": "chap",
+          "requested_at": "2026-01-01T00:00:00+00:00",
+          "expires_at": null,
+          "completed_at": "2026-01-01T00:00:00+00:00"
+        },
+        "terminal_chunk": {
+          "id": "chatcmpl-example",
+          "object": "chat.completion.chunk",
+          "created": 0,
+          "model": "fixture-chat-fixture-example",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": null,
+                "content": null,
+                "reasoning": null,
+                "tool_calls": null
+              },
+              "finish_reason": "cancelled"
+            }
+          ],
+          "citations": [],
+          "usage": null,
+          "metadata": null,
+          "structured_output": null,
+          "tool_calls": null,
+          "error": null,
+          "prompt_trace": null,
+          "serving_profile": null
+        }
+      },
+      "chat.stream.interrupted": {
+        "terminal_chunk": {
+          "id": "chatcmpl-example",
+          "object": "chat.completion.chunk",
+          "created": 0,
+          "model": "fixture-chat-fixture-example",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": null,
+                "content": null,
+                "reasoning": null,
+                "tool_calls": null
+              },
+              "finish_reason": "error"
+            }
+          ],
+          "citations": [],
+          "usage": null,
+          "metadata": null,
+          "structured_output": null,
+          "tool_calls": null,
+          "error": {
+            "code": "runtime_unavailable",
+            "message": "External accelerator request timed out.",
+            "details": {
+              "runtime": "local_external_adapter:fixture",
+              "endpoint_id": "fixture",
+              "path": "/v1/chat/completions",
+              "error_kind": "timeout",
+              "reason": ""
+            },
+            "partial_output": true
+          },
+          "prompt_trace": null,
+          "serving_profile": null
+        },
+        "ends_with": "[DONE]"
+      },
+      "chat.unavailable_engine": {
+        "http_status": 503,
+        "body": {
+          "error": {
+            "code": "runtime_unavailable",
+            "message": "Could not connect to the configured external accelerator endpoint.",
+            "details": {
+              "runtime": "local_external_adapter:fixture",
+              "endpoint_id": "fixture",
+              "path": "/v1/chat/completions",
+              "error_kind": "unavailable",
+              "reason": "All connection attempts failed"
+            }
+          }
+        }
+      },
+      "health.engine_down": {
+        "status": "ok",
+        "service": "LewLM",
+        "version": "0.4.2",
+        "runtime_instance_id": "runtime-example",
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "process_id": 0,
+        "hostname": "host-example",
+        "time": "2026-01-01T00:00:00+00:00",
+        "install_profiles": {
+          "active_profile_ids": [
+            "core_only",
+            "mlx_local_backend",
+            "gguf_fallback_backend",
+            "external_accelerator_bridge_backend",
+            "documents_enabled_backend"
+          ],
+          "recommended_profile_id": "mlx_local_backend",
+          "recommended_feature_paths": [
+            {
+              "feature_class": "chat",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the packaged Apple MLX path as the default chat and streaming route on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If the MLX profile is unavailable on this host, switch to the packaged GGUF profile for chat."
+              ]
+            },
+            {
+              "feature_class": "semantic_text",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX path for embeddings and rerank on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If you need a loopback semantic backend instead, use the external accelerator bridge with compatible `/v1/embeddings` and `/v1/rerank` endpoints."
+              ]
+            },
+            {
+              "feature_class": "vision",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX vision path for image-conditioned chat on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If MLX vision is unavailable, the external accelerator bridge can still serve OpenAI-style image content blocks through LewLM's shared chat surfaces."
+              ]
+            },
+            {
+              "feature_class": "audio",
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "support_path": "packaged",
+              "summary": "Use the Apple MLX audio path for transcription and speech on Apple Silicon macOS.",
+              "fallback_guidance": [
+                "If MLX audio is unavailable, the external accelerator bridge can serve audio through compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints."
+              ]
+            },
+            {
+              "feature_class": "structured_output",
+              "profile": "gguf_fallback_backend",
+              "label": "Cross-platform GGUF backend",
+              "support_path": "packaged",
+              "summary": "Use the packaged GGUF/llama.cpp path when you need decode-time JSON-schema or grammar enforcement; Apple MLX remains prompt-guided fallback for structured output.",
+              "fallback_guidance": [
+                "If GGUF is unavailable, LewLM still records structured-output contracts on MLX, but enforcement falls back to prompt-guided generation plus validation metadata."
+              ]
+            }
+          ],
+          "standards_acceptance_contract": {
+            "format": "lewlm-standards-acceptance-contract-v1",
+            "acceptance_states": [
+              {
+                "state": "lewlm_owned",
+                "summary": "LewLM implements, controls, and can directly validate the behavior on the documented path."
+              },
+              {
+                "state": "backend_native",
+                "summary": "The backend owns the behavior and LewLM only detects, preserves, or reports it honestly."
+              },
+              {
+                "state": "partial",
+                "summary": "Only part of the intended behavior is preserved, observable, or contractually exposed."
+              },
+              {
+                "state": "fallback",
+                "summary": "LewLM keeps the public request contract but downgrades to a narrower or translated execution path."
+              },
+              {
+                "state": "unsupported",
+                "summary": "LewLM does not claim the behavior on that path or host today."
+              },
+              {
+                "state": "unverified",
+                "summary": "The vocabulary term is reserved, but LewLM does not yet have host proof or probe-backed evidence for a stronger claim."
+              }
+            ],
+            "vocabulary": [
+              {
+                "name": "kv_offload",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV cache state can move to a secondary residency tier while preserving honest ownership boundaries.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "kv_quantization",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV cache compression or quantized KV residency is available on the selected path.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "hybrid_memory",
+                "category": "memory_and_context",
+                "summary": "Reports whether model or cache residency can span device, host, or other local memory tiers under one serving contract.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "pd_disaggregation",
+                "category": "memory_and_context",
+                "summary": "Reports whether prefill and decode can be separated into distinct execution or scheduling stages.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "distributed_kv_transfer",
+                "category": "memory_and_context",
+                "summary": "Reports whether KV state can be transferred or shared across cooperating local workers or bridge-visible runtimes.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "strict_tool_parser",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether tool calls are emitted or validated through a strict parser or grammar-backed path instead of prompt-only heuristics.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "reasoning_tags",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a runtime or bridge can surface machine-readable reasoning tags or segments separately from final answer text.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "parallel_tool_calls",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a single response can preserve multiple tool-call records without flattening them into plain text.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "streaming_tool_calls",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether tool-call deltas stay machine-readable while the response is still streaming.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "responses_api_events",
+                "category": "structured_output_and_reasoning",
+                "summary": "Reports whether a path preserves Responses-style event envelopes rather than only chat-completions style output.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "mtp_speculation",
+                "category": "speculation",
+                "summary": "Reports whether multi-token prediction style speculative decoding is available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "eagle_speculation",
+                "category": "speculation",
+                "summary": "Reports whether EAGLE-style speculative decoding families are available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "dflash_speculation",
+                "category": "speculation",
+                "summary": "Reports whether DFLASH-style speculative decoding is available or faithfully preserved.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "ngram_draft_speculation",
+                "category": "speculation",
+                "summary": "Reports whether n-gram, prompt-lookup, or other draft-assisted speculation can be surfaced honestly.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "reasoning_budget_speculation",
+                "category": "speculation",
+                "summary": "Reports whether speculation policy can react to explicit reasoning or token-budget controls.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "transformers_v5_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for the Transformers v5 dependency baseline.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "cuda13_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for CUDA 13 dependent builds or binaries.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "pytorch211_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path has an explicit compatibility claim for the PyTorch 2.11 baseline.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "cxx20_ready",
+                "category": "dependency_baseline",
+                "summary": "Reports whether a path depends on or has been validated against current C++20 runtime/toolchain expectations.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "multimodal_omni",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether one local model path can honestly cover mixed text, image, audio, or document-adjacent interaction.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "document_ocr_transformer",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether transformer-style OCR or document-parsing backends are available on a local-first or bridge-compatible path.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "long_context_embedding",
+                "category": "multimodal_document_and_semantic",
+                "summary": "Reports whether semantic guidance covers long-context embedding models rather than only short retrieval defaults.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              },
+              {
+                "name": "local_agent_sandbox",
+                "category": "agent_interoperability",
+                "summary": "Reports whether LewLM can describe the sandbox, locality, and permission boundaries expected by a host-managed local agent harness.",
+                "accepted_states": [
+                  "lewlm_owned",
+                  "backend_native",
+                  "partial",
+                  "fallback",
+                  "unsupported",
+                  "unverified"
+                ],
+                "notes": []
+              }
+            ],
+            "related_signal_fields": [
+              "install_profiles.recommended_feature_paths[].support_path",
+              "runtime_support_strategy.paths[].performance_core_evidence[].mode",
+              "performance_features[].ownership_modes[]",
+              "measured_capabilities[].status",
+              "target_platforms[].verification_method"
+            ],
+            "notes": [
+              "Milestone 120 defines normalized vocabulary and acceptance states only; it does not claim that every term is already implemented on every runtime path.",
+              "Support-path labels such as packaged and bridge remain orthogonal to acceptance states such as lewlm_owned, backend_native, partial, fallback, unsupported, and unverified.",
+              "Later milestones should reuse these exact vocabulary keys instead of introducing new near-duplicates for runtime, bridge, semantic, document, or agent-surface reporting."
+            ]
+          },
+          "profiles": [
+            {
+              "profile": "core_only",
+              "label": "Core only",
+              "extras": [],
+              "install_spec": ".",
+              "installed": true,
+              "ready": true,
+              "summary": "Base middleware package with CLI, local API, registry, routing, and readiness surfaces but no optional runtime or document packages.",
+              "notes": [
+                "Add Apple MLX, cross-platform GGUF, or the external accelerator bridge before expecting local chat, embeddings, rerank, or audio execution."
+              ]
+            },
+            {
+              "profile": "mlx_local_backend",
+              "label": "Apple MLX local backend",
+              "extras": [
+                "mlx"
+              ],
+              "install_spec": ".[mlx]",
+              "installed": true,
+              "ready": true,
+              "summary": "Apple Silicon runtime profile for LewLM's first-class MLX text, vision, and audio adapters on supported hosts.",
+              "notes": [
+                "Recommended packaged runtime on Apple Silicon hosts."
+              ]
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "label": "Cross-platform GGUF backend",
+              "extras": [
+                "llamacpp"
+              ],
+              "install_spec": ".[llamacpp]",
+              "installed": true,
+              "ready": true,
+              "summary": "Cross-platform packaged GGUF runtime profile backed by llama.cpp; LewLM's first-class non-Apple runtime family for chat, embeddings, and packaged rerank fallback.",
+              "notes": [
+                "Installed llama.cpp build reports GPU offload support (heuristic accelerator hints: metal). Hints are inventory evidence only; probes and benchmarks decide capability evidence.",
+                "Serving-only hosts can install `.[llamacpp_runtime]` instead: the same llama.cpp runtime without the Torch/Transformers conversion dependencies. `.[llamacpp]` keeps conversion available."
+              ]
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "label": "ONNX Runtime GenAI backend",
+              "extras": [
+                "onnx_genai"
+              ],
+              "install_spec": ".[onnx_genai]",
+              "installed": false,
+              "ready": false,
+              "summary": "Packaged ONNX Runtime GenAI profile for already-prepared model bundles, with Windows-native CPU, DirectML, and CUDA execution-provider planning metadata.",
+              "notes": [
+                "LewLM can load and generate from compatible ONNX GenAI bundles when the installed package exposes the expected Python API; per-model probes and benchmarks still upgrade evidence beyond package readiness.",
+                "Missing Python modules: onnxruntime_genai",
+                "Install `.[onnx_genai]` to prepare ONNX Runtime GenAI bundle probing on this host."
+              ]
+            },
+            {
+              "profile": "external_accelerator_bridge_backend",
+              "label": "Cross-platform external accelerator bridge",
+              "extras": [],
+              "install_spec": ".",
+              "installed": true,
+              "ready": true,
+              "summary": "Bridge profile for LewLM talking to a loopback-only OpenAI-compatible local server instead of importing an in-process runtime package.",
+              "notes": [
+                "Use this bridge when LewLM should front a loopback-only OpenAI-compatible local server rather than importing a runtime package directly.",
+                "Generic OpenAI-compatible bridge profile for a local loopback server.",
+                "LewLM does not install or manage the external server itself.",
+                "Text and streaming use `/v1/chat/completions`; image-conditioned chat uses the same route with OpenAI-style image content blocks.",
+                "Audio execution depends on the loopback server exposing `/v1/audio/transcriptions` and `/v1/audio/speech`, and LewLM probes those bridge endpoints separately.",
+                "This bridge is LewLM's current bridge-only non-Apple public audio parity path for transcription and speech requests.",
+                "LewLM reports narrower bridge depth explicitly; it does not claim MLX-level multimodal optimization or telemetry parity through this path.",
+                "Semantic text support on this bridge is adapter-backed: embeddings require a compatible local `/v1/embeddings` endpoint, and rerank requires a compatible local `/v1/rerank` endpoint or equivalent extension.",
+                "Configured bridge profile: `openai_compatible`.",
+                "Darwin arm64 is configured for a loopback-only external accelerator endpoint."
+              ]
+            },
+            {
+              "profile": "documents_enabled_backend",
+              "label": "Documents add-on",
+              "extras": [
+                "documents"
+              ],
+              "install_spec": ".[documents]",
+              "installed": true,
+              "ready": true,
+              "summary": "Document ingest, rendering, and transform profile for PDF, DOCX, XLSX, OCR-oriented, and deterministic artifact workflows.",
+              "notes": [
+                "OCR-style flows still need a working local backend: The `tesseract` binary is not installed.",
+                "Python extras do not install the OCR engine itself; verify the local backend separately when you need OCR workflows.",
+                "This profile is additive; pair it with Apple MLX, cross-platform GGUF, or the external accelerator bridge when you also want local model execution."
+              ]
+            }
+          ],
+          "backend_inventory": [
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx",
+              "distribution": "mlx",
+              "installed": true,
+              "version": "0.31.1",
+              "detail": "Detected `mlx` version 0.31.1; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_lm",
+              "distribution": "mlx-lm",
+              "installed": true,
+              "version": "0.31.1",
+              "detail": "Detected `mlx-lm` version 0.31.1; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_vlm",
+              "distribution": "mlx-vlm",
+              "installed": true,
+              "version": "0.4.4",
+              "detail": "Detected `mlx-vlm` version 0.4.4; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "module": "mlx_audio",
+              "distribution": "mlx-audio",
+              "installed": true,
+              "version": "0.4.2",
+              "detail": "Detected `mlx-audio` version 0.4.2; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "module": "llama_cpp",
+              "distribution": "llama-cpp-python",
+              "installed": true,
+              "version": "0.3.20",
+              "detail": "Detected `llama-cpp-python` version 0.3.20; runtime feature probes and benchmarks still decide capability evidence."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "module": "onnxruntime_genai",
+              "distribution": "onnxruntime-genai",
+              "installed": false,
+              "version": null,
+              "detail": "`onnxruntime_genai` is not importable on this host; backend version evidence stays unavailable until the matching extra is installed."
+            }
+          ],
+          "backend_feature_probes": [
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "ngram_draft_speculation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "kv_quantization_controls",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "kv_offload_controls",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "gguf_fallback_backend",
+              "backend": "llama_cpp",
+              "feature": "decode_time_grammar_enforcement",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "backend": "mlx_lm",
+              "feature": "draft_model_speculation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "mlx_local_backend",
+              "backend": "mlx_lm",
+              "feature": "batched_generation",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "backend": "onnxruntime_genai",
+              "feature": "generation_api",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            },
+            {
+              "profile": "onnx_genai_backend",
+              "backend": "onnxruntime_genai",
+              "feature": "multimodal_processor",
+              "present": null,
+              "detail": "The matching runtime pack is disabled; LewLM did not import or probe this backend."
+            }
+          ],
+          "llamacpp_build": {
+            "installed": true,
+            "gpu_offload_supported": true,
+            "accelerator_hints": [
+              "metal"
+            ],
+            "system_info": "MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | DOTPROD = 1 | ACCELERATE = 1 | REPACK = 1 | ",
+            "detection_state": "detected",
+            "reason": "llama.cpp build flavor detected from the installed backend's own reporting APIs. Accelerator hints are heuristic inventory evidence only; probes and benchmarks decide capability evidence."
+          },
+          "container": {
+            "in_container": false,
+            "runtime": null,
+            "indicators": [],
+            "reason": "No container markers were visible to this process, so LewLM treats this as a native host. Container images that strip the usual markers can still be reported this way.",
+            "image_flavor": null
+          },
+          "storage_access": {
+            "data_dir": "/path/to/lewlm/state",
+            "exists": true,
+            "writable": true,
+            "owner": "lew (uid 501)",
+            "reason": "A probe file was created and removed successfully."
+          },
+          "notes": [
+            "This Apple Silicon host can use MLX as LewLM's first-class local runtime profile."
+          ],
+          "external_endpoints": [
+            {
+              "endpoint_id": "fixture",
+              "profile": "openai_compatible",
+              "enabled": true,
+              "base_url": "http://127.0.0.1:PORT/v1",
+              "credential_configured": false,
+              "evidence_state": "unverified"
+            }
+          ]
+        },
+        "readiness": {
+          "status": "partial",
+          "host_platform": {
+            "system": "Darwin",
+            "release": "25.2.0",
+            "machine": "arm64",
+            "python_version": "3.14.7",
+            "total_memory_mb": 98304,
+            "total_memory_source": "posix_sysconf",
+            "total_memory_reason": null
+          },
+          "discovered_model_count": 1,
+          "runnable_model_count": 1,
+          "capability_count": 7,
+          "ready_capability_count": 2,
+          "capabilities": [
+            {
+              "capability": "chat",
+              "ready": true,
+              "readiness_state": "ready",
+              "reason": "LewLM can serve `chat` on this host through a bridge-backed local runtime.",
+              "available_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "available_support_paths": [
+                "bridge"
+              ],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "bridge_only": true,
+              "candidate_model_count": 1,
+              "runnable_model_count": 1,
+              "ready_model_ids": [
+                "fixture-chat-fixture-6953e947"
+              ],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": [
+                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+              ]
+            },
+            {
+              "capability": "streaming",
+              "ready": true,
+              "readiness_state": "ready",
+              "reason": "LewLM can serve `streaming` on this host through a bridge-backed local runtime.",
+              "available_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "available_support_paths": [
+                "bridge"
+              ],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [
+                "local_external_adapter:fixture"
+              ],
+              "bridge_only": true,
+              "candidate_model_count": 1,
+              "runnable_model_count": 1,
+              "ready_model_ids": [
+                "fixture-chat-fixture-6953e947"
+              ],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": [
+                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+              ]
+            },
+            {
+              "capability": "vision",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `vision`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "embeddings",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `embeddings`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "rerank",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `rerank`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "audio_transcription",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `audio_transcription`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            },
+            {
+              "capability": "audio_speech",
+              "ready": false,
+              "readiness_state": "no_models",
+              "reason": "No discovered models currently advertise `audio_speech`.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
+              "packaged_runtime_names": [],
+              "bridge_runtime_names": [],
+              "bridge_only": false,
+              "candidate_model_count": 0,
+              "runnable_model_count": 0,
+              "ready_model_ids": [],
+              "blocked_model_ids": [],
+              "conversion_required_model_ids": [],
+              "notes": []
+            }
+          ],
+          "notes": [
+            "Some capabilities are currently available only through bridge-backed local runtimes."
+          ]
+        },
+        "storage": {
+          "healthy": true,
+          "database_path": "/path/to/lewlm/state/metadata.sqlite3",
+          "schema_version": 10,
+          "model_count": 1
+        },
+        "configuration": {
+          "data_dir": "/path/to/lewlm/state",
+          "models_dir": [
+            "/path/to/lewlm/models"
+          ],
+          "runtime_packs": [
+            {
+              "name": "mlx",
+              "kind": "runtime",
+              "description": "Apple MLX runtime pack for text, vision, and audio workloads on Apple Silicon macOS.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `mlx` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "mlx",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "mlx_text",
+                "mlx_vision",
+                "mlx_audio"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "llamacpp",
+              "kind": "runtime",
+              "description": "Cross-platform GGUF runtime pack through llama-cpp-python.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `llamacpp` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "llamacpp",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "llamacpp"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "onnx_genai",
+              "kind": "runtime",
+              "description": "Windows-native ONNX Runtime GenAI pack for CPU, DirectML, and CUDA-ready model bundles.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `onnx_genai` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": "onnx_genai",
+              "missing_modules": [],
+              "runtime_affinities": [
+                "onnx_genai"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "external_accelerator",
+              "kind": "runtime",
+              "description": "Bridge runtime pack for loopback-only OpenAI-compatible local servers that LewLM fronts instead of importing in-process.",
+              "active": true,
+              "status": "active",
+              "reason": "Pack is active; per-runtime readiness is reported separately.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "external_accelerator"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "experimental",
+              "kind": "runtime",
+              "description": "Planning-only experimental runtime surfaces.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `experimental` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "experimental"
+              ],
+              "surfaces": []
+            },
+            {
+              "name": "distributed_experimental",
+              "kind": "runtime",
+              "description": "Proof-oriented distributed runtime surfaces.",
+              "active": false,
+              "status": "disabled",
+              "reason": "Runtime pack `distributed_experimental` is disabled by configuration. Adjust `runtime_packs` or `disabled_runtime_packs` to load it.",
+              "optional_dependency_group": null,
+              "missing_modules": [],
+              "runtime_affinities": [
+                "distributed_experimental"
+              ],
+              "surfaces": []
+            }
+          ],
+          "feature_packs": [
+            {
+              "name": "documents",
+              "kind": "feature",
+              "description": "Additive documents pack for ingest, generation, transform, tool, and skill surfaces.",
+              "active": true,
+              "status": "active",
+              "reason": "Pack is active.",
+              "optional_dependency_group": "documents",
+              "missing_modules": [],
+              "runtime_affinities": [],
+              "surfaces": [
+                "documents_api",
+                "document_cli",
+                "tool_catalog",
+                "skill_catalog"
+              ]
+            }
+          ],
+          "privacy_mode": false,
+          "telemetry_enabled": false,
+          "allow_outbound_network": false,
+          "audit_log_enabled": false,
+          "persistence_encryption_enabled": false,
+          "tool_authorization_required": false,
+          "parser_sandbox_enabled": true,
+          "tool_sandbox_enabled": true,
+          "conversion_sandbox_enabled": true
+        },
+        "cluster": {
+          "role": "standalone",
+          "enabled": false,
+          "cluster_name": "default",
+          "node_name": "node",
+          "coordinator_url": null,
+          "public_base_url": "http://127.0.0.1:PORT",
+          "ready_worker_count": 0,
+          "stale_worker_count": 0,
+          "plan_count": 0,
+          "worker_heartbeat_timeout_seconds": 30,
+          "worker_session": null,
+          "workers": [],
+          "latest_execution_metrics": {},
+          "notes": [
+            "Experimental pipeline-parallel proof path only; tensor-parallel execution and backend-native shard kernels remain follow-up work.",
+            "Cluster coordination is disabled until `cluster_role` is set to `coordinator` or `worker`."
+          ]
+        },
+        "engines": [
+          {
+            "endpoint_id": "fixture",
+            "profile": "openai_compatible",
+            "enabled": true,
+            "state": "stale",
+            "inventory_age_seconds": 0,
+            "advertised_model_count": 1,
+            "inventory_error": "[Errno 61] Connection refused"
+          }
+        ]
+      },
+      "chat.model_not_found": {
+        "http_status": 404,
+        "body": {
+          "error": {
+            "code": "model_not_found",
+            "message": "Requested model was not found in the local registry.",
+            "details": {
+              "model_id": "no-such-model"
+            }
+          }
+        }
+      }
+    }
+  }
 }

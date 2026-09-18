@@ -326,6 +326,13 @@ class ResponseChunk(BaseModel):
     reasoning: ReasoningOutput | None = None
     tool_call_delta: list[dict[str, Any]] | None = None
     done: bool = False
+    finish_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why the stream ended, on the terminal chunk (`done` true) only: `stop`, `length`, "
+            "`tool_calls`, `cancelled` (a named cancel stopped it; delivered text stands), or `error`."
+        ),
+    )
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
     usage: CompletionUsage | None = Field(
         default=None,

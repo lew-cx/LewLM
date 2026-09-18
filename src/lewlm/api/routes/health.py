@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from lewlm.api.dependencies import get_services
-from lewlm.api.schemas.health import ConfigurationHealth, HealthResponse, StorageHealth
+from lewlm.api.schemas.health import ConfigurationHealth, EngineHealth, HealthResponse, StorageHealth
 from lewlm.core.contracts import utc_now
 from lewlm.install_profiles import summarize_install_profiles
 
@@ -54,4 +54,28 @@ def health(request: Request) -> HealthResponse:
             conversion_sandbox_enabled=settings.conversion_sandbox_enabled,
         ),
         cluster=services.cluster_service.status().model_dump(mode="json"),
+        engines=_engine_health(services),
     )
+
+
+def _engine_health(services) -> list[EngineHealth]:
+    """Configured engines from cached endpoint evidence; health never probes."""
+
+    engines: list[EngineHealth] = []
+    for endpoint_id, runtime in sorted(services.runtime_catalog.endpoint_runtimes().items()):
+        snapshot_method = getattr(runtime, "endpoint_snapshot", None)
+        if not callable(snapshot_method):
+            continue
+        snapshot = snapshot_method()
+        engines.append(
+            EngineHealth(
+                endpoint_id=endpoint_id,
+                profile=str(snapshot.get("profile")),
+                enabled=bool(snapshot.get("enabled", True)),
+                state=str(snapshot.get("inventory_state", "unknown")),
+                inventory_age_seconds=snapshot.get("inventory_age_seconds"),
+                advertised_model_count=len(snapshot.get("advertised_model_ids") or ()),
+                inventory_error=snapshot.get("inventory_error"),
+            ),
+        )
+    return engines

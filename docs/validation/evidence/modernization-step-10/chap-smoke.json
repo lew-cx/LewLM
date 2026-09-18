@@ -1,0 +1,267 @@
+{
+  "format": "lewlm-chap-smoke-v1",
+  "captured_at": "2026-09-18T15:28:51Z",
+  "base_url": "http://127.0.0.1:50981",
+  "mode": "fixture",
+  "model": "fixture-chat-fixture-6953e947",
+  "endpoint_id": "fixture",
+  "summary": {
+    "passed": 13,
+    "failed": 0,
+    "inconclusive": 0,
+    "skipped": 0
+  },
+  "checks": [
+    {
+      "name": "service_health",
+      "status": "passed",
+      "observations": {
+        "status": "ok",
+        "readiness": "partial",
+        "engines": [
+          {
+            "endpoint_id": "fixture",
+            "profile": "openai_compatible",
+            "enabled": true,
+            "state": "advertised",
+            "advertised_model_count": 1
+          }
+        ],
+        "x_request_id_echoed": true
+      },
+      "reason": null,
+      "elapsed_ms": 7
+    },
+    {
+      "name": "runtime_startup",
+      "status": "passed",
+      "observations": {
+        "lewlm_ready_seconds": 0.032,
+        "engines": [
+          {
+            "endpoint_id": "fixture",
+            "state": "advertised",
+            "first_advertised_at": "2026-09-18T15:28:19.358133Z"
+          }
+        ],
+        "warm_models": [],
+        "loading_models": []
+      },
+      "reason": null,
+      "elapsed_ms": 1
+    },
+    {
+      "name": "model_picker",
+      "status": "passed",
+      "observations": {
+        "count": 1,
+        "chat_ready_count": 1,
+        "availability": {
+          "model_id": "fixture-chat-fixture-6953e947",
+          "servable": true,
+          "chat_ready": true,
+          "ready_capabilities": [
+            "chat",
+            "streaming"
+          ],
+          "blocked_capabilities": [],
+          "reason": "Every advertised capability has a compatible runtime on this host.",
+          "endpoint_id": "fixture",
+          "engine_profile": "openai_compatible",
+          "execution_locality": "loopback_unverified",
+          "engine_state": "advertised"
+        },
+        "structured_output_prediction": {
+          "decode_time_modes": [],
+          "prompt_guided_modes": null
+        }
+      },
+      "reason": null,
+      "elapsed_ms": 7
+    },
+    {
+      "name": "request_identity",
+      "status": "passed",
+      "observations": {
+        "status": 200,
+        "x_request_id": "chap-f9aa7687b2",
+        "x_lewlm_correlation_id": "conv-b570f05f",
+        "metadata_request_id": "chap-f9aa7687b2",
+        "metadata_correlation_id": "conv-b570f05f"
+      },
+      "reason": null,
+      "elapsed_ms": 6
+    },
+    {
+      "name": "chat_streaming",
+      "status": "passed",
+      "observations": {
+        "chunks": 6,
+        "content": "one two three four five",
+        "terminal_chunks": 1,
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 5,
+          "total_tokens": 17,
+          "measured": true,
+          "cached_tokens": 8
+        },
+        "saw_done": true,
+        "time_to_first_content_ms": 26,
+        "total_ms": 223,
+        "malformed_chunks": 0
+      },
+      "reason": null,
+      "elapsed_ms": 223
+    },
+    {
+      "name": "chat_nonstreaming",
+      "status": "passed",
+      "observations": {
+        "content": "fixture reply: Reply with the single word: ready",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 8,
+          "total_tokens": 20,
+          "measured": true,
+          "cached_tokens": 8
+        },
+        "endpoint_id": "fixture",
+        "engine_profile": "openai_compatible",
+        "execution_locality": "loopback_unverified",
+        "runtime_name": "local_external_adapter:fixture",
+        "execute_milliseconds": 2
+      },
+      "reason": null,
+      "elapsed_ms": 7
+    },
+    {
+      "name": "structured_output",
+      "status": "passed",
+      "observations": {
+        "advertised_decode_time_modes": [],
+        "enforcement": "decode_time",
+        "decoder_enforced": false,
+        "fallback_used": false,
+        "validation": {
+          "state": "valid",
+          "validator": "full_json_schema",
+          "message": "LewLM validated the parsed JSON against the requested JSON schema after generation.",
+          "issues": []
+        },
+        "content": "{\"city\": \"Paris\", \"population\": 2000000}",
+        "valid_json": true
+      },
+      "reason": null,
+      "elapsed_ms": 14
+    },
+    {
+      "name": "tools",
+      "status": "passed",
+      "observations": {
+        "tool_calls": [
+          {
+            "call_id": "call_fixture_1",
+            "name": "get_weather",
+            "arguments": {
+              "city": "Lisbon"
+            }
+          }
+        ],
+        "content": "{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Lisbon\"},\"id\":\"call_fixture_1\"}]}",
+        "finish_reason": "tool_calls",
+        "continuation_status": 200,
+        "continuation_content": "The tool reported clear skies at 21 C in Lisbon."
+      },
+      "reason": null,
+      "elapsed_ms": 10
+    },
+    {
+      "name": "reasoning",
+      "status": "passed",
+      "observations": {
+        "content": "The answer is 42.",
+        "reasoning_field": {
+          "visibility": "hidden",
+          "available": true,
+          "content": null,
+          "summary": null
+        }
+      },
+      "reason": null,
+      "elapsed_ms": 5
+    },
+    {
+      "name": "cancellation",
+      "status": "passed",
+      "observations": {
+        "cancel_state_after_first_chunk": "cancelling",
+        "cancel_state_final": "cancelled",
+        "chunks_before_stop": 1,
+        "stream_elapsed_ms": 54,
+        "follow_up_status": 200,
+        "upstream_stop_verified": false,
+        "note": "Middleware stop, transport close, and lease release observed; whether the engine aborted GPU work must be read from the engine's own logs."
+      },
+      "reason": null,
+      "elapsed_ms": 61
+    },
+    {
+      "name": "failure",
+      "status": "passed",
+      "observations": {
+        "missing_model_status": 404,
+        "missing_model_error": {
+          "code": "model_not_found",
+          "message": "Requested model was not found in the local registry.",
+          "details": {
+            "model_id": "missing-38965d"
+          }
+        },
+        "health_after": "ok",
+        "not_exercised": [
+          "bad_key",
+          "timeout",
+          "overload",
+          "server_stop",
+          "truncated_stream"
+        ],
+        "manual_steps": "Stop or misconfigure the engine and repeat chat_nonstreaming; expect a 4xx/5xx JSON error, health still 200, no automatic replay."
+      },
+      "reason": null,
+      "elapsed_ms": 11
+    },
+    {
+      "name": "unavailable_engine",
+      "status": "passed",
+      "observations": {
+        "status": 503,
+        "error_code": "runtime_unavailable",
+        "error_endpoint_id": "fixture",
+        "health_status": "ok",
+        "engine_state_in_health": "stale",
+        "model_still_listed": true,
+        "recovered_status": 200
+      },
+      "reason": null,
+      "elapsed_ms": 525
+    },
+    {
+      "name": "stream_interrupted",
+      "status": "passed",
+      "observations": {
+        "status": 200,
+        "chunks": 2,
+        "saw_done": true,
+        "terminal_finish_reason": "error",
+        "error_code": "runtime_unavailable",
+        "partial_output": true,
+        "follow_up_status": 200
+      },
+      "reason": null,
+      "elapsed_ms": 30048
+    }
+  ]
+}

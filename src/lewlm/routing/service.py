@@ -40,7 +40,7 @@ from lewlm.core.contracts import (
     performance_core_evidence_mode_from_measured_status,
     runtime_support_path_for_affinity,
 )
-from lewlm.core.errors import ModelNotFoundError, RoutingError
+from lewlm.core.errors import ModelNotFoundError, RoutingError, RuntimeUnavailableError
 from lewlm.core.middleware import build_model_capability_evidence
 from lewlm.registry.service import ModelRegistry
 from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
@@ -217,15 +217,26 @@ class ModelRouter:
                 )
                 if fallback is not None:
                     return fallback
-                raise self._routing_error(
+                endpoint_details = self._endpoint_error_details(manifest)
+                error = self._routing_error(
                     f"No {capability.value.replace('_', ' ')}-capable runtime is currently available for the requested model.",
                     capability=capability,
                     requested_model_id=requested_model_id,
                     required_modalities=required_modalities,
                     requested_context_tokens=requested_context_tokens,
                     alternatives=alternatives[:8],
-                    extra_details=self._endpoint_error_details(manifest),
+                    extra_details=endpoint_details,
                 )
+                if self._endpoint_is_down(endpoint_details):
+                    # The request was fine; the engine behind the named endpoint
+                    # is not reachable. That is a 503 naming the endpoint, the
+                    # same signal a caller gets when the engine dies mid-request,
+                    # not a 400 blaming the request.
+                    raise RuntimeUnavailableError(
+                        f"The engine behind endpoint `{endpoint_details['endpoint_id']}` is unavailable for the requested model.",
+                        details=error.details,
+                    )
+                raise error
             selected = scored_candidates[0]
             decision = self._build_routing_decision(
                 selected,
@@ -745,6 +756,7 @@ class ModelRouter:
         """
 
         advertised = self._capabilities_for_manifest(manifest)
+        binding = self._model_execution_binding(manifest)
         if manifest.conversion_status != ConversionStatus.RUNNABLE:
             return ModelCapabilityAvailability(
                 model_id=manifest.model_id,
@@ -752,6 +764,7 @@ class ModelRouter:
                 reason=(
                     f"Model is `{manifest.conversion_status.value}` and must become runnable before it can serve."
                 ),
+                **binding,
             )
         ready: list[CapabilityName] = []
         blocked: list[CapabilityName] = []
@@ -784,7 +797,26 @@ class ModelRouter:
             ready_capabilities=ready,
             blocked_capabilities=blocked,
             reason=reason,
+            **binding,
         )
+
+    def _model_execution_binding(self, manifest: ModelManifest) -> dict[str, str | None]:
+        """Endpoint/profile/locality/engine state for the inventory, from cached state only."""
+
+        endpoint_id = manifest.metadata.get("external_endpoint_id")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            return {"endpoint_id": None, "engine_profile": None, "execution_locality": None, "engine_state": "packaged"}
+        runtime = self.runtime_catalog.get_endpoint_runtime(endpoint_id)
+        snapshot_method = getattr(runtime, "endpoint_snapshot", None)
+        snapshot = snapshot_method() if callable(snapshot_method) else {}
+        profile = manifest.metadata.get("external_profile")
+        locality = manifest.metadata.get("execution_locality")
+        return {
+            "endpoint_id": endpoint_id,
+            "engine_profile": str(profile) if isinstance(profile, str) else (str(snapshot.get("profile")) if snapshot.get("profile") else None),
+            "execution_locality": str(locality) if isinstance(locality, str) else None,
+            "engine_state": str(snapshot.get("inventory_state", "unknown")) if snapshot else "unknown",
+        }
 
     def annotate_inventory(self, inventory: ModelInventory) -> ModelInventory:
         """Return `inventory` with per-model serving readiness resolved."""
@@ -1111,6 +1143,17 @@ class ModelRouter:
             ):
                 return runtime
         return runtimes[0]
+
+    @staticmethod
+    def _endpoint_is_down(details: dict[str, object]) -> bool:
+        """An endpoint-bound model whose endpoint is disabled or whose last inventory read failed."""
+
+        snapshot = details.get("endpoint")
+        if not isinstance(snapshot, dict):
+            return False
+        if snapshot.get("enabled") is False:
+            return True
+        return snapshot.get("inventory_state") in {"failed", "stale"}
 
     def _endpoint_error_details(self, manifest: ModelManifest) -> dict[str, object]:
         """Name the endpoint an unroutable bound model needed, so callers can say why."""

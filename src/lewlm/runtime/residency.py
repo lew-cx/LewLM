@@ -50,6 +50,8 @@ class ModelResidencySnapshot(BaseModel):
     loaded_at: datetime | None = None
     last_used_at: datetime | None = None
     active_usage_count: int = 0
+    #: Callers waiting for the load to finish who will lease it next.
+    pending_lease_count: int = 0
     pending_unload: bool = False
     failure: str | None = None
     load_attempt_count: int = 0
@@ -86,6 +88,11 @@ class _ResidencyRecord:
     failure: str | None = None
     load_attempt_count: int = 0
     joined_load_waiter_count: int = 0
+    #: Callers waiting on the load task who will take a lease the moment it is
+    #: ready. Counted as usage so opportunistic cleanup (the `balanced` policy
+    #: unloading a runtime's *other* models after a request) cannot unload a
+    #: model in the instant between READY and its first lease.
+    pending_lease_count: int = 0
     load_operation_id: str = field(default_factory=lambda: str(uuid4()))
     load_task: asyncio.Task[None] | None = None
     idle_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -127,8 +134,14 @@ class ModelResidencyManager:
         request_id: str | None = None,
         application_id: str | None = None,
         capability: str | None = None,
+        hold_pending: bool = False,
     ) -> ModelLifecycleResult:
-        """Load a residency once, joining an existing same-key load when present."""
+        """Load a residency once, joining an existing same-key load when present.
+
+        With ``hold_pending`` the caller promises to take a lease next and the
+        record keeps counting it as pending until :meth:`acquire` converts that
+        into active usage under the same lock, so no cleanup can slip between.
+        """
 
         key = self.key_for(runtime, manifest)
         joined = False
@@ -143,6 +156,9 @@ class ModelResidencyManager:
                 and runtime.is_model_loaded(manifest.model_id)
             ):
                 record.last_used_at = utc_now()
+                if hold_pending:
+                    record.pending_lease_count += 1
+                    record.idle_event.clear()
                 return self._result(
                     record,
                     previous_state=ModelResidencyState.READY,
@@ -179,7 +195,11 @@ class ModelResidencyManager:
                     record.loaded_at = record.loaded_at or now
                     record.last_used_at = now
                     record.failure = None
-                    record.idle_event.set()
+                    if hold_pending:
+                        record.pending_lease_count += 1
+                        record.idle_event.clear()
+                    else:
+                        record.idle_event.set()
                     self._records[key] = record
                     return self._result(
                         record,
@@ -218,6 +238,7 @@ class ModelResidencyManager:
                 record.load_task = task
                 self._records[key] = record
                 backend_operation = True
+            record.pending_lease_count += 1
         if joined:
             await self._publish(
                 EventType.MODEL_LOAD_JOINED,
@@ -229,15 +250,27 @@ class ModelResidencyManager:
             )
         # Shield the shared operation so cancellation of one HTTP waiter cannot
         # cancel a load needed by other applications.
-        await asyncio.shield(task)
+        try:
+            await asyncio.shield(task)
+        except BaseException:
+            await self._release_pending(key)
+            raise
         async with self._lock:
             completed = self._records.get(key)
             if completed is None or completed.state != ModelResidencyState.READY:
                 failure = completed.failure if completed is not None else "Residency disappeared during loading."
+                if completed is not None:
+                    completed.pending_lease_count = max(0, completed.pending_lease_count - 1)
+                    if completed.pending_lease_count == 0 and completed.active_usage_count == 0:
+                        completed.idle_event.set()
                 raise RuntimeUnavailableError(
                     "The model could not be made resident.",
                     details={"model_id": manifest.model_id, "runtime": runtime.name, "failure": failure},
                 )
+            if not hold_pending:
+                completed.pending_lease_count = max(0, completed.pending_lease_count - 1)
+                if completed.pending_lease_count == 0 and completed.active_usage_count == 0:
+                    completed.idle_event.set()
             return self._result(
                 completed,
                 previous_state=ModelResidencyState.LOADING,
@@ -245,6 +278,14 @@ class ModelResidencyManager:
                 joined=joined,
                 reason="Joined the in-flight model load." if joined else "Model loaded and is ready.",
             )
+
+    async def _release_pending(self, key: ModelResidencyKey) -> None:
+        async with self._lock:
+            record = self._records.get(key)
+            if record is not None:
+                record.pending_lease_count = max(0, record.pending_lease_count - 1)
+                if record.pending_lease_count == 0 and record.active_usage_count == 0 and record.state != ModelResidencyState.LOADING:
+                    record.idle_event.set()
 
     @asynccontextmanager
     async def acquire(
@@ -265,15 +306,20 @@ class ModelResidencyManager:
             request_id=request_id,
             application_id=application_id,
             capability=capability,
+            hold_pending=True,
         )
         key = self.key_for(runtime, manifest)
         async with self._lock:
             record = self._records.get(key)
             if record is None or record.state != ModelResidencyState.READY:
+                if record is not None:
+                    record.pending_lease_count = max(0, record.pending_lease_count - 1)
                 raise ModelLifecycleConflictError(
                     "The model stopped accepting usage before a lease could be acquired.",
                     details={"model_id": manifest.model_id, "runtime": runtime.name},
                 )
+            # The pending count held through the load becomes the lease itself.
+            record.pending_lease_count = max(0, record.pending_lease_count - 1)
             record.active_usage_count += 1
             record.last_used_at = utc_now()
             record.idle_event.clear()
@@ -303,7 +349,7 @@ class ModelResidencyManager:
                 if current is not None:
                     current.active_usage_count = max(0, current.active_usage_count - 1)
                     current.last_used_at = utc_now()
-                    if current.active_usage_count == 0:
+                    if current.active_usage_count == 0 and current.pending_lease_count == 0:
                         current.idle_event.set()
                     record = current
             await self._publish(
@@ -402,7 +448,7 @@ class ModelResidencyManager:
                     )
                 if record.state in {ModelResidencyState.DRAINING, ModelResidencyState.UNLOADING}:
                     join_event = record.lifecycle_event
-                elif record.active_usage_count > 0 and not drain:
+                elif (record.active_usage_count > 0 or record.pending_lease_count > 0) and not drain:
                     blocked_record = record
                 elif drain:
                     record.state = ModelResidencyState.DRAINING
@@ -636,7 +682,8 @@ class ModelResidencyManager:
                 current.last_used_at = now
                 current.failure = None
                 current.load_task = None
-                current.idle_event.set()
+                if current.pending_lease_count == 0:
+                    current.idle_event.set()
                 record = current
 
     async def _publish(
@@ -706,6 +753,7 @@ class ModelResidencyManager:
             loaded_at=record.loaded_at,
             last_used_at=record.last_used_at,
             active_usage_count=record.active_usage_count,
+            pending_lease_count=record.pending_lease_count,
             pending_unload=record.pending_unload,
             failure=record.failure,
             load_attempt_count=record.load_attempt_count,
@@ -720,6 +768,7 @@ class ModelResidencyManager:
             "runtime": record.key.runtime_name,
             "state": record.state.value,
             "active_usage_count": record.active_usage_count,
+            "pending_lease_count": record.pending_lease_count,
         }
 
     @staticmethod

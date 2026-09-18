@@ -8,6 +8,30 @@ Start with three public entry points:
 2. `/v1/openapi.json` for the live route index and content-type metadata
 3. `LewLMAppClient` for thin typed Python helpers over the same public contracts
 
+## The chat-UI contract in one place
+
+A chat host app (Chap) needs one base URL and these routes, and nothing
+engine-specific: `GET /v1/health`, `GET /v1/models`,
+`GET /v1/models/{id}/capabilities`, `GET /v1/runtime`, `POST /v1/chat/completions`
+(or `POST /v1/responses`), `POST /v1/requests/{x-request-id}/cancel`, and
+optionally `GET /v1/events`. Exact payloads for every state a UI has to render
+— streaming, tool calls, JSON output, usage, cancellation, an engine outage,
+an interrupted stream — are in `examples/integration-bundle.json` under
+`chap`, and a smoke script proves them over HTTP against a fake engine on any
+machine:
+
+```bash
+python -m lewlm.testing.fake_backend --port 8080          # LewLM + fake engine to build a UI against, no model needed
+python examples/chap_backend_smoke.py --fixture           # the same checks CI runs on Linux, macOS, and Windows
+```
+
+Read service, engine, and model state from three different places and never
+infer one from another: `health.status` (this service), `health.engines[]` and
+`runtime.startup.engines[]` (each engine's cached inventory state, no probe),
+`runtime.startup.warm_models[]` (process-local residency). The
+[Chap validation guide](chap-validation.md) has the full field map and the UI
+checklist.
+
 ## Shared server versus embedded mode
 
 Use embedded `LewLM()` for tests, notebooks, CLIs, and deliberate single-process applications. Production products should normally connect to one long-running server so RAG Chat, document-generation applications, and future tools share the same runtime-owned model objects and caches.

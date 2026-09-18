@@ -31,6 +31,27 @@ on retry, and a description:
 It is generated from the exception classes themselves, so a host app never has
 to scrape `src/lewlm/core/errors.py` to build a code table.
 
+`schemas` and `errors` are generated, never hand-edited:
+
+```bash
+python scripts/export_integration_bundle.py --check   # exit 1 when the checkout's models drifted from the bundle (CI runs this on every OS)
+python scripts/export_integration_bundle.py           # regenerate schemas, errors, and the chap examples
+```
+
+The `chap` section is for a chat host app (Chap or any UI) and is captured
+from a real LewLM server fronting the fake engine in `lewlm.testing`, with
+ids, timestamps, paths, and timings normalized so the file only changes when
+a contract does. `chap.examples` holds exact payloads for: health with and
+without the engine, `/v1/runtime` with `startup`, `capability_availability`,
+model capabilities, a streamed text reply (first content chunk and terminal
+usage chunk), a native tool call, JSON output, cancellation (both cancel
+responses and the `finish_reason: "cancelled"` terminal chunk), an
+interrupted stream (`finish_reason: "error"` with the error envelope), an
+engine outage (`503 runtime_unavailable` naming the endpoint), and an unknown
+model. `chap.field_notes` states which fields may be absent and how service,
+engine, and model state are kept separate. See the
+[Chap validation guide](../guides/chap-validation.md).
+
 `/v1/openapi.json` names the same shapes in `components/schemas` —
 `ChatCompletionRequest`, `ChatCompletionChunk`, `ResponseCreateRequest`,
 `ResponseChunk`, `StreamEvent`, `EventType` included — so type generation can

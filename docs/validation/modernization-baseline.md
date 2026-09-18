@@ -299,6 +299,37 @@ engine-ready/model-warm timings on a real engine, long-prefill fairness on
 an engine, before/after protocol runs — each with its command in the record.
 Rollback: revert the step commit. Next eligible step: 10 (Chap contract).
 
+## Step 10 — complete; Chap UI acceptance pending
+
+Commit: this step's commit, immediately after step 09 commit `a6f90cf`.
+Full record: [modernization-step-10.md](modernization-step-10.md).
+
+Behavior implemented: `lewlm.testing` fake engine + fixture server
+(`python -m lewlm.testing.fake_backend`); `examples/chap_backend_smoke.py`;
+`scripts/export_integration_bundle.py` (regenerated the failing schema
+snapshot; `--check`; captured `chap` examples and field notes); additive
+`HealthResponse.engines[]`, `ModelCapabilityAvailability.{endpoint_id,
+engine_profile, execution_locality, engine_state}`, `ResponseChunk.finish_reason`,
+`ModelResidencySnapshot.pending_lease_count`; a named cancel ends streams
+with `finish_reason: "cancelled"` then `[DONE]`; an endpoint outage on an
+explicitly requested model is `503 runtime_unavailable` naming the endpoint;
+residency counts pending lessees so `balanced` cleanup cannot unload a model
+between its load finishing and its first lease; CI matrix runs the bundle
+check and the smoke on every OS; Chap validation guide with the UI checklist.
+
+Compatibility: additive schema fields; two behaviour changes (cancelled
+terminal chunk, 503 instead of 400 for an endpoint outage) visible only in
+those situations.
+
+Commands run and results: smoke in fixture mode 13/13; bundle `--check`
+passes and regeneration is byte-stable; `test_chap_contract.py` 7 passed;
+`test_integration_bundle.py` 9 passed (was 1 failed); unit + integration
+1061 passed (document/`pyexpat` cases deselected).
+
+Real-engine evidence: none required for this step. Deferred: the 12-item
+Chap UI checklist (pending, in Chap's repository); smoke in real-model mode
+per engine lane. Rollback: revert the step commit. Next eligible step: 11.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

@@ -72,6 +72,21 @@ jobs:
           python -m lewlm.cli.main doctor --json > doctor.json
           python -c "import json; d=json.load(open('doctor.json')); assert d['service']; print('doctor OK on', d['runtime_stats']['platform'])"
 
+      - name: Prove the Chap-facing HTTP contract against the fake backend
+        # No model, no engine: LewLM fronts `lewlm.testing`'s fake engine on a
+        # loopback port and the smoke script drives the public routes exactly
+        # as a host app would — streaming, tools, JSON, cancellation, an engine
+        # outage, an interrupted stream. The bundle check refuses drift between
+        # the checked-in schemas/errors and the models in this checkout.
+        run: |
+          python scripts/export_integration_bundle.py --check
+          python examples/chap_backend_smoke.py --fixture --stream-delay-ms 5 --output chap-smoke.json
+      - name: Upload Chap smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chap-smoke-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: chap-smoke.json
+
   # ---------------------------------------------------------------------------
   # Container boot path (BLOCKING, fast).
   #

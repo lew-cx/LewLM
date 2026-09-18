@@ -225,6 +225,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** run `test_integration_bundle.py` including its schema snapshot in the pinned environment, OpenAPI `$ref` checks, host-integration, async-client, and request-cancellation tests. Run the smoke script against the fake HTTP backend on every OS. Chap UI testing may remain pending; backend/API correctness must not wait for it. If Chap runs as a separate browser origin, test a narrowly configured allowed origin and streaming headers without introducing a wildcard policy.
 
+**Implementation status:** completed on 2026-09-18. `lewlm.testing.fake_backend` (a shippable LewLM + fake engine for UI development with no model), `examples/chap_backend_smoke.py` (13 HTTP checks, fixture and real-model modes, run by CI on Linux/macOS/Windows), `scripts/export_integration_bundle.py` (generated `schemas`/`errors` with `--check`, plus a captured `chap` section of exact payloads and field notes), additive `engines[]` on health, endpoint/engine state on `capability_availability[]`, a `cancelled` terminal chunk, a consistent 503 for an engine outage, a residency race fix, and `docs/guides/chap-validation.md` with the pending UI checklist. See the [validation record](../validation/modernization-step-10.md).
+
 ## Step 11 — Add CI and hardware acceptance lanes
 
 **Depends on:** all implementation steps. **Touch:** `.github/workflows/ci.yml`, tests/support, existing acceptance and release scripts, **proposed** backend acceptance runner.

@@ -279,6 +279,7 @@ LewLM is strongest today when you want:
 - [Documentation index](docs/index.md)
 - [Getting started](docs/getting-started/index.md)
 - [Host-app integration](docs/guides/host-app-integration.md)
+- [Chap validation](docs/guides/chap-validation.md) — build a chat UI against `python -m lewlm.testing.fake_backend` with no model, prove the contract with `examples/chap_backend_smoke.py`
 - [Chat and responses](docs/guides/chat-and-responses.md)
 - [Documents guide](docs/guides/documents.md)
 - [CLI reference](docs/reference/cli.md)

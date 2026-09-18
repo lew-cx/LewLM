@@ -156,7 +156,7 @@ def test_unavailable_tabby_endpoint_leaves_ollama_routable_and_conversion_refuse
 
         fake.stop()
         services.runtime_catalog.get_endpoint_runtime("tabby").invalidate_discovery_cache()
-        with pytest.raises(RoutingError) as excinfo:
+        with pytest.raises(RuntimeUnavailableError) as excinfo:
             services.model_router.route_chat(tabby_model.model_id)
         assert excinfo.value.details["endpoint_id"] == "tabby"
         assert excinfo.value.details["engine_profile"] == "exllamav3_tabby"
