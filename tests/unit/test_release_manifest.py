@@ -56,6 +56,11 @@ def test_release_manifest_includes_registered_model_reports(
     assert "capabilities" in payload["registered_models"][0]
     assert payload["dependency_audit"]["format"] == "lewlm-dependency-audit-v1"
     assert payload["dependency_audit"]["consistency_check"]["status"] == "passed"
+    lanes = payload["backend_lanes"]
+    assert lanes["format"] == "lewlm-backend-lanes-summary-v1"
+    assert {lane["lane"] for lane in lanes["lanes"]} >= {"apple_silicon", "linux_nvidia", "native_windows", "wsl2", "chap_ui"}
+    assert lanes["counts"].get("deferred", 0) >= 1, "deferred hardware stays visible in the release bundle"
+    assert next(lane for lane in lanes["lanes"] if lane["lane"] == "chap_ui")["entries"][0]["status"] == "pending"
     assert payload["dependency_audit"]["compatibility_gates"]["gates"]["mlx_031_plus"]["classification"] == "watchlisted"
 
 

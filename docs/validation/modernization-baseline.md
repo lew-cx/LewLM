@@ -330,6 +330,32 @@ Real-engine evidence: none required for this step. Deferred: the 12-item
 Chap UI checklist (pending, in Chap's repository); smoke in real-model mode
 per engine lane. Rollback: revert the step commit. Next eligible step: 11.
 
+## Step 11 — complete; hardware lanes deferred except Apple Silicon (step 05)
+
+Commit: this step's commit, immediately after step 10 commit `5bbef54`.
+Full record: [modernization-step-11.md](modernization-step-11.md).
+
+Behavior implemented: `scripts/backend_lanes.py` (`detect`, `run`,
+`summary`); pytest markers `real_engine`/`apple_silicon`/`linux_cpu`/
+`linux_nvidia`/`native_windows`/`wsl2`; `tests/hardware/` lanes that skip
+with the exact missing prerequisite; `backend_lanes` in the release
+manifest; CI matrix step for the engine-free contract tests, `-rs
+tests/hardware`, shared-runtime subprocess tests on Linux/macOS, pinned
+pydantic, restored bundle gate; `export_integration_bundle.py --bundle` and
+`generated_with`.
+
+Compatibility: additive; CI-only behaviour changes.
+
+Commands run and results: lane tests 4 passed; release-manifest test with
+lanes passed; `pytest -rs tests/hardware` 5 skipped with reasons; real
+deferral record for `linux_nvidia`/`vllm` written; summary shows 1
+validated / 10 deferred / 1 pending / 1 ci.
+
+Real-engine evidence: none new. Deferred: every hardware lane except Apple
+Silicon (validated in step 05; not re-run because the oMLX environment was
+not retained); CI jobs exercised on the next push. Rollback: revert the
+step commit. Next eligible step: 12.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

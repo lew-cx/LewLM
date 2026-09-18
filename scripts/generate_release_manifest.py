@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import platform
 from pathlib import Path
 import subprocess
@@ -18,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from lewlm.config.settings import LewLMSettings
 from lewlm.install_profiles import summarize_install_profiles
 from lewlm.core.bootstrap import bootstrap_services
+from backend_lanes import build_lane_summary
 from frontier_acceptance import build_frontier_acceptance_summary
 from performance_core_acceptance import build_performance_core_acceptance_summary
 from generate_dependency_audit import _dependency_compatibility_gates, _dependency_spec, build_dependency_audit
@@ -91,8 +93,16 @@ def build_release_manifest() -> dict[str, object]:
             dependency_audit=dependency_audit,
         ),
         "runtime_stats": runtime_stats.model_dump(mode="json"),
+        # Hardware acceptance lanes: validated/passed entries are proof; deferred
+        # and pending entries stay visible so a release never hides missing lanes.
+        "backend_lanes": build_lane_summary(_lane_records_dir()),
         "sbom": build_sbom(),
     }
+
+
+def _lane_records_dir() -> Path | None:
+    configured = os.environ.get("LEWLM_LANE_RECORDS_DIR")
+    return Path(configured) if configured else None
 
 
 def _git_commit() -> str | None:

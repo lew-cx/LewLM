@@ -247,24 +247,35 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="Verify schemas and errors match the checkout; do not write")
     parser.add_argument("--skip-capture", action="store_true", help="Do not run the fixture; keep the existing chap examples")
+    parser.add_argument("--bundle", default=str(BUNDLE_PATH), help="Bundle path (default: examples/integration-bundle.json)")
     args = parser.parse_args(argv)
+    bundle_path = Path(args.bundle)
 
-    bundle = json.loads(BUNDLE_PATH.read_text(encoding="utf-8"))
+    import pydantic
+    import pydantic_core
+
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
     schemas = build_schemas()
     errors = build_errors()
+    generated_with = {"pydantic": pydantic.VERSION, "pydantic_core": pydantic_core.__version__}
     if args.check:
         drift = [name for name, schema in schemas.items() if bundle.get("schemas", {}).get(name) != schema]
         if bundle.get("errors") != errors:
             drift.append("errors")
+        recorded = bundle.get("generated_with") or {}
         if drift:
             print("integration bundle is out of date for: " + ", ".join(drift), file=sys.stderr)
+            if recorded and recorded != generated_with:
+                print(f"note: the bundle was generated with {recorded}, this environment has {generated_with}; "
+                      "regenerate under the pinned versions before deciding it is a contract change", file=sys.stderr)
             print("run: python scripts/export_integration_bundle.py", file=sys.stderr)
             return 1
-        print("integration bundle schemas and errors match the checkout")
+        print(f"integration bundle schemas and errors match the checkout (pydantic {generated_with['pydantic']})")
         return 0
 
     bundle["schemas"] = schemas
     bundle["errors"] = errors
+    bundle["generated_with"] = generated_with
     chap = bundle.get("chap") or {}
     chap["generated_by"] = "scripts/export_integration_bundle.py"
     chap["smoke_script"] = "examples/chap_backend_smoke.py"
@@ -273,8 +284,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_capture:
         chap["examples"] = capture_chap_examples()
     bundle["chap"] = chap
-    BUNDLE_PATH.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {BUNDLE_PATH.relative_to(ROOT)}")
+    bundle_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {bundle_path}")
     return 0
 
 

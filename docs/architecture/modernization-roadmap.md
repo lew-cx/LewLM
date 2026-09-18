@@ -249,6 +249,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** demonstrate one passing fixture-only CI lane, one deliberate hardware deferral, and one deliberate contract failure that blocks acceptance. Deferred hardware must remain visible in the release bundle.
 
+**Implementation status:** completed on 2026-09-18. `scripts/backend_lanes.py` (detect/run/summary with honest deferrals and blocking failures), registered hardware markers with `tests/hardware` lanes that skip with actionable reasons, `backend_lanes` in the release manifest, the CI matrix's engine-free contract lane on Linux/macOS/Windows with pinned pydantic and the bundle gate restored. All three required demonstrations are recorded in the [validation record](../validation/modernization-step-11.md); hardware lanes other than Apple Silicon remain deferred.
+
 ## Step 12 — Roll out with an easy rollback
 
 **Depends on:** 11 and the relevant real-engine lane passing.

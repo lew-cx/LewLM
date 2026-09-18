@@ -22604,5 +22604,9 @@
         }
       }
     }
+  },
+  "generated_with": {
+    "pydantic": "2.13.1",
+    "pydantic_core": "2.46.1"
   }
 }

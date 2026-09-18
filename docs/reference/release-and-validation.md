@@ -98,6 +98,41 @@ python scripts/validate_release_candidate.py out \
 
 Release candidate validation now also checks `standards_refresh_milestones_completed`, which requires each enforced target to carry the completed 2026 standards-refresh summary from the release manifest. Missing standards proof remains explicit even when the host, dependency, frontier, or performance-core checks pass.
 
+## Hardware acceptance lanes
+
+Engine recipes are promoted per platform lane, never in general. The lanes,
+their required proof, and their deferral rules are encoded in
+`scripts/backend_lanes.py` and mirror the roadmap:
+
+| Lane | Required proof | Deferral rule |
+| --- | --- | --- |
+| Any development OS | fake-server translation, tools/JSON/SSE, cancellation, migration, routing, fallback, schema/client checks | no hardware-based exemption (the CI matrix on Linux, macOS, Windows) |
+| Linux CPU | lean install, portable GGUF generation, image boot, conversion image, cold/warm rebuild evidence | defer if Linux/container runtime unavailable |
+| Apple Silicon macOS | oMLX suite and native MLX/llama.cpp/Ollama coexistence | defer on non-Apple hardware |
+| Linux NVIDIA | vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache | defer without supported NVIDIA hardware/driver |
+| Native Windows | core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation | Linux or WSL results do not satisfy it |
+| Windows + WSL2 | documented engine recipes and Windows-Chap-to-LewLM connectivity | a Linux pass alone does not prove WSL networking |
+| Chap UI | the end-user checklist in the Chap validation guide | pending until run, never silently complete |
+
+```bash
+python scripts/backend_lanes.py detect                                   # which lanes this host can run, and why not the others
+python scripts/backend_lanes.py run --lane linux_nvidia --recipe vllm \
+    --base-url http://127.0.0.1:8080 --model <id> --output-dir evidence/lanes
+python scripts/backend_lanes.py summary --records evidence/lanes         # what the release manifest embeds as `backend_lanes`
+LEWLM_LANE_BASE_URL=http://127.0.0.1:8080 LEWLM_LANE_MODEL=<id> LEWLM_LANE_RECIPE=vllm \
+    python -m pytest -q -p no:cacheprovider tests/hardware -m linux_nvidia   # the same lane as a pytest gate
+```
+
+`run` executes the common acceptance suite and the prefix benchmark against an
+operator-started LewLM + engine and writes a `lane-<lane>-<recipe>.json`
+record: `passed`, `failed` (exit 1 — a contract failure blocks promotion), or
+`deferred` with the exact missing prerequisite and the next command. The
+`tests/hardware` lanes skip with the same reasons when they cannot run, so
+raw CI output always says why. The release manifest's `backend_lanes` section
+merges lane records with `examples/backends/compatibility.json`: only
+`validated`/`passed` entries are proof; `deferred` and `pending` entries stay
+visible on purpose, and an idle-host deferral never hides a validated recipe.
+
 ## What these scripts are for
 
 They help capture:

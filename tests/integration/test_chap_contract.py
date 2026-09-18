@@ -58,6 +58,21 @@ def test_integration_bundle_generated_parts_match_the_checkout() -> None:
     assert completed.returncode == 0, completed.stderr
 
 
+def test_a_drifted_bundle_is_a_contract_failure_that_blocks_the_gate(tmp_path: Path) -> None:
+    """Step 11's deliberate contract failure: one changed schema fails `--check`."""
+
+    bundle = json.loads(BUNDLE.read_text(encoding="utf-8"))
+    bundle["schemas"]["chat.stream"]["properties"].pop("usage")
+    drifted = tmp_path / "integration-bundle.json"
+    drifted.write_text(json.dumps(bundle), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "export_integration_bundle.py"), "--check", "--bundle", str(drifted)],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+    )
+    assert completed.returncode == 1
+    assert "out of date for: chat.stream" in completed.stderr
+
+
 def test_bundle_chap_examples_validate_against_the_public_models() -> None:
     bundle = json.loads(BUNDLE.read_text(encoding="utf-8"))
     chap = bundle["chap"]

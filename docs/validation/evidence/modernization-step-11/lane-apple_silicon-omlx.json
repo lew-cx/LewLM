@@ -1,0 +1,21 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-18T15:51:48Z",
+  "lane": "apple_silicon",
+  "title": "Apple Silicon macOS",
+  "recipe": "omlx",
+  "profile": "omlx",
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "nvidia": false,
+    "nvidia_detail": "nvidia-smi: not found on PATH",
+    "wsl": false
+  },
+  "label": null,
+  "required_proof": "oMLX suite and native MLX/llama.cpp/Ollama coexistence",
+  "status": "deferred",
+  "reason": "this host can run the lane, but no --base-url/--model for an operator-started LewLM+engine was given",
+  "next_command": "On a Apple Silicon macOS host: follow examples/backends/omlx/README.md, then python scripts/backend_lanes.py run --lane apple_silicon --recipe omlx --base-url http://127.0.0.1:8080 --model <id> --output-dir <evidence>",
+  "evidence": []
+}

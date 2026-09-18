@@ -96,6 +96,12 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
   "long_running: opt-in long-running real-model benchmark coverage",
+  "real_engine: talks to an operator-started LewLM + engine named by LEWLM_LANE_BASE_URL / LEWLM_LANE_MODEL; skips with the reason otherwise",
+  "apple_silicon: hardware lane that needs Apple Silicon macOS",
+  "linux_cpu: hardware lane that needs Linux (container runtime for image checks)",
+  "linux_nvidia: hardware lane that needs Linux with a working NVIDIA driver",
+  "native_windows: hardware lane that needs native Windows (not WSL)",
+  "wsl2: hardware lane that needs Windows + WSL2",
 ]
 filterwarnings = [
   "ignore:'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16:DeprecationWarning:pytest_asyncio.plugin",

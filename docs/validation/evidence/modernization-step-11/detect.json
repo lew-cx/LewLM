@@ -1,0 +1,102 @@
+{
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "nvidia": false,
+    "nvidia_detail": "nvidia-smi: not found on PATH",
+    "wsl": false
+  },
+  "lanes": [
+    {
+      "lane": "any_os",
+      "title": "Any development OS",
+      "runnable_here": true,
+      "blockers": [],
+      "recipes": [],
+      "required_proof": "Fake-server translation, tools/JSON/SSE, cancellation, migration, routing, fallback, schema/client checks",
+      "deferral_rule": "No hardware-based exemption"
+    },
+    {
+      "lane": "linux_cpu",
+      "title": "Linux CPU",
+      "runnable_here": false,
+      "blockers": [
+        "needs Linux, host is Darwin"
+      ],
+      "recipes": [
+        "llamacpp-cpu"
+      ],
+      "required_proof": "Lean install, portable GGUF generation, image boot, conversion image, cold/warm rebuild evidence",
+      "deferral_rule": "Defer if Linux/container runtime unavailable"
+    },
+    {
+      "lane": "apple_silicon",
+      "title": "Apple Silicon macOS",
+      "runnable_here": true,
+      "blockers": [],
+      "recipes": [
+        "omlx"
+      ],
+      "required_proof": "oMLX suite and native MLX/llama.cpp/Ollama coexistence",
+      "deferral_rule": "Defer on non-Apple hardware"
+    },
+    {
+      "lane": "linux_nvidia",
+      "title": "Linux NVIDIA",
+      "runnable_here": false,
+      "blockers": [
+        "needs Linux, host is Darwin",
+        "needs a working NVIDIA driver (nvidia-smi: not found on PATH)"
+      ],
+      "recipes": [
+        "vllm",
+        "sglang",
+        "exllamav3-tabby",
+        "llamacpp-cuda"
+      ],
+      "required_proof": "vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache validation",
+      "deferral_rule": "Defer without supported NVIDIA hardware/driver"
+    },
+    {
+      "lane": "native_windows",
+      "title": "Native Windows",
+      "runnable_here": false,
+      "blockers": [
+        "needs Windows, host is Darwin"
+      ],
+      "recipes": [
+        "llamacpp-cpu",
+        "ollama"
+      ],
+      "required_proof": "Core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation; ExLlamaV3 only if separately promoted",
+      "deferral_rule": "Linux or WSL results do not satisfy this lane"
+    },
+    {
+      "lane": "wsl2",
+      "title": "Windows + WSL2",
+      "runnable_here": false,
+      "blockers": [
+        "needs Linux, host is Darwin",
+        "needs a WSL2 kernel (no 'microsoft' in /proc/version)"
+      ],
+      "recipes": [
+        "vllm",
+        "sglang",
+        "exllamav3-tabby"
+      ],
+      "required_proof": "Documented engine recipes and Windows-Chap-to-LewLM connectivity",
+      "deferral_rule": "A Linux pass alone does not prove WSL networking"
+    },
+    {
+      "lane": "chap_ui",
+      "title": "Chap UI, later",
+      "runnable_here": false,
+      "blockers": [
+        "this lane is a manual checklist; the script never marks it complete"
+      ],
+      "recipes": [],
+      "required_proof": "End-user checklist against the same public contracts",
+      "deferral_rule": "Mark UI acceptance pending, never silently complete"
+    }
+  ]
+}

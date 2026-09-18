@@ -1,0 +1,21 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-18T15:51:48Z",
+  "lane": "linux_nvidia",
+  "title": "Linux NVIDIA",
+  "recipe": "vllm",
+  "profile": "vllm_local",
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "nvidia": false,
+    "nvidia_detail": "nvidia-smi: not found on PATH",
+    "wsl": false
+  },
+  "label": null,
+  "required_proof": "vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache validation",
+  "status": "deferred",
+  "reason": "needs Linux, host is Darwin; needs a working NVIDIA driver (nvidia-smi: not found on PATH)",
+  "next_command": "On a Linux NVIDIA host: follow examples/backends/vllm/README.md, then python scripts/backend_lanes.py run --lane linux_nvidia --recipe vllm --base-url http://127.0.0.1:8080 --model <id> --output-dir <evidence>",
+  "evidence": []
+}
