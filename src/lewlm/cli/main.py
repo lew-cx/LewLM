@@ -80,7 +80,7 @@ from lewlm.runtime.experimental import ClusterEnrollWorkerResponse, ClusterStatu
 from lewlm.runtime.adapters import summarize_feature_preservation
 from lewlm.security.authorization import ToolAction
 from lewlm.security.files import read_scoped_text_file
-from lewlm.serving_profiles import SERVING_PROFILE_WORKLOAD_CLASS_CHOICES, is_attachment_workload_class
+from lewlm.serving_profiles import SERVING_PROFILE_PRESETS, SERVING_PROFILE_WORKLOAD_CLASS_CHOICES, is_attachment_workload_class
 from lewlm.structured_output import StructuredOutputResult
 from lewlm.tools.models import (
     DocumentGenerateToolRequest,
@@ -399,6 +399,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(SERVING_PROFILE_WORKLOAD_CLASS_CHOICES),
         default=None,
         help="Optional chat workload class to autotune, including multimodal attachment patterns.",
+    )
+    autotune_parser.add_argument(
+        "--preset",
+        choices=list(SERVING_PROFILE_PRESETS),
+        default=None,
+        help="Serving-profile preset to measure: interactive (latency-first, the default) or throughput.",
     )
     autotune_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
     autotune_parser.set_defaults(handler=handle_autotune)
@@ -1850,6 +1856,7 @@ def handle_autotune(args: argparse.Namespace, settings: LewLMSettings, services:
             prompt=args.prompt,
             capability=args.capability,
             workload_class=args.workload_class,
+            preset=args.preset,
         ),
     )
     payload = result.model_dump(mode="json")

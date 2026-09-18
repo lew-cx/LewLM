@@ -1,0 +1,56 @@
+{
+  "host": "Apple M2 Max, macOS Darwin 25.2.0, Python 3.14.7, runtime_packs=[external_accelerator], empty models dir, no endpoints",
+  "runs": [
+    {
+      "run": 1,
+      "process_to_runtime_info_seconds": 0.675,
+      "lewlm_ready_seconds": 0.054,
+      "engines": [
+        {
+          "endpoint_id": "legacy-default",
+          "profile": "openai_compatible",
+          "enabled": false,
+          "state": "unknown",
+          "inventory_age_seconds": null,
+          "advertised_model_count": 0,
+          "first_advertised_at": null
+        }
+      ],
+      "warm_models": []
+    },
+    {
+      "run": 2,
+      "process_to_runtime_info_seconds": 0.724,
+      "lewlm_ready_seconds": 0.057,
+      "engines": [
+        {
+          "endpoint_id": "legacy-default",
+          "profile": "openai_compatible",
+          "enabled": false,
+          "state": "unknown",
+          "inventory_age_seconds": null,
+          "advertised_model_count": 0,
+          "first_advertised_at": null
+        }
+      ],
+      "warm_models": []
+    },
+    {
+      "run": 3,
+      "process_to_runtime_info_seconds": 0.731,
+      "lewlm_ready_seconds": 0.059,
+      "engines": [
+        {
+          "endpoint_id": "legacy-default",
+          "profile": "openai_compatible",
+          "enabled": false,
+          "state": "unknown",
+          "inventory_age_seconds": null,
+          "advertised_model_count": 0,
+          "first_advertised_at": null
+        }
+      ],
+      "warm_models": []
+    }
+  ]
+}

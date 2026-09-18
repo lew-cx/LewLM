@@ -271,6 +271,34 @@ in the record. Rollback: revert the step commit. Next eligible step: 09
 (latency tuning; only engines with passing hardware evidence — on this host
 that is oMLX and the native paths) or 10 (Chap contract).
 
+## Step 09 — portable contract complete; CPU/CUDA tuning deferred
+
+Commit: this step's commit, immediately after step 08 commit `7cf5a59`.
+Full record: [modernization-step-09.md](modernization-step-09.md).
+
+Behavior implemented: `startup` on `GET /v1/runtime` (LewLM ready, engine
+state from cached inventory with `first_advertised_at`, process-local model
+warmth — no probe, no load); serving-profile presets `interactive` /
+`throughput` (`LEWLM_SERVING_PROFILE_PRESET`, `lewlm autotune --preset`,
+API `preset`; `throughput_first` objective) stored per preset; a fingerprint
+of host/runtime/engine/model revision/precision/workload/preset on every new
+recommendation with `stale` rejection when a known input changes.
+
+Compatibility: additive fields and a new setting with the previous behaviour
+as default; old stored profiles keep resolving; the default preset keeps the
+pre-preset storage key.
+
+Commands run and results: `tests/unit/test_latency_contract.py` 6 passed
+(including six aliases on one endpoint never exceeding a cap of 2 at the
+fake engine); touched suites 225 passed; three isolated process starts:
+bootstrap 54–57 ms, process-to-answer 0.68–0.73 s.
+
+Real-engine evidence: none claimed. Deferred: llama.cpp CPU thread/batch
+tuning (CPU lane), CUDA offload, eager vs graph capture on vLLM/SGLang,
+engine-ready/model-warm timings on a real engine, long-prefill fairness on
+an engine, before/after protocol runs — each with its command in the record.
+Rollback: revert the step commit. Next eligible step: 10 (Chap contract).
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

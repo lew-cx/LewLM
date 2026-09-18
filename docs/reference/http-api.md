@@ -14,7 +14,7 @@ LewLM serves a local FastAPI app with OpenAPI at:
 | --- | --- | --- |
 | `GET` | `/v1/health` | service, storage, configuration, install-profile, pack, and capability-readiness health |
 | `GET` | `/v1/cache/stats` | cache and performance-feature snapshot |
-| `GET` | `/v1/runtime` | stable process identity and compact live counts |
+| `GET` | `/v1/runtime` | stable process identity, compact live counts, and `startup` — the three startup phases (`lewlm_ready_seconds`, per-endpoint engine `state`/`first_advertised_at` from the cached inventory, process-local `warm_models`/`loading_models`) read without probing an engine or loading a model |
 | `GET` | `/v1/runtime/stats` | readiness, runtime, scheduler, residency, and runtime-strategy stats |
 | `GET` | `/v1/runtime/residencies` | live model residency snapshots |
 | `GET` | `/v1/model-lifecycle/operations/{operation_id}` | poll an asynchronous lifecycle operation |

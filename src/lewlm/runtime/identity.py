@@ -140,6 +140,10 @@ class RuntimeInstanceMetadata(BaseModel):
 
     runtime_instance_id: str
     started_at: datetime
+    #: When bootstrap finished and the service could answer requests. Set once;
+    #: `ready_at - started_at` is the "LewLM ready" startup phase on its own,
+    #: separate from any engine becoming reachable or any model becoming warm.
+    ready_at: datetime | None = None
     process_id: int
     hostname: str
     version: str
@@ -157,12 +161,56 @@ class RuntimeInstanceMetadata(BaseModel):
         )
 
 
+class EngineStartupPhase(BaseModel):
+    """What LewLM knows about one external engine without probing it."""
+
+    endpoint_id: str
+    profile: str
+    enabled: bool
+    #: `advertised` (last inventory read succeeded), `stale` (an earlier read
+    #: succeeded, the latest failed), `failed` (never succeeded), or `unknown`
+    #: (never read). Comes from the cached inventory; this call makes no request.
+    state: str
+    inventory_age_seconds: float | None = None
+    advertised_model_count: int = 0
+    #: First time this process saw the engine advertise models; the "engine
+    #: ready" phase as observed by LewLM, not the engine's own start time.
+    first_advertised_at: datetime | None = None
+
+
+class ModelWarmth(BaseModel):
+    """Process-local residency for one model; never a claim about upstream residency."""
+
+    model_id: str
+    runtime: str
+    state: str
+    loaded_at: datetime | None = None
+    load_seconds: float | None = None
+
+
+class StartupPhases(BaseModel):
+    """The three startup phases, measured separately and read from cached state.
+
+    `lewlm_ready` is this process; `engines` is the last cached inventory read
+    per endpoint (no probe is made here); `warm_models` is process-local
+    residency. Health and model listing stay responsive while an engine is
+    unavailable or a model is warming because none of this waits on either.
+    """
+
+    lewlm_ready_at: datetime | None = None
+    lewlm_ready_seconds: float | None = None
+    engines: list[EngineStartupPhase] = Field(default_factory=list)
+    warm_models: list[ModelWarmth] = Field(default_factory=list)
+    loading_models: list[ModelWarmth] = Field(default_factory=list)
+
+
 class RuntimeInfo(RuntimeInstanceMetadata):
     """Public runtime identity and live process summary."""
 
     status: str = "ready"
     loaded_model_count: int = 0
     active_request_count: int = 0
+    startup: StartupPhases | None = None
     enabled_features: list[str] = Field(
         default_factory=list,
         description="Public feature surfaces this build has enabled.",

@@ -737,6 +737,7 @@ class MetadataStore:
         host_platform: dict[str, Any],
         runtime_name: str | None = None,
         workload_class: str | None = None,
+        preset: str | None = None,
         payload: dict[str, Any],
     ) -> None:
         self.set_value(
@@ -746,6 +747,7 @@ class MetadataStore:
                 host_platform=host_platform,
                 runtime_name=runtime_name,
                 workload_class=workload_class,
+                preset=preset,
             ),
             payload,
         )
@@ -758,6 +760,7 @@ class MetadataStore:
         host_platform: dict[str, Any],
         runtime_name: str | None = None,
         workload_class: str | None = None,
+        preset: str | None = None,
     ) -> dict[str, Any] | None:
         for key in self._serving_profile_lookup_keys(
             model_id=model_id,
@@ -765,6 +768,7 @@ class MetadataStore:
             host_platform=host_platform,
             runtime_name=runtime_name,
             workload_class=workload_class,
+            preset=preset,
         ):
             value = self.get_value(key)
             if isinstance(value, dict):
@@ -1517,6 +1521,7 @@ class MetadataStore:
         host_platform: dict[str, Any],
         runtime_name: str | None = None,
         workload_class: str | None = None,
+        preset: str | None = None,
     ) -> str:
         host_signature = hashlib.sha256(json.dumps(host_platform, sort_keys=True).encode("utf-8")).hexdigest()[:16]
         model_signature = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:16]
@@ -1526,6 +1531,11 @@ class MetadataStore:
             key = f"{key}:{runtime_signature}"
         if workload_class:
             key = f"{key}:{workload_class}"
+        # The default (interactive) preset keeps the pre-preset key so profiles
+        # recorded before presets existed remain addressable; other presets are
+        # separate records and never fall back to it.
+        if preset and preset != "interactive":
+            key = f"{key}:preset={preset}"
         return key
 
     def _serving_profile_lookup_keys(
@@ -1536,6 +1546,7 @@ class MetadataStore:
         host_platform: dict[str, Any],
         runtime_name: str | None,
         workload_class: str | None,
+        preset: str | None = None,
     ) -> tuple[str, ...]:
         keys: list[str] = []
         if runtime_name and workload_class:
@@ -1546,6 +1557,7 @@ class MetadataStore:
                     host_platform=host_platform,
                     runtime_name=runtime_name,
                     workload_class=workload_class,
+                    preset=preset,
                 ),
             )
         if runtime_name and workload_class in {None, "text_only", "text_only_multimodal"}:
@@ -1555,6 +1567,7 @@ class MetadataStore:
                     capability=capability,
                     host_platform=host_platform,
                     runtime_name=runtime_name,
+                    preset=preset,
                 ),
             )
         if workload_class in {None, "text_only", "text_only_multimodal"}:
@@ -1563,6 +1576,7 @@ class MetadataStore:
                     model_id=model_id,
                     capability=capability,
                     host_platform=host_platform,
+                    preset=preset,
                 ),
             )
         deduped_keys: list[str] = []

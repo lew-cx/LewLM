@@ -86,8 +86,10 @@ from lewlm.serving_profiles import (
     SERVING_PROFILE_SETTING_KEYS,
     ServingProfileApplication,
     default_serving_profile_workload_class,
+    normalize_serving_profile_preset,
     normalize_serving_profile_workload_class,
     resolve_serving_profile_application,
+    serving_profile_fingerprint,
     serving_profile_supports_workload,
     serving_profile_effective_settings,
     supported_serving_profile_workload_classes,
@@ -1021,6 +1023,7 @@ class TelemetryService:
             request_capability=CapabilityName.CHAT,
             apply_serving_profile=True,
             workload_class=workload_class,
+            manifest=manifest,
         )
         profile_artifact = self._profile_artifact_payload(profile_payload)
         runtime_preference = self.metadata_store.get_runtime_preference(
@@ -1144,6 +1147,7 @@ class TelemetryService:
             request_capability=CapabilityName.CHAT,
             apply_serving_profile=True,
             workload_class=workload_class,
+            manifest=manifest,
         )
         return WorkloadOptimizationDefault(
             workload_class=workload_class,
@@ -1978,9 +1982,14 @@ class TelemetryService:
         prompt: str,
         capability: str = CapabilityName.CHAT.value,
         workload_class: str | None = None,
+        preset: str | None = None,
     ) -> ServingProfileRecommendation:
         if capability != CapabilityName.CHAT.value:
             raise ConfigurationError("Autotuning currently supports chat-capable models only.")
+        try:
+            normalized_preset = normalize_serving_profile_preset(preset or self.settings.serving_profile_preset)
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
         messages = self._benchmark_workload_messages(prompt=prompt, workload_class=workload_class)
         manifest, runtime, _ = self.model_router.route_chat(
             model_id,
@@ -2009,22 +2018,42 @@ class TelemetryService:
                     candidate=candidate,
                 ),
             )
-        selected_candidate = min(candidate_summaries, key=self._autotune_candidate_sort_key)
+        sort_key = (
+            self._autotune_throughput_sort_key
+            if normalized_preset == "throughput"
+            else self._autotune_candidate_sort_key
+        )
+        selected_candidate = min(candidate_summaries, key=sort_key)
         effective_settings = self._serving_profile_effective_settings(selected_candidate.settings_overrides)
         recommended_at = utc_now()
+        host_platform_snapshot = self.runtime_catalog.host_platform_snapshot()
+        objective_text = (
+            "the highest measured concurrent throughput"
+            if normalized_preset == "throughput"
+            else "the lowest measured chat latency"
+        )
         recommendation = ServingProfileRecommendation(
             profile_id=uuid4().hex,
             model_id=manifest.model_id,
             capability=capability,
             workload_class=normalized_workload_class,
             runtime=selected_candidate.runtime,
-            host_platform=self.runtime_catalog.host_platform_snapshot(),
+            host_platform=host_platform_snapshot,
             prompt=prompt,
             recommended_at=recommended_at,
+            selection_objective="throughput_first" if normalized_preset == "throughput" else "latency_first",
+            preset=normalized_preset,
+            fingerprint=serving_profile_fingerprint(
+                host_platform=host_platform_snapshot.model_dump(mode="json"),
+                runtime=runtime,
+                manifest=manifest,
+                workload_class=normalized_workload_class,
+                preset=normalized_preset,
+            ),
             reason=(
-                f"Selected `{selected_candidate.name}` because it produced the lowest measured chat latency for the "
-                f"`{normalized_workload_class}` workload after benchmarking the available serving-profile candidates "
-                "for this host."
+                f"Selected `{selected_candidate.name}` because it produced {objective_text} for the "
+                f"`{normalized_workload_class}` workload (`{normalized_preset}` preset) after benchmarking the "
+                "available serving-profile candidates for this host."
             ),
             settings_overrides=selected_candidate.settings_overrides,
             effective_settings=effective_settings,
@@ -2043,8 +2072,12 @@ class TelemetryService:
             artifact=selected_candidate.artifact,
             notes=(
                 [
-                    "Profile recommendations are benchmark-backed and stored per host/model/runtime/workload tuple.",
-                    "The current selection objective prefers the lowest measured end-to-end latency and uses throughput as a tie-breaker.",
+                    "Profile recommendations are benchmark-backed and stored per host/model/runtime/workload/preset tuple, with the measured inputs fingerprinted; a request whose inputs differ rejects the profile as stale.",
+                    (
+                        "The `throughput` preset prefers the highest measured concurrent throughput and uses latency as a tie-breaker."
+                        if normalized_preset == "throughput"
+                        else "The `interactive` preset prefers the lowest measured end-to-end latency and uses throughput as a tie-breaker."
+                    ),
                 ]
                 + selected_candidate.notes
             ),
@@ -2056,6 +2089,7 @@ class TelemetryService:
             host_platform=recommendation.host_platform.model_dump(mode="json"),
             runtime_name=selected_candidate.runtime,
             workload_class=normalized_workload_class,
+            preset=normalized_preset,
             payload=recommendation.model_dump(mode="json"),
         )
         await self.event_bus.publish(
@@ -2452,6 +2486,15 @@ class TelemetryService:
         warm_cache_ratio = candidate.warm_cache_ttft_ratio if candidate.warm_cache_ttft_ratio is not None else float("inf")
         return (total_seconds, -throughput, -token_throughput, warm_cache_ratio)
 
+    def _autotune_throughput_sort_key(self, candidate: AutotuneCandidateSummary) -> tuple[float, float, float, float]:
+        """`throughput` preset: concurrent throughput first, then tokens/s, then latency."""
+
+        total_seconds = candidate.total_seconds if candidate.total_seconds > 0 else float("inf")
+        throughput = candidate.continuous_batching_throughput or 0.0
+        token_throughput = candidate.completion_tokens_per_second or 0.0
+        warm_cache_ratio = candidate.warm_cache_ttft_ratio if candidate.warm_cache_ttft_ratio is not None else float("inf")
+        return (-throughput, -token_throughput, total_seconds, warm_cache_ratio)
+
     def _serving_profile_effective_settings(
         self,
         settings_overrides: dict[str, int | float | str | bool | None],
@@ -2624,6 +2667,7 @@ class TelemetryService:
             request_capability=CapabilityName.CHAT,
             apply_serving_profile=apply_serving_profile,
             workload_class=normalized_workload_class,
+            manifest=manifest,
         )
 
     async def _benchmark_chat_model(

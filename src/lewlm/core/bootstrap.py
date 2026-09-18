@@ -30,6 +30,7 @@ from lewlm.runtime.cancellation import RequestCancellationRegistry
 from lewlm.runtime.catalog import RuntimeCatalog, build_default_runtime_catalog
 from lewlm.runtime.experimental import DistributedClusterService
 from lewlm.runtime.request_coalescer import InFlightRequestCoalescer
+from lewlm.core.contracts import utc_now
 from lewlm.runtime.response_cache import RuntimeResponseCache
 from lewlm.runtime.identity import RuntimeInstanceMetadata
 from lewlm.runtime.operations import LifecycleOperationManager
@@ -512,6 +513,9 @@ def bootstrap_services(
         runtime_instance=runtime_instance,
         model_residency_manager=model_residency_manager,
     )
+    # Bootstrap is done: this is the "LewLM ready" phase, independent of any
+    # engine being reachable or any model being warm.
+    runtime_instance.ready_at = utc_now()
     return LewLMServices(
         settings=resolved_settings,
         runtime_instance=runtime_instance,

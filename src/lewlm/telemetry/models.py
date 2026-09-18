@@ -536,6 +536,13 @@ class ServingProfileRecommendation(BaseModel):
     prompt: str
     recommended_at: datetime
     selection_objective: str = "latency_first"
+    #: `interactive` (latency-first, concurrency 1-2) or `throughput`
+    #: (throughput-first under concurrent load); stored and applied per preset.
+    preset: str = "interactive"
+    #: Inputs this recommendation was measured with (host, runtime, engine
+    #: profile/server, model revision, precision, workload class, preset). A
+    #: request whose inputs differ gets the profile rejected as stale.
+    fingerprint: dict[str, str | None] = Field(default_factory=dict)
     reason: str
     settings_overrides: dict[str, int | float | str | bool | None] = Field(default_factory=dict)
     effective_settings: dict[str, int | float | str | bool | None] = Field(default_factory=dict)

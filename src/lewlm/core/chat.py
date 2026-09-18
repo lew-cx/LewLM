@@ -701,6 +701,7 @@ class ChatOrchestrator:
             request_capability=capability,
             apply_serving_profile=apply_serving_profile,
             workload_class=workload_class,
+            manifest=manifest,
         )
 
     async def _delegate_complete_with_serving_profile(

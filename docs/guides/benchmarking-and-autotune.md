@@ -21,6 +21,7 @@ CLI:
 
 ```bash
 lewlm autotune --model <model-id>
+lewlm autotune --model <model-id> --preset throughput
 ```
 
 HTTP:
@@ -35,6 +36,9 @@ Request fields:
 - `prompt`
 - `capability`
 - `workload_class`
+- `preset` — `interactive` (default: lowest measured latency, the concurrency 1–2 desktop shape) or `throughput` (highest measured concurrent throughput). Recommendations are stored per preset; a request never adopts the other preset's profile. `LEWLM_SERVING_PROFILE_PRESET` selects which preset a deployment applies.
+
+Every recommendation carries a `fingerprint` of what it was measured with — host, runtime, engine profile and server (for bridges), model revision, precision, workload class, and preset. When a later request's inputs differ (for example the model artifact changed), the profile is reported as `stale` with the changed inputs named and its settings are not applied; re-run autotune. Profiles recorded before fingerprints existed keep applying.
 
 ## Safe default adoption
 
@@ -43,7 +47,7 @@ LewLM treats autotune output as a **measured default-adoption input**, not just 
 That keeps default-path adoption honest:
 
 - the chosen settings are tied to a specific host/model/runtime/workload tuple
-- profile application can still be rejected when the routed runtime no longer matches
+- profile application can still be rejected when the routed runtime no longer matches, or reported `stale` when any fingerprinted input changed
 - request surfaces can opt out with `apply_serving_profile=false`
 - optimization-default summaries can report which classes are benchmark-backed vs merely resolved
 

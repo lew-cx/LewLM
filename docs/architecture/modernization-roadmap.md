@@ -209,6 +209,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** compare before/after using the benchmark protocol below. Run scheduler fairness/backpressure, response-cache, residency, and cancellation regressions. Demonstrate that a long prefill does not indefinitely block a short request at the LewLM layer. Validate CPU tuning on CPU hardware and CUDA tuning on NVIDIA hardware. Unsupported hardware produces guidance and a usable fallback, not a failing core import.
 
+**Implementation status:** portable contract completed on 2026-09-18 (startup phases on `GET /v1/runtime`, `interactive`/`throughput` presets with a measured-input fingerprint and `stale` rejection, aggregate admission cap proven across aliases, explicit-only warming verified). CPU/CUDA tuning measurements are deferred with exact commands in the [validation record](../validation/modernization-step-09.md); no tuning result is claimed.
+
 ## Step 10 — Package the stable Chap integration contract
 
 **Depends on:** 01–02 and 04; extend fixtures after 05–08. **Touch:** `api/schemas/`, `api/openapi.py`, existing health/models/chat/responses/events/runtime routes, `app_helpers.py`, `examples/integration-bundle.json`, `docs/guides/host-app-integration.md`.

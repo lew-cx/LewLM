@@ -128,6 +128,11 @@ class LewLMSettings(BaseSettings):
     llamacpp_quantize_path: Path | None = None
     onnx_genai_conversion_execution_provider: Literal["cpu", "cuda", "dml"] = "cpu"
     runtime_policy: Literal["keep_warm", "balanced", "aggressive_unload"] = "balanced"
+    # Which measured serving-profile preset this deployment applies:
+    # `interactive` (first-token/p95 latency at concurrency 1-2, the desktop
+    # default) or `throughput` (concurrent load). Recommendations are stored per
+    # preset and never applied across presets.
+    serving_profile_preset: Literal["interactive", "throughput"] = "interactive"
     # A manifest publishes the window a model was trained with; this is the
     # window LewLM is willing to serve from it. llama.cpp reserves its KV cache
     # for the whole of `n_ctx` at load, so a model advertising 131k tokens is a

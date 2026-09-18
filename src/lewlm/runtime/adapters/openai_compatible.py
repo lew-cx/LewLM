@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from secrets import token_hex
+from datetime import datetime
 from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,7 @@ import wave
 from lewlm.config.settings import LewLMSettings
 from lewlm.config.endpoints import ExternalEndpoint, server_root
 from lewlm.core.contracts import (
+    utc_now,
     BridgeProfile,
     RuntimeProvider,
     AudioSpeechRequest,
@@ -471,6 +473,9 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         # refresh after a success keeps the last-known list and marks it stale
         # rather than pretending the upstream models were deleted.
         self._discovered_at: float | None = None
+        # Wall-clock time of the first successful read in this process: the
+        # "engine ready" phase as LewLM observed it.
+        self._first_advertised_at: datetime | None = None
         self._inventory_stale = False
         self._force_refresh = False
         self._capability_support_cache: dict[CapabilityName, bool] = {}
@@ -506,6 +511,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                  "state": "generate_passed" if supported else "probe_failed"}
                 for (model_id, capability), supported in self._model_capability_support_cache.items()
             ],
+            "first_advertised_at": self._first_advertised_at.isoformat() if self._first_advertised_at is not None else None,
             "upstream_residency": "unknown",
             "upstream_cancellation": "unknown",
         }
@@ -1155,6 +1161,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._discovery_error = None
         self._discovered_at = monotonic()
         self._inventory_stale = False
+        if self._first_advertised_at is None:
+            self._first_advertised_at = utc_now()
         return self._discovered_model_ids
 
     def _discovery_cache_is_stale_failure(self) -> bool:

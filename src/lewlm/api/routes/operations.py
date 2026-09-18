@@ -12,7 +12,7 @@ from lewlm.conversion.models import JobRecord
 from lewlm.core.contracts import CapabilityName
 from lewlm.runtime.experimental import ClusterStatus
 from lewlm.runtime.cancellation import RequestCancellationRecord
-from lewlm.runtime.identity import RuntimeInfo
+from lewlm.runtime.identity import EngineStartupPhase, ModelWarmth, RuntimeInfo, StartupPhases
 from lewlm.runtime.residency import ModelResidencySnapshot
 from lewlm.runtime.operations import LifecycleOperationRecord
 from lewlm.security.authorization import LifecycleCapability, request_api_credential
@@ -32,6 +32,10 @@ class AutotuneRequest(BaseModel):
     prompt: str = Field(default="Benchmark ping")
     capability: str = Field(default=CapabilityName.CHAT.value)
     workload_class: str | None = None
+    preset: str | None = Field(
+        default=None,
+        description="Serving-profile preset to measure: `interactive` (latency-first) or `throughput`; defaults to the configured preset.",
+    )
 
 
 @router.get("/v1/runtime", response_model=RuntimeInfo)
@@ -45,6 +49,47 @@ async def runtime_info(request: Request) -> RuntimeInfo:
         **services.runtime_instance.model_dump(),
         loaded_model_count=sum(1 for item in residencies if item.state.value == "ready"),
         active_request_count=int(scheduler["active_requests"]),
+        startup=_startup_phases(services, residencies),
+    )
+
+
+def _startup_phases(services, residencies: list[ModelResidencySnapshot]) -> StartupPhases:
+    """Three phases from cached state only: no engine probe, no model load."""
+
+    instance = services.runtime_instance
+    ready_seconds = None
+    if instance.ready_at is not None:
+        ready_seconds = round(max((instance.ready_at - instance.started_at).total_seconds(), 0.0), 3)
+    engines: list[EngineStartupPhase] = []
+    for endpoint_id, runtime in sorted(services.runtime_catalog.endpoint_runtimes().items()):
+        snapshot_method = getattr(runtime, "endpoint_snapshot", None)
+        if not callable(snapshot_method):
+            continue
+        snapshot = snapshot_method()
+        engines.append(
+            EngineStartupPhase(
+                endpoint_id=endpoint_id,
+                profile=str(snapshot.get("profile")),
+                enabled=bool(snapshot.get("enabled", True)),
+                state=str(snapshot.get("inventory_state", "unknown")),
+                inventory_age_seconds=snapshot.get("inventory_age_seconds"),
+                advertised_model_count=len(snapshot.get("advertised_model_ids") or ()),
+                first_advertised_at=snapshot.get("first_advertised_at"),
+            ),
+        )
+
+    def warmth(item: ModelResidencySnapshot) -> ModelWarmth:
+        load_seconds = None
+        if item.loaded_at is not None and item.load_started_at is not None:
+            load_seconds = round(max((item.loaded_at - item.load_started_at).total_seconds(), 0.0), 3)
+        return ModelWarmth(model_id=item.model_id, runtime=item.runtime, state=item.state.value, loaded_at=item.loaded_at, load_seconds=load_seconds)
+
+    return StartupPhases(
+        lewlm_ready_at=instance.ready_at,
+        lewlm_ready_seconds=ready_seconds,
+        engines=engines,
+        warm_models=[warmth(item) for item in residencies if item.state.value == "ready"],
+        loading_models=[warmth(item) for item in residencies if item.state.value == "loading"],
     )
 
 
@@ -166,6 +211,7 @@ async def autotune(payload: AutotuneRequest, request: Request) -> ServingProfile
         prompt=payload.prompt,
         capability=payload.capability,
         workload_class=payload.workload_class,
+        preset=payload.preset,
     )
 
 

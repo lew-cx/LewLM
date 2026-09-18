@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +29,13 @@ SERVING_PROFILE_SETTING_KEYS = (
 )
 
 _ServingProfileValue = int | float | str | bool | None
+# Measured workload presets. `interactive` favours first-token / p95 latency at
+# concurrency 1-2 (the desktop-chat shape); `throughput` favours completed
+# requests and output tokens per second under concurrent load. A recommendation
+# is stored per preset and never applied to the other one.
+SERVING_PROFILE_PRESETS = ("interactive", "throughput")
+DEFAULT_SERVING_PROFILE_PRESET = "interactive"
+ServingProfilePreset = Literal["interactive", "throughput"]
 _TEXT_ONLY_WORKLOAD_CLASS = "text_only"
 _TEXT_ONLY_MULTIMODAL_WORKLOAD_CLASS = "text_only_multimodal"
 _SINGLE_IMAGE_WORKLOAD_CLASS = "single_image"
@@ -89,11 +98,15 @@ class ServingProfileRejectedSetting(BaseModel):
 
 
 class ServingProfileApplication(BaseModel):
-    status: Literal["selected", "disabled", "not_found", "runtime_mismatch", "unavailable"]
+    status: Literal["selected", "disabled", "not_found", "runtime_mismatch", "stale", "unavailable"]
     source: str = "persisted_autotune"
     capability: str = CapabilityName.CHAT.value
     workload_class: str = _TEXT_ONLY_WORKLOAD_CLASS
+    preset: str = DEFAULT_SERVING_PROFILE_PRESET
     profile_id: str | None = None
+    #: Fingerprint inputs that no longer match the stored recommendation, when
+    #: `status` is `stale`: name -> (recommended value, current value).
+    stale_inputs: dict[str, tuple[str | None, str | None]] = Field(default_factory=dict)
     runtime: str | None = None
     reason: str
     recommendation_reason: str | None = None
@@ -196,6 +209,71 @@ def serving_profile_requires_materialization(
     return any(getattr(settings, key) != value for key, value in profile.accepted_settings.items())
 
 
+def normalize_serving_profile_preset(preset: str | None) -> str:
+    if preset is None:
+        return DEFAULT_SERVING_PROFILE_PRESET
+    normalized = preset.strip().lower().replace("-", "_")
+    if normalized not in SERVING_PROFILE_PRESETS:
+        raise ValueError(f"Unknown serving-profile preset {preset!r}; choose one of {', '.join(SERVING_PROFILE_PRESETS)}.")
+    return normalized
+
+
+def serving_profile_fingerprint(
+    *,
+    host_platform: dict[str, object],
+    runtime: RuntimeContract,
+    manifest: ModelManifest | None,
+    workload_class: str | None,
+    preset: str | None,
+) -> dict[str, str | None]:
+    """The inputs a benchmark recommendation is only valid for.
+
+    Host, engine (runtime name plus, for a bridge, its profile and server), model
+    revision (the manifest fingerprint, which changes when the artifact does),
+    precision, workload class, and preset. Unknown inputs are ``None`` and never
+    flag a mismatch on their own; a value that was known when the profile was
+    recorded and differs now does.
+    """
+
+    endpoint = getattr(runtime, "endpoint", None)
+    engine_profile = getattr(endpoint, "profile", None) if endpoint is not None else None
+    engine_server = getattr(endpoint, "base_url", None) if endpoint is not None else None
+    precision: str | None = None
+    if manifest is not None:
+        precision = manifest.quantization
+        if precision is None and manifest.quantization_profile is not None and manifest.quantization_profile.weight_precision is not None:
+            precision = str(manifest.quantization_profile.weight_precision.value)
+    return {
+        "host": hashlib.sha256(json.dumps(host_platform, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16],
+        "runtime": runtime.name,
+        "engine_profile": str(engine_profile) if engine_profile is not None else None,
+        "engine_server": str(engine_server) if engine_server is not None else None,
+        "model_revision": manifest.fingerprint if manifest is not None else None,
+        "precision": precision,
+        "workload_class": normalize_serving_profile_workload_class(workload_class) or _TEXT_ONLY_WORKLOAD_CLASS,
+        "preset": normalize_serving_profile_preset(preset),
+    }
+
+
+def _stale_fingerprint_inputs(
+    stored: object,
+    current: dict[str, str | None],
+) -> dict[str, tuple[str | None, str | None]]:
+    if not isinstance(stored, dict):
+        return {}
+    stale: dict[str, tuple[str | None, str | None]] = {}
+    for key, current_value in current.items():
+        if key not in stored:
+            continue
+        stored_value = stored.get(key)
+        stored_text = str(stored_value) if stored_value is not None else None
+        if stored_text is None or current_value is None:
+            continue
+        if stored_text != current_value:
+            stale[key] = (stored_text, current_value)
+    return stale
+
+
 def resolve_serving_profile_application(
     *,
     settings: LewLMSettings,
@@ -207,14 +285,18 @@ def resolve_serving_profile_application(
     apply_serving_profile: bool,
     stored_capability: str = CapabilityName.CHAT.value,
     workload_class: str | None = None,
+    manifest: ModelManifest | None = None,
+    preset: str | None = None,
 ) -> ServingProfileApplication:
     current_effective_settings = serving_profile_effective_settings(settings)
     normalized_workload_class = normalize_serving_profile_workload_class(workload_class) or _TEXT_ONLY_WORKLOAD_CLASS
+    normalized_preset = normalize_serving_profile_preset(preset or getattr(settings, "serving_profile_preset", None))
     if not apply_serving_profile:
         return ServingProfileApplication(
             status="disabled",
             capability=stored_capability,
             workload_class=normalized_workload_class,
+            preset=normalized_preset,
             runtime=runtime.name,
             reason="Request-level serving-profile adoption was disabled explicitly.",
             effective_settings=current_effective_settings,
@@ -224,6 +306,7 @@ def resolve_serving_profile_application(
             status="unavailable",
             capability=stored_capability,
             workload_class=normalized_workload_class,
+            preset=normalized_preset,
             runtime=runtime.name,
             reason="Persisted serving profiles are unavailable in this service context.",
             effective_settings=current_effective_settings,
@@ -234,15 +317,17 @@ def resolve_serving_profile_application(
         host_platform=host_platform,
         runtime_name=runtime.name,
         workload_class=normalized_workload_class,
+        preset=normalized_preset,
     )
     if profile_payload is None:
         return ServingProfileApplication(
             status="not_found",
             capability=stored_capability,
             workload_class=normalized_workload_class,
+            preset=normalized_preset,
             runtime=runtime.name,
             reason=(
-                "No persisted serving profile is available for this host/model/runtime/workload tuple."
+                f"No persisted serving profile is available for this host/model/runtime/workload tuple and the `{normalized_preset}` preset."
             ),
             effective_settings=current_effective_settings,
         )
@@ -269,12 +354,48 @@ def resolve_serving_profile_application(
             status="runtime_mismatch",
             capability=stored_capability,
             workload_class=resolved_workload_class,
+            preset=normalized_preset,
             profile_id=_string_or_none(profile_payload.get("profile_id")),
             runtime=runtime.name,
             reason="Persisted profile runtime does not match the active routed runtime.",
             recommendation_reason=_string_or_none(profile_payload.get("reason")),
             recommended_at=profile_payload.get("recommended_at"),
             artifact_id=_artifact_id(profile_payload),
+            rejected_settings=rejected_settings,
+            effective_settings=current_effective_settings,
+        )
+
+    # A recommendation is only evidence for the inputs it was measured with.
+    # Profiles written before fingerprints existed carry none and stay usable.
+    stale_inputs = _stale_fingerprint_inputs(
+        profile_payload.get("fingerprint"),
+        serving_profile_fingerprint(
+            host_platform=host_platform,
+            runtime=runtime,
+            manifest=manifest,
+            workload_class=resolved_workload_class,
+            preset=normalized_preset,
+        ),
+    )
+    if stale_inputs:
+        changed = ", ".join(f"{key}: {before!r} -> {after!r}" for key, (before, after) in sorted(stale_inputs.items()))
+        for key, value in sanitized_overrides.items():
+            rejected_settings[key] = ServingProfileRejectedSetting(
+                requested_value=value,
+                reason=f"Profile inputs changed since it was measured ({changed}); re-run autotune.",
+            )
+        return ServingProfileApplication(
+            status="stale",
+            capability=stored_capability,
+            workload_class=resolved_workload_class,
+            preset=normalized_preset,
+            profile_id=_string_or_none(profile_payload.get("profile_id")),
+            runtime=runtime.name,
+            reason=f"Persisted profile is stale: {changed}.",
+            recommendation_reason=_string_or_none(profile_payload.get("reason")),
+            recommended_at=profile_payload.get("recommended_at"),
+            artifact_id=_artifact_id(profile_payload),
+            stale_inputs=stale_inputs,
             rejected_settings=rejected_settings,
             effective_settings=current_effective_settings,
         )
@@ -303,6 +424,7 @@ def resolve_serving_profile_application(
         status="selected",
         capability=stored_capability,
         workload_class=resolved_workload_class,
+        preset=normalized_preset,
         profile_id=_string_or_none(profile_payload.get("profile_id")),
         runtime=runtime.name,
         reason=_selection_reason(accepted_settings=accepted_settings, rejected_settings=rejected_settings),
