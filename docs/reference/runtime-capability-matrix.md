@@ -169,7 +169,7 @@ For portable performance-core reporting, runtime snapshots now tag the major tex
 | `vmlx` | Apple-oriented vMLX-class server | richer Apple-local preservation profile |
 | `omlx` | Apple-oriented OMLX-class server | Apple-local text profile with partial cache reporting |
 | `vllm_mlx` | vLLM-style compatible local server | useful bridge hint when the loopback server preserves paged-KV and prefix-cache behavior |
-| `vllm_local` | vLLM-style local server | cross-platform bridge hint for local servers that preserve semantic and scheduler behavior |
+| `vllm_local` | vLLM local server (Linux/NVIDIA) | continuous batching, prefix cache, paged KV, and prefill optimization reported as backend-native and inactive until observed; the bridge opens no LewLM microbatch window in front of it (`runtime_adapter.kind: backend_native_batch`); pinned recipe `examples/backends/vllm/`, deferred until it passes on Linux/NVIDIA; distinct from `vllm_mlx` |
 | `sglang_local` | SGLang-style local server | cross-platform bridge hint for local servers that preserve compatible loopback semantic routes |
 | `tensorrt_llm_server` | TensorRT-LLM-style local server | NVIDIA-oriented bridge hint for compatible local servers; LewLM reports backend-native and partial preservation without claiming kernel ownership |
 | `openvino_model_server` | OpenVINO Model Server-style local server | Intel CPU/GPU/NPU-oriented bridge hint for compatible local servers; LewLM reports scheduler and graph/runtime optimization as bridge-owned |

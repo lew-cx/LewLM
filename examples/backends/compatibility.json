@@ -89,7 +89,7 @@
    "status": "deferred",
    "candidate": {
     "sources": {
-     "vllm-project/vllm": "42919b49c573aa0b06710616a3b9785674f36ef5"
+     "vllm-project/vllm": "98dff2a81d747d1dba01a47f939f48c3526d4206"
     },
     "model": {
      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -105,8 +105,8 @@
      "output_tokens": 64
     }
    },
-   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-   "next_step": "Follow modernization roadmap step 07; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+   "reason": "Linux/NVIDIA validation host unavailable on 2026-09-18. The recipe in examples/backends/vllm/ is complete and pinned (release v0.29.0 = commit 98dff2a8; image vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1, CUDA 13.0.2, torch 2.13.0, TORCH_CUDA_ARCH_LIST 7.5-12.0; every `vllm serve` argument checked against the commit; hermes tool parser per upstream's tool-calling doc for Qwen2.5), but nothing was executed. The BF16 model is a candidate, not yet validated by this engine.",
+   "next_step": "Run examples/backends/vllm/README.md on a Linux/NVIDIA host with an R580+ driver: scripts/engine_preflight.py --recipe vllm, docker compose up with the digest-pinned image, lewlm scan, scripts/backend_acceptance.py --endpoint-id vllm, scripts/bridge_prefix_benchmark.py at concurrency 1 and 2, the upstream-overlap observation from vLLM's stats log, cold start vs warm restart with the compile cache mounted, nvidia-smi memory, then promote with the image digest as installation."
   },
   {
    "profile": "sglang_local",

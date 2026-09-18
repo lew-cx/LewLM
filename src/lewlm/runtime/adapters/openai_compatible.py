@@ -589,6 +589,23 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         result["endpoint"] = self.endpoint_snapshot()
         return result
 
+    def continuous_batching_ownership(self, capability: CapabilityName) -> str:
+        """Who batches requests for this endpoint: the engine, or nobody LewLM can see.
+
+        ``backend_native`` when the profile's feature map says the server
+        schedules its own batches (vLLM, SGLang, TabbyAPI, oMLX, ...). LewLM
+        never opens a microbatch window in front of such a server: it keeps
+        the bounded admission cap and per-request cancellation, and hands each
+        request straight to the shared transport so two concurrent requests
+        reach the engine concurrently. ``supports_continuous_batching`` stays
+        False for the same reason: there is no LewLM-side batch API here.
+        """
+
+        if capability not in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+            return "unsupported"
+        ownership, _ = _profile_feature_map(self._settings)["continuous_batching"]
+        return "backend_native" if ownership is PerformanceFeatureOwnership.BACKEND_NATIVE else "unsupported"
+
     def supports_manifest(self, manifest: ModelManifest) -> bool:
         binding = manifest.metadata.get("external_endpoint_id")
         if binding is not None and binding != self.endpoint.endpoint_id:

@@ -205,6 +205,39 @@ record. Rollback: revert the step commit. Next eligible step: 07 (vLLM,
 portable part) or 08 (SGLang, portable part); 09–10 remain available on this
 host.
 
+## Step 07 — portable part complete; Linux/NVIDIA lane deferred
+
+Commit: this step's commit, immediately after step 06 commit `0952f30`.
+Full record: [modernization-step-07.md](modernization-step-07.md).
+
+Behavior implemented: `scripts/engine_preflight.py` (host check before any
+pull: digest pin, Docker + `nvidia` runtime, driver minimum, SM list, free
+VRAM, free loopback port; presets for vllm/sglang/exllamav3-tabby); recipe
+`examples/backends/vllm/` with the image pinned by digest (release `v0.29.0`
+= commit `98dff2a8`, CUDA 13.0.2), every `vllm serve` argument checked at
+that commit, key via `VLLM_API_KEY`, host-loopback-only port, separate
+weight/compile-cache volumes, `hermes` tool parser per upstream's Qwen2.5
+guidance, and the proof/promotion procedure; bridge reports
+`continuous_batching_ownership` = `backend_native` for engine-batching
+profiles (reporting only — LewLM opens no microbatch window for bridges);
+operator doc and reference updates separating `vllm_local` from `vllm_mlx`.
+
+Compatibility: additive. `runtime_adapter.kind` for backend-batching bridge
+profiles now reads `backend_native_batch` instead of `request_scoped`.
+
+Commands run and results: `tests/unit/test_engine_preflight.py` 7 passed;
+`tests/unit/test_vllm_local_profile.py` 5 passed (two streams reach the fake
+engine concurrently; cancel one, other completes; admission released);
+focused + adapter/serving/operations set 264 passed; manifest validates with
+`vllm_local` deferred; preflight on this Mac fails on daemon/GPU as intended.
+
+Real-engine evidence: none claimed. Deferred: preflight pass, serve + common
+suite, upstream overlap from vLLM's stats log, cold vs warm restart with the
+compile cache, memory bound, middleware overhead, coexistence, WSL2/ROCm —
+each with its command in the record. Rollback: revert the step commit. Next
+eligible step: 08 (SGLang, portable part); 09–10 remain available on this
+host.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

@@ -179,6 +179,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** portable profile/translation tests plus the common suite on Linux/NVIDIA. Verify two concurrent requests actually reach upstream concurrently, warm-restart timings, memory bounds, and parser behavior. WSL2/ROCm are separate lanes; keep them unvalidated until measured. Distinguish this profile from `vllm_mlx` in UI-facing evidence and all docs.
 
+**Implementation status:** portable part completed on 2026-09-18 (digest-pinned `v0.29.0` recipe with every `vllm serve` argument checked at the commit, `scripts/engine_preflight.py`, explicit backend-native batching ownership on the bridge, `vllm_local`/`vllm_mlx` separation, tests, docs). The Linux/NVIDIA lane is deferred with exact commands in the [validation record](../validation/modernization-step-07.md); `vllm_local` stays `deferred` in the compatibility manifest until it passes.
+
 ## Step 08 — Complete SGLang integration
 
 **Depends on:** 02 and 04. **Touch:** existing `sglang_local` profile; **proposed** `examples/backends/sglang/` and corresponding operator docs.

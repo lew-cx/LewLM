@@ -1,0 +1,87 @@
+# vLLM behind LewLM -- single GPU, loopback only, pinned image.
+#
+# Operator-run. LewLM never starts, stops, or reconfigures this container.
+# The image digest below is vllm/vllm-openai:v0.29.0 as resolved on
+# 2026-09-18 (build commit 98dff2a81d747d1dba01a47f939f48c3526d4206, CUDA
+# 13.0.2). Every argument in `command` exists at that commit
+# (vllm/engine/arg_utils.py, vllm/entrypoints/launchers/cli_args.py).
+#
+#   python scripts/engine_preflight.py --recipe vllm       # before pulling
+#   VLLM_API_KEY=... docker compose -f examples/backends/vllm/docker-compose.yml up -d
+#
+# Then follow README.md to wire LewLM. LewLM must run on the host: the port is
+# published to host loopback only, which is what LewLM's endpoint rule requires.
+
+services:
+  vllm:
+    image: vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+    container_name: lewlm-vllm
+    gpus: all
+    ports:
+      # Host loopback only; LewLM refuses non-loopback endpoints by design.
+      - "127.0.0.1:8000:8000"
+    # PyTorch shares tensors between processes through /dev/shm; the Docker
+    # default (64 MiB) is too small. vLLM's docs accept either --ipc=host or
+    # --shm-size; a bounded tmpfs keeps the namespace isolated.
+    shm_size: "8g"
+    ulimits:
+      memlock: -1
+      nofile: 1048576
+    healthcheck:
+      # /health is outside vLLM's API-key guard (only /v1, /v2, /inference,
+      # /cohere are guarded at this commit), so no secret is needed here.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${VLLM_GPU:-0}
+      # Inference key. Read from the environment (CLI --api-key takes precedence
+      # when given) so it never appears in `ps`. LewLM sends the same value.
+      - VLLM_API_KEY=${VLLM_API_KEY:?set VLLM_API_KEY to the inference key LewLM will use}
+      # Compiled-artifact cache root (torch_compile_cache, ...). Kept on its own
+      # volume, separate from model downloads, so a restart with the same image,
+      # model, and configuration reuses compiled code and each can be pruned alone.
+      - VLLM_CACHE_ROOT=/cache/vllm
+      - HF_HOME=/cache/huggingface
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+    volumes:
+      - ${VLLM_HF_CACHE_DIR:-./cache/huggingface}:/cache/huggingface
+      - ${VLLM_COMPILE_CACHE_DIR:-./cache/vllm}:/cache/vllm
+    # The image's entrypoint is `vllm serve`; these are its arguments.
+    command:
+      - Qwen/Qwen2.5-0.5B-Instruct
+      # Immutable model + tokenizer snapshot (step-00 pin); never a moving branch.
+      - --revision=7ae557604adf67be50417f59c2c2f167def9a775
+      - --tokenizer-revision=7ae557604adf67be50417f59c2c2f167def9a775
+      # The id LewLM discovers and routes by. Change it together with README.md.
+      - --served-model-name=qwen2.5-0.5b-instruct
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=bfloat16
+      - --seed=0
+      # Bounded context, memory, and concurrency for a small single-GPU validation
+      # run; vLLM's defaults (0.92 of VRAM, hundreds of sequences) are for a
+      # dedicated server, not a desktop. Raise them only with measurements.
+      - --max-model-len=8192
+      - --gpu-memory-utilization=0.30
+      - --max-num-seqs=4
+      - --max-num-batched-tokens=4096
+      # Prefix caching is on by default at this commit; stated so the intent is
+      # explicit. LewLM's own response cache never applies to chat.
+      - --enable-prefix-caching
+      # Tool calls: Qwen2.5's chat template is Hermes-style, so the `hermes`
+      # parser is what vLLM's tool-calling docs prescribe for Qwen/Qwen2.5-*.
+      # LewLM still capability-gates tools per model; these flags only let a
+      # `tool_choice: auto` request be accepted upstream.
+      - --enable-auto-tool-choice
+      - --tool-call-parser=hermes
+      # Honest usage on streamed replies without a request-side flag.
+      - --enable-force-include-usage
+      - --uvicorn-log-level=warning
+      # Engine stats stay on: the periodic "Running: N reqs" line is how the
+      # acceptance run proves two requests overlapped upstream.
+    restart: unless-stopped

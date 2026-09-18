@@ -25,3 +25,5 @@ milestone_prompts.md
 .env
 models/
 conversions/
+# Engine recipe volumes created by docker compose (weights, compile caches).
+examples/backends/*/cache/
