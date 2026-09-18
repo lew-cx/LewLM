@@ -192,6 +192,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 
 **Test and exit:** portable profile/translation tests plus the common suite on Linux/NVIDIA. Measure repeated-prefix requests and concurrent streams with LewLM response caching disabled, memory bounds, and cold/warm startup. Run fake-server inventory/auth/error tests on other OSes; defer GPU execution explicitly.
 
+**Implementation status:** portable part completed on 2026-09-18 (digest-pinned `v0.5.19` recipe with every `launch_server` argument checked at the commit, `qwen25`/`xgrammar` recorded, torch.compile deliberately off, preflight preset, observable `usage.cached_tokens` for `--enable-cache-report`, fake-server inventory/auth/error tests, docs). The Linux/NVIDIA lane is deferred with exact commands in the [validation record](../validation/modernization-step-08.md); `sglang_local` stays `deferred` in the compatibility manifest until it passes.
+
 ## Step 09 — Tune non-MLX runtime latency without inflating middleware
 
 **Depends on:** 03–08; only tune engines with passing hardware evidence. **Touch:** `runtime/scheduler.py`, `runtime/request_coalescer.py`, `runtime/llamacpp/runtime.py`, `serving_profiles.py`, `benchmarking/`, `routing/measured_preferences.py`, telemetry.

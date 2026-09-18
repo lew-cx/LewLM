@@ -231,7 +231,7 @@ Backends differ in what they expose, so LewLM never silently drops a control. `m
 
 ### Streaming usage
 
-The final streaming chunk carries `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Earlier chunks have `usage: null`, since the totals are not knowable before the stream ends. `usage.measured` is `true` when the counts came from the model's own tokenizer and `false` when the backend exposed none and LewLM had to estimate.
+The final streaming chunk carries `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Earlier chunks have `usage: null`, since the totals are not knowable before the stream ends. `usage.measured` is `true` when the counts came from the model's own tokenizer and `false` when the backend exposed none and LewLM had to estimate. `usage.cached_tokens` is present only when the backend itself reported prompt tokens served from its prefix cache (OpenAI-style `prompt_tokens_details.cached_tokens`, e.g. SGLang with `--enable-cache-report` or vLLM with `--enable-prompt-tokens-details`); absent means unknown, never zero — LewLM does not infer cache hits.
 
 Abandoning a stream closes it deterministically: LewLM closes the source stream on the way out rather than waiting for garbage collection, so the backend learns the consumer is gone and stops generating.
 

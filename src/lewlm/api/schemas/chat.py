@@ -87,6 +87,14 @@ class CompletionUsage(BaseModel):
             "backend exposed no tokenizer and LewLM had to estimate."
         ),
     )
+    cached_tokens: int | None = Field(
+        default=None,
+        description=(
+            "Prompt tokens the backend reported as served from its own prefix cache "
+            "(OpenAI-style prompt_tokens_details.cached_tokens). Absent when the "
+            "backend exposes no such counter; LewLM never infers it."
+        ),
+    )
 
 
 class ChatCompletionRequest(BaseModel):

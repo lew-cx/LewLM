@@ -183,6 +183,8 @@ Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
 
 `vllm_local` names upstream vLLM's OpenAI-compatible server on Linux/NVIDIA; `vllm_mlx` is the separate profile for the Apple Silicon fork. Both map to the `vllm` provider, but every evidence surface (`profile` in endpoint snapshots, `engine_profile` in execution metadata, manifest `external_profile`) keeps them apart, and neither profile's recipe or validation result applies to the other. The pinned `vllm_local` recipe is `examples/backends/vllm/`, with `scripts/engine_preflight.py --recipe vllm` as the host check to run first; the profile is not validated until that recipe passes on Linux/NVIDIA.
 
+`sglang_local` names SGLang's OpenAI-compatible server on Linux/NVIDIA. SGLang guards every route except `/health*` and `/metrics*` with the key its `--api-key` was started with, so the endpoint's `api_key_env` must name that value; prefix-cache hits are reported through `usage.cached_tokens` only when the server runs with `--enable-cache-report`. The pinned recipe is `examples/backends/sglang/`, with `scripts/engine_preflight.py --recipe sglang` as the host check to run first; the profile is not validated until that recipe passes on Linux/NVIDIA.
+
 `tensorrt_llm_server` and `openvino_model_server` are bridge profiles for compatible local servers; `ollama_local` and `llamacpp_server` keep the generic OpenAI-compatible bridge contract explicit for local servers that present themselves through those loopback shapes. None of these profiles promote backend-native behavior to LewLM-owned packaged parity.
 
 `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` must point to a loopback-only local server such as

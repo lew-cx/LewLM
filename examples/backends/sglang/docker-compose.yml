@@ -1,0 +1,85 @@
+# SGLang behind LewLM -- single GPU, loopback only, pinned image.
+#
+# Operator-run. LewLM never starts, stops, or reconfigures this container.
+# The image digest below is lmsysorg/sglang:v0.5.19-cu130 (identical to the
+# bare v0.5.19 tag) as resolved on 2026-09-18: build commit
+# 0bcd822377da7b5718e674eaf9c870d349424dd1, CUDA 13.0.3. Every argument in
+# `command` exists at that commit (python/sglang/srt/server_args.py).
+#
+#   python scripts/engine_preflight.py --recipe sglang     # before pulling
+#   SGLANG_API_KEY=... docker compose -f examples/backends/sglang/docker-compose.yml up -d
+#
+# Then follow README.md to wire LewLM. LewLM must run on the host: the port is
+# published to host loopback only, which is what LewLM's endpoint rule requires.
+
+services:
+  sglang:
+    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    container_name: lewlm-sglang
+    gpus: all
+    ports:
+      # Host loopback only; LewLM refuses non-loopback endpoints by design.
+      - "127.0.0.1:30000:30000"
+    # SGLang's docs run with --ipc=host or --shm-size 32g for multi-GPU. A
+    # bounded tmpfs is enough for one small model on one GPU and keeps the
+    # namespace isolated; raise it before adding tensor parallelism.
+    shm_size: "8g"
+    ulimits:
+      memlock: -1
+      nofile: 1048576
+    healthcheck:
+      # /health is always allowed by SGLang's API-key middleware at this commit
+      # (paths starting with /health or /metrics), so no secret is needed here.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:30000/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${SGLANG_GPU:-0}
+      # Weights on their own volume; everything else the pinned stack caches
+      # (FlashInfer JIT kernels, inductor artifacts if ever enabled) lands under
+      # /root/.cache on the second volume. Record what appears there on the
+      # first real start; the recipe does not prescribe cache names it has
+      # not observed.
+      - HF_HOME=/cache/huggingface
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    volumes:
+      - ${SGLANG_HF_CACHE_DIR:-./cache/huggingface}:/cache/huggingface
+      - ${SGLANG_KERNEL_CACHE_DIR:-./cache/kernels}:/root/.cache
+    # The image's entrypoint is NVIDIA's shell wrapper; the server is launched
+    # explicitly. SGLang reads the inference key only from the command line at
+    # this commit, so it is visible in `ps` inside the container namespace.
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path=Qwen/Qwen2.5-0.5B-Instruct
+      # Immutable model snapshot (step-00 pin); never a moving branch.
+      - --revision=7ae557604adf67be50417f59c2c2f167def9a775
+      # The id LewLM discovers and routes by. Change it together with README.md.
+      - --served-model-name=qwen2.5-0.5b-instruct
+      - --host=0.0.0.0
+      - --port=30000
+      - --api-key=${SGLANG_API_KEY:?set SGLANG_API_KEY to the inference key LewLM will use}
+      - --dtype=bfloat16
+      - --random-seed=0
+      # Bounded context, memory, and concurrency for a small single-GPU
+      # validation run. --mem-fraction-static is the share of VRAM for weights
+      # + KV pool; SGLang's heuristic default would take most of the card.
+      - --context-length=8192
+      - --mem-fraction-static=0.30
+      - --max-running-requests=4
+      # Chunked-prefill size and CUDA-graph batch sizes stay at SGLang's
+      # defaults on purpose: the roadmap tunes them only from measured profiles
+      # (step 09). --enable-torch-compile is NOT set; upstream's own docs at
+      # this commit mark it out of maintenance.
+      # Tool calls: `qwen25` is the parser SGLang's tool-parser doc names for
+      # Qwen2.5. LewLM still capability-gates tools per model by probing.
+      - --tool-call-parser=qwen25
+      # Explicit grammar backend so the structured-output evidence names it.
+      - --grammar-backend=xgrammar
+      # Default log level (info) keeps the periodic "Decode batch.
+      # #running-req: N" line, which is how the acceptance run proves two
+      # requests overlapped upstream.
+    restart: unless-stopped

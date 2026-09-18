@@ -863,6 +863,7 @@ def _completion_usage(raw_usage: dict[str, int]) -> CompletionUsage:
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        cached_tokens=raw_usage.get("cached_tokens"),
     )
 
 

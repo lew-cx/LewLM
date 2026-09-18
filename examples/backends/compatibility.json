@@ -113,7 +113,7 @@
    "status": "deferred",
    "candidate": {
     "sources": {
-     "sgl-project/sglang": "1b78083b428a095d7b0599141b350ac7f09a2bf0"
+     "sgl-project/sglang": "0bcd822377da7b5718e674eaf9c870d349424dd1"
     },
     "model": {
      "repository": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -129,8 +129,8 @@
      "output_tokens": 64
     }
    },
-   "reason": "Linux/NVIDIA validation host unavailable; engine and compatible dependency stack not installed. BF16 model is a candidate, not yet validated by this engine.",
-   "next_step": "Follow modernization roadmap step 08; pin an isolated dependency lock or image digest and run the common real-engine suite before promotion."
+   "reason": "Linux/NVIDIA validation host unavailable on 2026-09-18. The recipe in examples/backends/sglang/ is complete and pinned (release v0.5.19 = commit 0bcd8223; image lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9, CUDA 13.0.3, torch 2.13.0, sglang-kernel 0.4.6.post1 prebuilt wheel; every launch_server argument checked against server_args.py at the commit; qwen25 tool parser and xgrammar grammar backend per upstream at that commit; torch.compile deliberately off), but nothing was executed. The BF16 model is a candidate, not yet validated by this engine.",
+   "next_step": "Run examples/backends/sglang/README.md on a Linux/NVIDIA host with an R580+ driver: scripts/engine_preflight.py --recipe sglang, docker compose up with the digest-pinned image, lewlm scan, scripts/backend_acceptance.py --endpoint-id sglang, scripts/bridge_prefix_benchmark.py at concurrency 1 and 2 (LewLM response caching untouched), the upstream-overlap observation from SGLang's 'Decode batch. #running-req' log line, cold start vs warm restart with both cache volumes mounted and the /root/.cache listing recorded, available_gpu_mem and nvidia-smi memory, then promote with the image digest as installation."
   }
  ]
 }

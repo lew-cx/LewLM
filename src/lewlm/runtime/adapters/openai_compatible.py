@@ -1067,18 +1067,11 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         output_text = _normalize_content_text(message.get("content"))
         if not output_text:
             output_text = _native_tool_calls_as_text(message.get("tool_calls"))
-        usage = response_payload.get("usage", {})
-        if not isinstance(usage, dict):
-            usage = {}
         return GenerateResponse(
             model_id=request.model_id,
             output_text=output_text,
             finish_reason=str(choices[0].get("finish_reason", "stop")),
-            usage={
-                key: int(value)
-                for key, value in usage.items()
-                if isinstance(key, str) and isinstance(value, int | float)
-            },
+            usage=_normalize_usage(response_payload.get("usage")),
         )
 
     def _require_remote_model_id(self, manifest: ModelManifest) -> str:
@@ -1857,12 +1850,25 @@ def _bridge_capability_guidance(capability: CapabilityName) -> tuple[str, ...]:
 
 
 def _normalize_usage(payload: Any) -> dict[str, int]:
+    """Flatten an OpenAI-style usage object to integer counters.
+
+    ``prompt_tokens_details.cached_tokens`` is the one nested field kept, as
+    ``cached_tokens``: it is the only prefix-cache hit counter a server can
+    expose through this contract (SGLang ``--enable-cache-report``, vLLM
+    ``--enable-prompt-tokens-details``). Absent means unknown, never zero.
+    """
+
     if not isinstance(payload, dict):
         return {}
     normalized: dict[str, int] = {}
     for key, value in payload.items():
-        if isinstance(key, str) and isinstance(value, int | float):
+        if isinstance(key, str) and isinstance(value, int | float) and not isinstance(value, bool):
             normalized[key] = int(value)
+    details = payload.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens")
+        if isinstance(cached, int | float) and not isinstance(cached, bool):
+            normalized["cached_tokens"] = int(cached)
     return normalized
 
 

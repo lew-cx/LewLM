@@ -238,6 +238,39 @@ each with its command in the record. Rollback: revert the step commit. Next
 eligible step: 08 (SGLang, portable part); 09–10 remain available on this
 host.
 
+## Step 08 — portable part complete; Linux/NVIDIA lane deferred
+
+Commit: this step's commit, immediately after step 07 commit `f2b9ed3`.
+Full record: [modernization-step-08.md](modernization-step-08.md).
+
+Behavior implemented: recipe `examples/backends/sglang/` with the image
+pinned by digest (release `v0.5.19` = commit `0bcd8223`, CUDA 13.0.3),
+every `launch_server` argument checked at that commit, `/health`-based
+healthcheck matching SGLang's auth exemptions, `qwen25` tool parser and
+`xgrammar` grammar backend recorded, tuning knobs left at defaults and
+`--enable-torch-compile` deliberately off, separate weight/kernel-cache
+volumes, and the proof/promotion procedure; bridge keeps
+`prompt_tokens_details.cached_tokens` as `usage.cached_tokens` (additive
+optional field on `CompletionUsage`, absent when the backend reports no
+counter); operator doc and reference updates.
+
+Compatibility: additive. Old responses are unchanged; `cached_tokens` is
+`null`/absent unless the backend supplied it.
+
+Commands run and results: `tests/unit/test_sglang_local_profile.py`
+4 passed; profile suites 14 passed; adapter/transport/host-integration/
+client/cancellation/library/contract set 244 passed; integration-bundle
+snapshot unchanged (same pre-existing failure before/after); manifest
+validates with `sglang_local` deferred.
+
+Real-engine evidence: none claimed. Deferred: preflight pass, kernel support
+for the host SM, serve + common suite, repeated-prefix measurement, upstream
+overlap from SGLang's log, cold vs warm restart with cache listing, memory
+bound, coexistence, CUDA 12/ROCm/Ascend/multi-GPU — each with its command
+in the record. Rollback: revert the step commit. Next eligible step: 09
+(latency tuning; only engines with passing hardware evidence — on this host
+that is oMLX and the native paths) or 10 (Chap contract).
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

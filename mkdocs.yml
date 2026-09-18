@@ -54,4 +54,5 @@ nav:
           - oMLX: operations/backends/omlx.md
           - ExLlamaV3 via TabbyAPI: operations/backends/exllamav3-tabby.md
           - vLLM: operations/backends/vllm.md
+          - SGLang: operations/backends/sglang.md
       - Troubleshooting: operations/troubleshooting.md
