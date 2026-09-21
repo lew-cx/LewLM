@@ -188,7 +188,15 @@ class AudioSpeechCreateRequest(BaseModel):
     model: str | None = None
     input: str
     voice: str | None = None
-    format: str = "wav"
+    format: str = Field(
+        default="wav",
+        description=(
+            "Encoding of the returned audio. The formats a model can return on this host are "
+            "`formats[]` on `GET /v1/audio/voices?model=`; `wav` is always available. A format a "
+            "runtime has said it cannot produce is refused as `invalid_request` before synthesis."
+        ),
+        json_schema_extra={"examples": ["wav", "mp3", "flac", "ogg"]},
+    )
 
 
 class AudioSpeechCreateResponse(BaseModel):

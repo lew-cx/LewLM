@@ -1783,8 +1783,62 @@ class AudioVoice(BaseModel):
     source_path: str | None = None
 
 
+#: Media types for the speech encodings LewLM knows how to name. A runtime
+#: reports which of these it can actually return; the map itself is not a
+#: support claim.
+SPEECH_FORMAT_MEDIA_TYPES: dict[str, str] = {
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+}
+DEFAULT_SPEECH_FORMAT = "wav"
+
+
+def speech_media_type(audio_format: str, *, default: str = "audio/wav") -> str:
+    """Media type for a speech `format` name, case-insensitively."""
+
+    return SPEECH_FORMAT_MEDIA_TYPES.get(audio_format.casefold(), default)
+
+
+class AudioSpeechFormat(BaseModel):
+    """One encoding a runtime can return synthesized speech in.
+
+    `verified` is true when LewLM produces the encoding itself or has observed
+    this runtime return it, so a listed verified format is a guarantee. False
+    means LewLM forwards the name to the backend, which decides: the format is
+    reachable but not vouched for.
+    """
+
+    format: str
+    media_type: str
+    verified: bool = True
+
+
+class AudioSpeechFormatSupport(BaseModel):
+    """What a runtime reports about its speech encodings for one model."""
+
+    formats: list[AudioSpeechFormat] = Field(default_factory=list)
+    # False when the runtime forwards `format` to a backend that may accept
+    # names beyond the ones listed, so an absent format is not a refusal there.
+    exhaustive: bool = True
+
+    def accepts(self, audio_format: str) -> bool:
+        normalized = audio_format.casefold()
+        return any(item.format == normalized for item in self.formats)
+
+
+def wav_speech_format_support() -> AudioSpeechFormatSupport:
+    """The one encoding every LewLM speech path can produce."""
+
+    return AudioSpeechFormatSupport(
+        formats=[AudioSpeechFormat(format="wav", media_type="audio/wav", verified=True)],
+        exhaustive=True,
+    )
+
+
 class AudioVoiceInventory(BaseModel):
-    """Voices available for one model on this host."""
+    """Voices and encodings available for one model on this host."""
 
     model_id: str
     runtime_name: str | None = None
@@ -1794,6 +1848,24 @@ class AudioVoiceInventory(BaseModel):
     # guarantee while an absent one is not a refusal.
     enumerable: bool = True
     reason: str | None = None
+    formats: list[AudioSpeechFormat] = Field(
+        default_factory=list,
+        description=(
+            "Encodings `POST /v1/audio/speech` can return for this model on this host. A `verified` "
+            "format is a guarantee; an unverified one is forwarded to the backend, which decides."
+        ),
+    )
+    formats_exhaustive: bool = Field(
+        default=True,
+        description=(
+            "True when `formats` is the complete set and any other `format` is refused before "
+            "synthesis. False when the runtime forwards the name to a backend that may accept more."
+        ),
+    )
+    default_format: str = Field(
+        default=DEFAULT_SPEECH_FORMAT,
+        description="The `format` a speech request gets when it names none.",
+    )
 
 
 @runtime_checkable

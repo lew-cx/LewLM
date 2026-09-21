@@ -11,6 +11,7 @@ import platform
 from typing import Any
 
 from lewlm.core.contracts import (
+    AudioSpeechFormatSupport,
     AudioSpeechRequest,
     AudioSpeechResponse,
     build_portable_performance_core_evidence,
@@ -31,6 +32,7 @@ from lewlm.core.contracts import (
     RerankRequest,
     RerankResponse,
     RuntimeCandidateReport,
+    wav_speech_format_support,
     RuntimeAffinity,
     RuntimeEstimate,
     RuntimeReadinessState,
@@ -598,6 +600,17 @@ class ManagedAudioRuntime(ManagedRuntime):
         voices: dict[str, AudioVoice] = {}
         collect_voice_files(voices, Path(manifest.source_path) / "voices", source=AudioVoiceSource.BUNDLE)
         return sorted(voices.values(), key=lambda voice: voice.voice_id)
+
+    def speech_formats(self, manifest: ModelManifest) -> AudioSpeechFormatSupport:
+        """Report the encodings this runtime can return speech in for `manifest`.
+
+        WAV is the one encoding every LewLM speech path produces, so it is the
+        base answer; a runtime that encodes more, or forwards the name to a
+        backend that decides, overrides this. Must not load the model or probe
+        the backend: it is read on UI refreshes.
+        """
+
+        return wav_speech_format_support()
 
     async def transcribe_audio(self, request: AudioTranscriptionRequest) -> AudioTranscriptionResponse:
         self._ensure_available()

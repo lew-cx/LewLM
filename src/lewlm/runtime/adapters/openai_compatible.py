@@ -23,6 +23,8 @@ from lewlm.core.contracts import (
     utc_now,
     BridgeProfile,
     RuntimeProvider,
+    AudioSpeechFormat,
+    AudioSpeechFormatSupport,
     AudioSpeechRequest,
     AudioSpeechResponse,
     AudioTranscriptionRequest,
@@ -1078,6 +1080,25 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             output_text=output_text,
             finish_reason=str(choices[0].get("finish_reason", "stop")),
             usage=_normalize_usage(response_payload.get("usage")),
+        )
+
+    def speech_formats(self, manifest: ModelManifest) -> AudioSpeechFormatSupport:
+        """The upstream decides: `format` is forwarded as `response_format`.
+
+        WAV is verified once the speech probe has returned audio for this
+        model (read from the probe cache; never probes here). Nothing else is
+        probed and the list is open, so a format not listed is forwarded, not
+        refused.
+        """
+
+        remote_model_id = self._resolve_remote_model_id(manifest)
+        verified = bool(
+            remote_model_id is not None
+            and self._model_capability_support_cache.get((remote_model_id, CapabilityName.AUDIO_SPEECH), False),
+        )
+        return AudioSpeechFormatSupport(
+            formats=[AudioSpeechFormat(format="wav", media_type="audio/wav", verified=verified)],
+            exhaustive=False,
         )
 
     def _require_remote_model_id(self, manifest: ModelManifest) -> str:

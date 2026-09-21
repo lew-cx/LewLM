@@ -1189,6 +1189,32 @@ def test_audio_voices_endpoint_lists_resolvable_voice_packs(
     assert [voice["voice_id"] for voice in payload["voices"]] == ["af_heart"]
     assert payload["voices"][0]["source"] == "bundle"
     assert payload["enumerable"] is True
+    # The encodings sit beside the voices, so one request fills a picker for
+    # both without a hand-written list on the client.
+    assert payload["formats"] == [{"format": "wav", "media_type": "audio/wav", "verified": True}]
+    assert payload["formats_exhaustive"] is True
+    assert payload["default_format"] == "wav"
+
+
+def test_audio_speech_refuses_a_format_the_runtime_cannot_produce_before_synthesis(
+    app_with_fake_multimodal_runtime,
+) -> None:
+    """A runtime whose format list is closed refuses an unlisted name up front, naming what it accepts."""
+
+    with TestClient(app_with_fake_multimodal_runtime, raise_server_exceptions=False) as client:
+        client.post("/v1/models/scan", json={})
+        refused = client.post("/v1/audio/speech", json={"input": "Hello", "format": "mp3"})
+        served = client.post("/v1/audio/speech", json={"input": "Hello", "format": "WAV"})
+
+    assert refused.status_code == 422, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert error["details"]["field"] == "format"
+    assert error["details"]["requested_format"] == "mp3"
+    assert error["details"]["accepted_formats"] == ["wav"]
+    # Case is not a different format.
+    assert served.status_code == 200, served.text
+    assert served.json()["media_type"] == "audio/wav"
 
 
 def test_audio_transcription_endpoint_emits_lifecycle_events(

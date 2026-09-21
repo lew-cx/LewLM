@@ -899,8 +899,21 @@ def test_external_adapter_runtime_supports_audio_transcription_and_speech(tmp_pa
         lambda method, path, payload: (sample_wav, "audio/wav"),
     )
 
+    # Before any probe the bridge vouches for nothing: `wav` is listed because
+    # it is what LewLM sends, but unverified, and the list is open because the
+    # upstream decides what `response_format` it accepts.
+    before_probe = runtime.speech_formats(manifest)
+    assert [(item.format, item.verified) for item in before_probe.formats] == [("wav", False)]
+    assert before_probe.exhaustive is False
+
     assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is True
     assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) is True
+
+    # The speech probe returned audio for `wav`, so that one is now observed;
+    # nothing else was probed and the list stays open.
+    after_probe = runtime.speech_formats(manifest)
+    assert [(item.format, item.verified) for item in after_probe.formats] == [("wav", True)]
+    assert after_probe.exhaustive is False
 
     asyncio.run(runtime.load_model(manifest))
     transcription = asyncio.run(

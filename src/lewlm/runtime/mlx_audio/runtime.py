@@ -18,6 +18,9 @@ import wave
 
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.contracts import (
+    SPEECH_FORMAT_MEDIA_TYPES,
+    AudioSpeechFormat,
+    AudioSpeechFormatSupport,
     AudioSpeechRequest,
     AudioSpeechResponse,
     AudioTranscriptionRequest,
@@ -29,6 +32,8 @@ from lewlm.core.contracts import (
     ModelFormat,
     ModelManifest,
     RuntimeAffinity,
+    speech_media_type,
+    wav_speech_format_support,
 )
 from lewlm.core.errors import NotImplementedLewLMError
 from lewlm.runtime.base import ManagedAudioRuntime, collect_voice_files
@@ -334,6 +339,25 @@ class MLXAudioRuntime(ManagedAudioRuntime):
         for snapshot_path in self._backend_voice_directories(manifest):
             collect_voice_files(voices, snapshot_path, source=AudioVoiceSource.BACKEND_CACHE)
         return sorted(voices.values(), key=lambda voice: voice.voice_id)
+
+    def speech_formats(self, manifest: ModelManifest) -> AudioSpeechFormatSupport:
+        """WAV always; the other encodings only through mlx-audio's own helper.
+
+        Without `mlx_audio.tts.generate` LewLM encodes the model's samples to
+        WAV itself and refuses anything else, so listing more would be a lie.
+        With it, the helper writes the file and LewLM has not probed each
+        encoder, so those formats are reachable but unverified. The list is
+        exhaustive either way: no other name reaches the backend.
+        """
+
+        support = wav_speech_format_support()
+        if _import_optional_module("mlx_audio.tts.generate") is not None:
+            support.formats.extend(
+                AudioSpeechFormat(format=name, media_type=media_type, verified=False)
+                for name, media_type in SPEECH_FORMAT_MEDIA_TYPES.items()
+                if name != "wav"
+            )
+        return support
 
     def _backend_voice_directories(self, manifest: ModelManifest) -> list[Path]:
         cache_root = _huggingface_cache_root()
@@ -867,11 +891,4 @@ def _import_optional_module(name: str) -> Any | None:
 
 
 def _media_type_for_format(audio_format: str) -> str:
-    normalized = audio_format.casefold()
-    if normalized == "mp3":
-        return "audio/mpeg"
-    if normalized == "flac":
-        return "audio/flac"
-    if normalized == "ogg":
-        return "audio/ogg"
-    return "audio/wav"
+    return speech_media_type(audio_format)

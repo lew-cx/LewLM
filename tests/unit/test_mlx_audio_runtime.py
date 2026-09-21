@@ -321,6 +321,44 @@ def test_mlx_audio_runtime_lists_voice_packs_from_the_bundle_and_backend_cache(t
     assert "kokoro-v1_0" not in {voice.voice_id for voice in voices}
 
 
+def test_mlx_audio_runtime_lists_only_wav_without_the_mlx_audio_encoder(monkeypatch) -> None:
+    """Without `mlx_audio.tts.generate` LewLM encodes WAV itself and refuses the rest."""
+
+    monkeypatch.setattr("lewlm.runtime.mlx_audio.runtime._import_optional_module", lambda name: None)
+
+    support = MLXAudioRuntime().speech_formats(_speech_manifest())
+
+    assert [(item.format, item.media_type, item.verified) for item in support.formats] == [("wav", "audio/wav", True)]
+    assert support.exhaustive is True
+    assert support.accepts("WAV") and not support.accepts("mp3")
+
+
+def test_mlx_audio_runtime_lists_the_helper_encodings_as_unverified(monkeypatch) -> None:
+    """With the helper the other encodings are reachable, but LewLM has not probed each encoder."""
+
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_audio.runtime._import_optional_module",
+        lambda name: SimpleNamespace(generate_audio=lambda **_: None) if name == "mlx_audio.tts.generate" else None,
+    )
+
+    support = MLXAudioRuntime().speech_formats(_speech_manifest())
+
+    assert [(item.format, item.verified) for item in support.formats] == [
+        ("wav", True),
+        ("mp3", False),
+        ("flac", False),
+        ("ogg", False),
+    ]
+    assert {item.format: item.media_type for item in support.formats} == {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "flac": "audio/flac",
+        "ogg": "audio/ogg",
+    }
+    # No other name reaches the backend, so the list is exhaustive either way.
+    assert support.exhaustive is True
+
+
 def _manifest() -> ModelManifest:
     return ModelManifest(
         model_id="audio-model",

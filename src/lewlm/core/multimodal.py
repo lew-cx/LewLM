@@ -14,6 +14,8 @@ from uuid import uuid4
 import wave
 
 from lewlm.core.contracts import (
+    AudioSpeechFormat,
+    AudioSpeechFormatSupport,
     AudioSpeechRequest,
     AudioSpeechResponse,
     AudioTranscriptionRequest,
@@ -30,7 +32,7 @@ from lewlm.core.contracts import (
     RuntimeContract,
     utc_now,
 )
-from lewlm.core.errors import BackendContractError, ConfigurationError
+from lewlm.core.errors import BackendContractError, ConfigurationError, InvalidRequestError
 from lewlm.core.execution_metadata import (
     ExecutionMetadata,
     ExecutionTimingMetadata,
@@ -1339,6 +1341,7 @@ class MultimodalOrchestrator:
         """
 
         manifest, runtime, _ = self.model_router.route_audio_speech(model_id)
+        formats = _speech_format_support(runtime, manifest)
         speech_voices = getattr(runtime, "speech_voices", None)
         if not callable(speech_voices):
             return AudioVoiceInventory(
@@ -1346,6 +1349,8 @@ class MultimodalOrchestrator:
                 runtime_name=runtime.name,
                 enumerable=False,
                 reason=f"`{runtime.name}` does not expose its voice inventory to LewLM.",
+                formats=formats.formats,
+                formats_exhaustive=formats.exhaustive,
             )
         voices = list(speech_voices(manifest))
         return AudioVoiceInventory(
@@ -1353,6 +1358,8 @@ class MultimodalOrchestrator:
             runtime_name=runtime.name,
             voices=voices,
             enumerable=True,
+            formats=formats.formats,
+            formats_exhaustive=formats.exhaustive,
             reason=(
                 f"{len(voices)} voice pack(s) are resolvable on this host."
                 if voices
@@ -1372,6 +1379,7 @@ class MultimodalOrchestrator:
         audio_format: str,
     ) -> AudioSpeechExecution:
         manifest, runtime, routing = self.model_router.route_audio_speech(model_id)
+        _refuse_unlisted_speech_format(runtime, manifest, audio_format)
         request_id = str(uuid4())
         self._capture_request_identity(request_id)
         created_at = int(utc_now().timestamp())
@@ -2387,3 +2395,45 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
         return 0.0
     dot_product = sum(left_value * right_value for left_value, right_value in zip(left, right, strict=True))
     return dot_product / (left_norm * right_norm)
+
+
+def _speech_format_support(runtime: RuntimeContract, manifest: ModelManifest) -> AudioSpeechFormatSupport:
+    """What the runtime says it can encode.
+
+    A runtime with no opinion gets the default `wav` listed as unverified and an
+    open list: LewLM knows nothing about it, so it must neither vouch for a
+    format nor refuse one.
+    """
+
+    speech_formats = getattr(runtime, "speech_formats", None)
+    if not callable(speech_formats):
+        return AudioSpeechFormatSupport(
+            formats=[AudioSpeechFormat(format="wav", media_type="audio/wav", verified=False)],
+            exhaustive=False,
+        )
+    return speech_formats(manifest)
+
+
+def _refuse_unlisted_speech_format(runtime: RuntimeContract, manifest: ModelManifest, audio_format: str) -> None:
+    """Refuse a `format` the runtime has said it cannot produce, before any model is loaded.
+
+    Only a runtime whose list is exhaustive can refuse: a bridge that forwards
+    the name to its backend does not know, and the backend's answer stands.
+    """
+
+    support = _speech_format_support(runtime, manifest)
+    if not support.exhaustive or support.accepts(audio_format):
+        return
+    accepted = [item.format for item in support.formats]
+    raise InvalidRequestError(
+        f"`{runtime.name}` cannot return speech as `{audio_format}` for `{manifest.model_id}`; "
+        f"accepted formats: {', '.join(accepted)}.",
+        details={
+            "field": "format",
+            "requested_format": audio_format,
+            "accepted_formats": accepted,
+            "model_id": manifest.model_id,
+            "runtime": runtime.name,
+        },
+    )
+
