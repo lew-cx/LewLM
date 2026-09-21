@@ -1,0 +1,134 @@
+{
+  "format": "lewlm-rollout-rollback-evidence-v1",
+  "steps": [
+    {
+      "step": "omlx_start",
+      "ready_seconds": 5.69,
+      "pid": 78736
+    },
+    {
+      "step": "scan_enabled",
+      "discovered": 12,
+      "omlx_model_id": "qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48",
+      "source": "external://omlx/Qwen2.5-0.5B-Instruct-4bit",
+      "format": "unknown"
+    },
+    {
+      "step": "doctor_enabled",
+      "external_engines": {
+        "engines": [
+          {
+            "endpoint_id": "omlx",
+            "profile": "omlx",
+            "enabled": true,
+            "base_url": "http://127.0.0.1:8000/v1",
+            "credential_env": "OMLX_API_KEY",
+            "recipe": "examples/backends/omlx/",
+            "recipe_status": null,
+            "registered_model_count": 1,
+            "reachable": true,
+            "advertised_model_count": 1,
+            "state": "ready",
+            "error": null,
+            "next_command": "lewlm serve   (then chat with the registered model id from `lewlm list-models`)"
+          }
+        ],
+        "recipes": [],
+        "next_steps": [
+          "every configured engine is reachable and registered \u2014 `lewlm serve`"
+        ],
+        "rollback": "to disable an engine: set its entry's \"enabled\": false (or remove it) in LEWLM_EXTERNAL_ENDPOINTS and restart; other models, caches, and Ollama state are untouched and the disabled endpoint's advertised entries leave the registry at the next scan; see docs/operations/backends/rollout-and-rollback.md"
+      },
+      "next_steps": null
+    },
+    {
+      "step": "lewlm_serve",
+      "health_seconds": 0.66
+    },
+    {
+      "step": "chat_via_omlx",
+      "status": 200,
+      "seconds": 1.7,
+      "text": "Ok, go ahead. What would you",
+      "endpoint_id": "omlx",
+      "engine_profile": "omlx",
+      "fallback": null
+    },
+    {
+      "step": "sigkill_mid_stream",
+      "killed_after_frames": 1,
+      "total_frames": 3,
+      "content_frames": 1,
+      "ends_with_done": true,
+      "finish_reason": "error",
+      "error_code": "runtime_unavailable",
+      "partial_output": true,
+      "model_in_terminal": "qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48",
+      "seconds": 0.21
+    },
+    {
+      "step": "engine_down",
+      "scan_notes": [
+        "Endpoint `omlx` could not be read (The configured external accelerator endpoint `http://127.0.0.1:8000/v1/models` refused the connection.); keeping 1 previously registered model(s) as stale."
+      ],
+      "health_status": "ok",
+      "engine_state": "stale",
+      "model_still_listed": true,
+      "chat_status": 200,
+      "seconds": 1.55,
+      "served_by": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+      "runtime": "llamacpp",
+      "fallback_from": "qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48",
+      "fallback_reason": "Requested model `qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48` on endpoint `omlx` had no ready runtime; substituted the oper",
+      "error": null
+    },
+    {
+      "step": "engine_restart",
+      "ready_seconds": 2.48,
+      "engine_state": "advertised",
+      "chat_status": 200,
+      "endpoint_id": "omlx",
+      "fallback": null
+    },
+    {
+      "step": "disabled",
+      "scan_removed": 1,
+      "omlx_listed": false,
+      "model_count": 11,
+      "omlx_chat_status": 404,
+      "omlx_chat_error": "model_not_found",
+      "fallback_chat_status": 200,
+      "fallback_text": "ok",
+      "data_dir_entries_before": 16,
+      "data_dir_entries_after": 16,
+      "doctor_external_engines": {
+        "engines": [
+          {
+            "endpoint_id": "omlx",
+            "profile": "omlx",
+            "enabled": false,
+            "base_url": "http://127.0.0.1:8000/v1",
+            "credential_env": "OMLX_API_KEY",
+            "recipe": "examples/backends/omlx/",
+            "recipe_status": null,
+            "registered_model_count": 0,
+            "reachable": null,
+            "advertised_model_count": 0,
+            "state": "disabled",
+            "next_command": "set \"enabled\": true for endpoint `omlx` in LEWLM_EXTERNAL_ENDPOINTS and restart, or remove the entry to roll it back"
+          }
+        ],
+        "recipes": [],
+        "next_steps": [
+          "endpoint `omlx` is disabled (rolled back): set \"enabled\": true for endpoint `omlx` in LEWLM_EXTERNAL_ENDPOINTS and restart, or remove the entry to roll it back"
+        ],
+        "rollback": "to disable an engine: set its entry's \"enabled\": false (or remove it) in LEWLM_EXTERNAL_ENDPOINTS and restart; other models, caches, and Ollama state are untouched and the disabled endpoint's advertised entries leave the registry at the next scan; see docs/operations/backends/rollout-and-rollback.md"
+      },
+      "doctor_next_steps": null
+    }
+  ],
+  "host": "Apple M2 Max, macOS Darwin 25.2.0",
+  "engine": "oMLX b45fb7e (omlx 0.7.0.dev3, mlx 0.32.2) re-installed from examples/backends/omlx/requirements.lock.txt in 87.4 s; model mlx-community/Qwen2.5-0.5B-Instruct-4bit @ a5339a4; started with examples/backends/omlx/run-omlx.sh",
+  "lewlm": "the llama.cpp-only quickstart venv (lean + llamacpp_runtime); fallback alias target gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667 on llamacpp",
+  "result": "passed"
+}

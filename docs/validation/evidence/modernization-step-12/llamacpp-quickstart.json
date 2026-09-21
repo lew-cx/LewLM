@@ -1,0 +1,86 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "quickstart": "llamacpp_only",
+  "host": "Apple M2 Max, macOS Darwin 25.2.0",
+  "python": "3.11 (/opt/homebrew/bin/python3.11)",
+  "lewlm_install": {
+    "command": "python3.11 -m venv llamacpp-venv && llamacpp-venv/bin/python -m pip install \"lewlm[llamacpp_runtime] @ file:///Users/lew/LewLM\"",
+    "wall_seconds": 50.0,
+    "llama_cpp_python": "0.3.35, built from the PyPI sdist on this host (no macOS wheel on PyPI); Metal enabled by llama.cpp's Apple default",
+    "built_wheel": "llama_cpp_python-0.3.35-py3-none-macosx_26_0_arm64.whl",
+    "package_count": 30,
+    "packages": [
+      "annotated-doc",
+      "annotated-types",
+      "anyio",
+      "certifi",
+      "cffi",
+      "click",
+      "cryptography",
+      "diskcache",
+      "fastapi",
+      "h11",
+      "httpcore",
+      "httpx",
+      "idna",
+      "jinja2",
+      "lewlm",
+      "llama_cpp_python",
+      "markupsafe",
+      "numpy",
+      "pip",
+      "pycparser",
+      "pydantic",
+      "pydantic-settings",
+      "pydantic_core",
+      "python-dotenv",
+      "python-multipart",
+      "setuptools",
+      "starlette",
+      "typing-inspection",
+      "typing_extensions",
+      "uvicorn"
+    ],
+    "engine_or_conversion_packages_present": []
+  },
+  "model": "Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf (5.0 GB) already in ~/.lewlm/models; LEWLM_MODELS_DIR pointed at that folder read-only, LEWLM_DATA_DIR isolated",
+  "scan": {
+    "wall_seconds": 0.5,
+    "discovered": 11,
+    "gguf_runnable": [
+      "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+      "gemma-4-e4b-hauhau-agg-q8-k-p-6f1830f2f39a"
+    ],
+    "note": "a symlinked model directory inside the models root is not scanned (os.walk without followlinks); the real folder was used"
+  },
+  "doctor_active_profile_ids": [
+    "core_only",
+    "gguf_fallback_backend"
+  ],
+  "serve_to_health_seconds": 0.63,
+  "health": {
+    "status": "ok",
+    "chat_ready": true,
+    "runtimes": [
+      "llamacpp"
+    ]
+  },
+  "first_chat": {
+    "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+    "wall_seconds_including_load": 3.3,
+    "status": 200,
+    "text": "ok",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 14,
+      "completion_tokens": 1,
+      "total_tokens": 15,
+      "measured": true,
+      "cached_tokens": null
+    },
+    "runtime": "llamacpp"
+  },
+  "warm_chat_seconds": 0.2,
+  "backend_evidence": "ggml_metal_device_init: GPU name: MTL0 (Apple M2 Max) in the serve log",
+  "result": "passed"
+}

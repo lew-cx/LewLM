@@ -379,12 +379,18 @@ sequence over HTTP); clean lean install 6.4 s, 25 packages, no engine or
 conversion packages, doctor 0.96 s; adapter/inventory/endpoint/routing/
 profile/latency/Chap/CLI suites 163 passed.
 
-Real-engine evidence: none new. Deferred: llama.cpp-only and Ollama-only
-clean-environment quickstarts, the old full/conversion path in a clean venv
-(container form covered by CI), enable/stop/fallback on a real engine, and
-every hardware lane except Apple Silicon; Chap UI pending. Rollback: revert
-the step commit. The roadmap's implementation is complete; hardware lanes
-promote recipes independently as they pass.
+Real-engine evidence: none new at the step commit. On 2026-09-21 the
+llama.cpp-only and Ollama-only clean-environment quickstarts passed on this
+host, and the enable → serve → SIGKILL mid-stream → alias → restart → disable
+sequence was run for real against oMLX `b45fb7e` with llama.cpp as the alias
+(evidence and numbers in the step-12 record). Running the Ollama quickstart
+found that `GET /v1/health` generated on the bridge to decide readiness,
+loading every Ollama model first; fixed in `a12d23d` (0.82 s to healthy, one
+`GET /v1/models` upstream). Still deferred: the old full/conversion path in a
+clean venv (container form covered by CI) and every hardware lane except
+Apple Silicon; Chap UI pending. Rollback: revert the step commit. The
+roadmap's implementation is complete; hardware lanes promote recipes
+independently as they pass.
 
 ## Implementation handoff
 

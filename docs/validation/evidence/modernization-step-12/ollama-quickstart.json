@@ -1,0 +1,95 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "quickstart": "ollama_only",
+  "host": "Apple M2 Max, macOS Darwin 25.2.0",
+  "python": "3.11 (/opt/homebrew/bin/python3.11)",
+  "engine": "ollama 0.33.2 (Homebrew), daemon started by hand with `ollama serve`; model `llama3:latest` (365c0bd3c000, 4.7 GB, Q4_0), already pulled",
+  "lewlm_install": {
+    "command": "python3.11 -m venv ollama-venv && ollama-venv/bin/python -m pip install /Users/lew/LewLM",
+    "wall_seconds": 5.6,
+    "package_count": 25,
+    "packages": [
+      "annotated-doc",
+      "annotated-types",
+      "anyio",
+      "certifi",
+      "cffi",
+      "click",
+      "cryptography",
+      "fastapi",
+      "h11",
+      "httpcore",
+      "httpx",
+      "idna",
+      "lewlm",
+      "pip",
+      "pycparser",
+      "pydantic",
+      "pydantic-settings",
+      "pydantic_core",
+      "python-dotenv",
+      "python-multipart",
+      "setuptools",
+      "starlette",
+      "typing-inspection",
+      "typing_extensions",
+      "uvicorn"
+    ],
+    "engine_or_conversion_packages_present": []
+  },
+  "configuration": "as docs/guides/models-and-routing.md: LEWLM_EXTERNAL_ACCELERATOR_ENABLED=true, _PROFILE=ollama_local, _BASE_URL=http://127.0.0.1:11434, _TIMEOUT_SECONDS=90, LEWLM_OLLAMA_DISCOVERY_ENABLED=true; LEWLM_DATA_DIR isolated in a scratch directory",
+  "scan": {
+    "wall_seconds": 0.9,
+    "discovered": 10,
+    "model_ids": [
+      "gemma4-12b-4eb23ef187e2",
+      "llama3-1-8b-46e0c10c039e",
+      "llama3-1-latest-46e0c10c039e",
+      "llama3-latest-365c0bd3c000",
+      "nomic-embed-text-latest-0a109f422b47",
+      "qwen2-5vl-latest-5ced39dfa4ba",
+      "qwen3-5-35b-a3b-uncensored-hauhaucs-aggressive-iq2-m-latest-d1554a5bef2e",
+      "qwen3-5-35b-a3b-uncensored-hauhaucs-aggressive-q4-k-m-latest-7ec07d3bb1a9",
+      "qwen3-5-35b-a3b-uncensored-hauhaucs-aggressive-q8-0-latest-aecdfdf1b64c",
+      "wizardlm-uncensored-13b-886a369d74fc"
+    ]
+  },
+  "serve_to_health_seconds": {
+    "before_fix_cold_daemon": 21.73,
+    "before_fix_warm_daemon": 8.27,
+    "after_fix_cold_daemon": 0.82,
+    "note": "before a12d23d, GET /v1/health sent a vision chat per multimodal model and an embedding to nomic, making Ollama load each model first; after it, the daemon received one GET /v1/models and loaded nothing"
+  },
+  "models_route_seconds_after_fix": 0.019,
+  "chat": {
+    "model_id": "llama3-latest-365c0bd3c000",
+    "wall_seconds": 2.77,
+    "status": 200,
+    "text": "ok",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "measured": true,
+      "cached_tokens": null
+    },
+    "metadata_model": {
+      "requested_model_id": "llama3-latest-365c0bd3c000",
+      "resolved_model_id": "llama3-latest-365c0bd3c000",
+      "runtime_name": "local_external_adapter",
+      "runtime_affinity": "external_accelerator",
+      "endpoint_id": "legacy-default",
+      "engine_profile": "ollama_local",
+      "execution_locality": "host_local"
+    }
+  },
+  "embeddings_first_use_after_fix": {
+    "model_id": "nomic-embed-text-latest-0a109f422b47",
+    "first_request_seconds": 0.34,
+    "dims": 768,
+    "second_request_seconds": 0.04,
+    "note": "the first request runs the capability probe then the request; the second is answered from the observation"
+  },
+  "result": "passed"
+}
