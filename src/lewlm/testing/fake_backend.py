@@ -97,7 +97,12 @@ class FakeOpenAIEngine:
         self.max_model_len = max_model_len
         self.requests: list[dict[str, Any]] = []
         self.disconnects = 0
+        #: Set to make every in-flight stream close without a terminal chunk on
+        #: its next frame (a timing-based kill, for a live client).
         self.die_mid_stream = threading.Event()
+        #: When not None, a stream closes after emitting this many frames (a
+        #: deterministic kill, for in-process test clients that batch reads).
+        self.die_after_frames: int | None = None
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._port: int | None = None
@@ -143,6 +148,10 @@ class FakeOpenAIEngine:
                 # sockets: drop the connection so the client sees a transport error.
                 if engine._server is None:
                     self.close_connection = True
+                    try:
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
                     self.connection.close()
                     return False
                 return True
@@ -186,12 +195,21 @@ class FakeOpenAIEngine:
                     self.wfile.flush()
 
                 try:
+                    emitted = 0
                     for frame in engine._stream_frames(reply):
-                        if engine.die_mid_stream.is_set():
-                            # Simulate the engine process dying: close without a terminal chunk.
+                        if engine.die_mid_stream.is_set() or (engine.die_after_frames is not None and emitted >= engine.die_after_frames):
+                            # Simulate the engine process dying: shut the socket down so the
+                            # client sees EOF/RST now, not at its read timeout, and do not
+                            # wait for another keep-alive request on it.
+                            self.close_connection = True
+                            try:
+                                self.connection.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
                             self.connection.close()
                             return
                         emit(json.dumps(frame))
+                        emitted += 1
                         time.sleep(engine.stream_delay_seconds)
                     emit("[DONE]")
                     self.wfile.write(b"0\r\n\r\n")

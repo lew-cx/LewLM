@@ -1134,6 +1134,18 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             and not self._discovery_cache_is_stale_failure()
             and not self._discovery_cache_expired()
         ):
+            if self._discovery_error is not None and self._inventory_stale:
+                # The last read failed and the retry window has not passed. The
+                # stale list stays for the registry (an unreachable engine is not
+                # evidence its models were deleted), but it is not a routing
+                # candidate: routing must see the outage before submitting, so
+                # an explicit fallback alias can apply and the caller gets a 503
+                # naming the endpoint rather than a transport failure later. A
+                # never-successful read keeps returning its empty list instead.
+                raise RuntimeUnavailableError(
+                    self._discovery_error,
+                    details={"runtime": self.name, "endpoint_id": self.endpoint.endpoint_id, "inventory_state": self.inventory_state},
+                )
             return self._discovered_model_ids
         self._force_refresh = False
         try:

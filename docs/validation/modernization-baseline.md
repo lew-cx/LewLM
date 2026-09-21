@@ -356,6 +356,36 @@ Silicon (validated in step 05; not re-run because the oMLX environment was
 not retained); CI jobs exercised on the next push. Rollback: revert the
 step commit. Next eligible step: 12.
 
+## Step 12 — complete; hardware lanes and Chap UI remain as recorded
+
+Commit: this step's commit, immediately after step 11 commit `fa2ca44`.
+Full record: [modernization-step-12.md](modernization-step-12.md).
+
+Behavior implemented: `lewlm doctor` `external_engines` guidance (state,
+counts, recipe status, next command, rollback line; `--no-probe`); a stale
+endpoint is not a routing candidate until its retry succeeds, so explicit
+alias fallback and the 503 happen before submission;
+`docs/operations/backends/rollout-and-rollback.md` (recipes, configuration,
+doctor, legacy migration with the id change, rollback and what it keeps,
+outage behaviour, reverting the modernization); fixture
+`die_after_frames` and immediate EOF on a stopped engine.
+
+Compatibility: additive. The routing change moves an outage failure from
+the transport to preflight with the same status and code.
+
+Commands run and results: `tests/integration/test_rollout_rollback.py`
+2 passed (the full enable/serve/outage/alias/interrupted-stream/disable
+sequence over HTTP); clean lean install 6.4 s, 25 packages, no engine or
+conversion packages, doctor 0.96 s; adapter/inventory/endpoint/routing/
+profile/latency/Chap/CLI suites 163 passed.
+
+Real-engine evidence: none new. Deferred: llama.cpp-only and Ollama-only
+clean-environment quickstarts, the old full/conversion path in a clean venv
+(container form covered by CI), enable/stop/fallback on a real engine, and
+every hardware lane except Apple Silicon; Chap UI pending. Rollback: revert
+the step commit. The roadmap's implementation is complete; hardware lanes
+promote recipes independently as they pass.
+
 ## Implementation handoff
 
 Append each completed step or reviewable substep here with its commit, behavior, commands/results, deferred tests, and rollback. Never mark the full roadmap complete while hardware or Chap UI acceptance is pending.

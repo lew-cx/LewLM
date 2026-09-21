@@ -1,6 +1,6 @@
 # LewLM modernization roadmap
 
-Status: proposed implementation plan; no runtime changes are implied by this document.
+Status: implemented through step 12 on 2026-09-18; each step's portable acceptance passed and its hardware lanes are recorded as validated or deferred in the per-step validation records under `docs/validation/`. The step sections below keep their original wording plus an implementation-status line.
 Research date: 2026-09-16. Repository baseline: `caae222`, package version `0.4.2`.
 
 The objective is faster installation, startup, and interactive inference while keeping LewLM a small, easy-to-integrate middleware layer. Complete the existing external-server integration, add ExLlamaV3 through TabbyAPI, and improve the portable CPU/CUDA paths. Keep native MLX, llama.cpp, llama.cpp-server, and Ollama available.
@@ -262,6 +262,8 @@ Do not treat this list as the only tests required for later changes. Each step a
 5. Record remaining deferred OS/hardware and Chap UI work. A release may ship an experimental adapter with clear validation status; it must not label that adapter universally supported.
 
 **Test and exit:** enable a new endpoint, serve a request, stop/disable it, and serve through an explicitly compatible existing path. Test the same operation with an active stream: fail it transparently without replay, then allow a new request on the selected fallback. Docs and doctor must agree with actual behavior.
+
+**Implementation status:** completed on 2026-09-18. `lewlm doctor` reports each engine's state and the next command; the enable → serve → outage → alias fallback → interrupted stream (no replay) → disable sequence is proven over HTTP in `tests/integration/test_rollout_rollback.py`; a stale endpoint is no longer a routing candidate so the fallback engages before submission; the legacy migration and the one-entry rollback are documented in `docs/operations/backends/rollout-and-rollback.md`; the lean install was verified from a clean environment. The llama.cpp-only and Ollama-only clean-environment quickstarts and every hardware lane except Apple Silicon remain deferred with their commands in the [validation record](../validation/modernization-step-12.md), which also lists all remaining work.
 
 ## Common real-engine acceptance suite
 

@@ -72,6 +72,7 @@ from lewlm.core.probes import run_model_smoke_probe
 from lewlm.documents.ir.models import DocumentIR, DocumentOutputFormat
 from lewlm.documents.skills.models import BuiltInSkillDescriptor, parse_document_transform_request
 from lewlm.history.models import SESSION_CONTEXT_POLICIES, SessionDetail, SessionExportBundle, SessionRecord
+from lewlm.doctor_guidance import engine_guidance
 from lewlm.install_profiles import summarize_install_profiles
 from lewlm.prompting import PromptCompilationRequest
 from lewlm.registry.discovery import discover_models
@@ -119,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="Inspect local LewLM health and configuration.")
     doctor_parser.add_argument("--json", action="store_true", help="Emit machine-readable output.")
+    doctor_parser.add_argument("--no-probe", action="store_true", help="Do not read configured engines' model lists; report cached state only.")
     doctor_parser.set_defaults(handler=handle_doctor)
 
     config_parser = subparsers.add_parser("config", help="Show resolved LewLM configuration.")
@@ -758,6 +760,13 @@ def handle_serve(args: argparse.Namespace, settings: LewLMSettings, services: Le
     return ExitCode.OK
 
 
+def _repo_root() -> Path | None:
+    """The source checkout, when doctor runs from one (recipe statuses live there)."""
+
+    candidate = Path(__file__).resolve().parents[3]
+    return candidate if (candidate / "examples" / "backends" / "compatibility.json").exists() else None
+
+
 def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: LewLMServices | None = None) -> ExitCode:
     resolved_services = services or bootstrap_services(settings)
     runtime_stats = asyncio.run(resolved_services.telemetry_service.runtime_stats())
@@ -771,6 +780,10 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
         "event_bus": {"subscriber_count": resolved_services.event_bus.subscriber_count},
         "runtime_stats": runtime_stats.model_dump(mode="json"),
         "cache_stats": cache_stats.model_dump(mode="json"),
+        # Doctor is an explicit operator action: it reads each configured
+        # engine's model list once and says what to run next. It never starts
+        # or stops an engine.
+        "external_engines": engine_guidance(resolved_services, repo_root=_repo_root(), probe=not getattr(args, "no_probe", False)),
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -898,6 +911,20 @@ def handle_doctor(args: argparse.Namespace, settings: LewLMSettings, services: L
             f"queued={payload['runtime_stats']['load_scheduler']['queued_requests']}, "
             f"rejected={payload['runtime_stats']['load_scheduler']['rejected_requests']}",
         )
+        guidance = payload["external_engines"]
+        for engine in guidance["engines"]:
+            reach = {True: "reachable", False: "unreachable", None: "disabled"}[engine.get("reachable")]
+            print(
+                f"engine {engine['endpoint_id']} ({engine['profile']}): {reach}, "
+                f"{engine.get('advertised_model_count', 0)} advertised, {engine.get('registered_model_count', 0)} registered"
+                + (f", recipe {engine['recipe_status']}" if engine.get("recipe_status") else "")
+            )
+            if engine.get("error"):
+                print(f"  error: {engine['error']}")
+            print(f"  next: {engine['next_command']}")
+        for step in guidance["next_steps"]:
+            print(f"next step: {step}")
+        print(f"rollback: {guidance['rollback']}")
         print(f"runtime requests: {payload['runtime_stats']['request_metrics']['total_requests']}")
         print(f"runtime failures: {payload['runtime_stats']['request_metrics']['failure_count']}")
         average_execution_seconds = payload["runtime_stats"]["request_metrics"]["average_execution_seconds"]

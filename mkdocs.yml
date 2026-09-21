@@ -56,4 +56,5 @@ nav:
           - ExLlamaV3 via TabbyAPI: operations/backends/exllamav3-tabby.md
           - vLLM: operations/backends/vllm.md
           - SGLang: operations/backends/sglang.md
+          - Rollout and rollback: operations/backends/rollout-and-rollback.md
       - Troubleshooting: operations/troubleshooting.md

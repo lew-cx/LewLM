@@ -1,0 +1,44 @@
+{
+  "format": "lewlm-clean-install-evidence-v1",
+  "host": "Apple M2 Max, macOS Darwin 25.2.0",
+  "python": "3.11 (/opt/homebrew/bin/python3.11)",
+  "command": "python3.11 -m venv lean-venv && lean-venv/bin/python -m pip install --upgrade pip && lean-venv/bin/python -m pip install /Users/lew/LewLM",
+  "wall_seconds": 6.4,
+  "package_count": 25,
+  "packages": [
+    "annotated-doc",
+    "annotated-types",
+    "anyio",
+    "certifi",
+    "cffi",
+    "click",
+    "cryptography",
+    "fastapi",
+    "h11",
+    "httpcore",
+    "httpx",
+    "idna",
+    "lewlm",
+    "pip",
+    "pycparser",
+    "pydantic",
+    "pydantic-settings",
+    "pydantic_core",
+    "python-dotenv",
+    "python-multipart",
+    "setuptools",
+    "starlette",
+    "typing-inspection",
+    "typing_extensions",
+    "uvicorn"
+  ],
+  "engine_or_conversion_packages_present": [],
+  "doctor": {
+    "service": "LewLM",
+    "version": "0.4.2",
+    "active_profile_ids": [
+      "core_only"
+    ],
+    "wall_seconds": 0.96
+  }
+}

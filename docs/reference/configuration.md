@@ -186,6 +186,8 @@ Supported `LEWLM_EXTERNAL_ACCELERATOR_PROFILE` values are:
 
 `sglang_local` names SGLang's OpenAI-compatible server on Linux/NVIDIA. SGLang guards every route except `/health*` and `/metrics*` with the key its `--api-key` was started with, so the endpoint's `api_key_env` must name that value; prefix-cache hits are reported through `usage.cached_tokens` only when the server runs with `--enable-cache-report`. The pinned recipe is `examples/backends/sglang/`, with `scripts/engine_preflight.py --recipe sglang` as the host check to run first; the profile is not validated until that recipe passes on Linux/NVIDIA.
 
+Enabling, migrating, and rolling back an endpoint — and what `lewlm doctor` says at each step — is in [Rollout and rollback](../operations/backends/rollout-and-rollback.md).
+
 `tensorrt_llm_server` and `openvino_model_server` are bridge profiles for compatible local servers; `ollama_local` and `llamacpp_server` keep the generic OpenAI-compatible bridge contract explicit for local servers that present themselves through those loopback shapes. None of these profiles promote backend-native behavior to LewLM-owned packaged parity.
 
 `LEWLM_EXTERNAL_ACCELERATOR_BASE_URL` must point to a loopback-only local server such as

@@ -57,6 +57,7 @@ Operator diagnostics for:
 - target-platform and capability hints
 - measured capability probe registry counts and per-category status on the current host
 - runtime-support strategy, including the first-class non-Apple path and bridge-only boundaries
+- external engines (`external_engines` in `--json`): per configured endpoint, enabled/reachable, advertised versus registered model counts, the recipe and its compatibility status, the one command to run next, and the rollback line. Doctor reads each engine's model list once — an explicit operator action; pass `--no-probe` to report cached state only. It never starts, stops, or installs an engine. See [Rollout and rollback](../operations/backends/rollout-and-rollback.md).
 
 ### `scan`
 
