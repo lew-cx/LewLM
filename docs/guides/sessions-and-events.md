@@ -101,9 +101,17 @@ rather than ignored: an ignored filter returns an empty stream that is
 indistinguishable from a quiet server. SSE answers 422; the WebSocket closes
 `1008` before accepting the handshake.
 
-Replay is not available. A reconnecting client resumes from the moment it
-reconnects, and `Last-Event-ID` is not honoured, so a client that must present a
-continuous timeline has to say that its window has a gap.
+`exclude_types` is the one negative filter, for the common "everything except
+the token flood" ask.
+
+Every event carries a `cursor` (the SSE `id:` line) and the bus retains the
+last `LEWLM_EVENT_REPLAY_BUFFER_SIZE` events (default 4096). A client that
+drops sends the last cursor it saw back — `Last-Event-ID`, or `?after=` when it
+cannot set headers, or `subscribe_events(after=...)` in process — and the
+stream begins with an `events.resumed` marker saying how many events were
+`replayed` and how many were `lost` (`null` for a cursor from another server
+lifetime), then the replayed events in order, then live ones. A client can
+therefore present a continuous timeline, or say exactly where its gap is.
 
 ## Event categories
 

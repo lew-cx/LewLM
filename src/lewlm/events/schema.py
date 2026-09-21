@@ -20,6 +20,9 @@ class EventScope(str, Enum):
 
 class EventType(str, Enum):
     SYSTEM_READY = "system.ready"
+    #: Sent once, first, to a subscriber that asked to resume from a cursor. It
+    #: reports what the replay delivered and whether anything is unrecoverable.
+    EVENTS_RESUMED = "events.resumed"
     OPERATION_PROGRESS = "operation.progress"
     REQUEST_ACCEPTED = "request.accepted"
     REQUEST_QUEUED = "request.queued"
@@ -80,6 +83,15 @@ class StreamEvent(BaseModel):
     """An event emitted by LewLM subsystems."""
 
     event_id: str = Field(default_factory=lambda: str(uuid4()))
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Position of this event in the stream, assigned when it was published: the SSE frame's "
+            "`id:` and the value `Last-Event-ID` or `?after=` resumes from. Opaque; compare only for "
+            "equality. Null on an event that was never published to the bus, such as the "
+            "`events.resumed` marker."
+        ),
+    )
     type: EventType
     scope: EventScope = EventScope.SYSTEM
     created_at: datetime = Field(default_factory=utc_now)
@@ -153,7 +165,10 @@ class StreamEvent(BaseModel):
         return self
 
     def to_event_stream(self) -> str:
-        return f"event: {self.type.value}\ndata: {self.model_dump_json()}\n\n"
+        # `id:` lets an EventSource resume from exactly here; the marker frame
+        # carries none so it never advances the client's cursor.
+        id_line = f"id: {self.cursor}\n" if self.cursor is not None else ""
+        return f"{id_line}event: {self.type.value}\ndata: {self.model_dump_json()}\n\n"
 
 
 def _payload_string(payload: dict[str, object], key: str) -> str | None:

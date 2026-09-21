@@ -209,7 +209,7 @@ def _build_core_foundation_services(settings: LewLMSettings) -> _CoreFoundationS
     tool_authorizer = ToolAuthorizer(settings=settings, audit_logger=audit_logger)
     metadata_store = MetadataStore(settings.database_path, encryptor=encryptor)
     metadata_store.initialize()
-    event_bus = EventBus()
+    event_bus = EventBus(replay_buffer_size=settings.event_replay_buffer_size)
     model_registry = ModelRegistry(
         settings=settings,
         metadata_store=metadata_store,

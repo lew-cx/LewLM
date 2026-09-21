@@ -276,3 +276,97 @@ def test_a_native_tool_call_is_a_tool_calls_finish_on_the_responses_surface() ->
             },
         ).json()
         assert body["finish_reason"] == "tool_calls", body
+
+
+# --- the event stream resumes exactly after a drop (G13) ----------------------
+
+
+def _read_frame(lines) -> dict:
+    """The next SSE event frame: its `id:` line (if any) beside its parsed body."""
+
+    current: dict = {}
+    for line in lines:
+        if line.startswith("id: "):
+            current["id"] = line[4:]
+        elif line.startswith("data: "):
+            current["data"] = json.loads(line[6:])
+        elif line == "" and "data" in current:
+            return current
+    raise AssertionError("stream ended before a frame")
+
+
+def _event_frames(client: httpx.Client, path: str, *, count: int, headers: dict | None = None) -> list[dict]:
+    """Read `count` frames then drop the connection, which is what a client losing its stream does."""
+
+    with client.stream("GET", path, headers=headers) as response:
+        assert response.status_code == 200, response.read()
+        lines = response.iter_lines()
+        return [_read_frame(lines) for _ in range(count)]
+
+
+def _events_marker(frame: dict) -> dict:
+    assert frame["data"]["type"] == "events.resumed"
+    assert "id" not in frame, "the marker never advances the client's cursor"
+    return frame["data"]["payload"]
+
+
+def test_an_sse_client_can_drop_and_resume_from_the_id_it_last_saw() -> None:
+    """Every frame carries `id:`; sending it back replays what was missed, once, in order, then goes live."""
+
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        bus = fixture.services.event_bus
+
+        def chat(text: str) -> str:
+            response = client.post(
+                "/v1/chat/completions",
+                json={"model": fixture.model_id, "messages": [{"role": "user", "content": text}], "max_tokens": 8},
+            )
+            assert response.status_code == 200, response.text
+            return response.headers["x-request-id"]
+
+        chat("warm-up")  # the bus issues its first cursor with its first event
+        before_both = bus.latest_cursor
+        assert before_both is not None
+        first_request_id = chat("one")
+        second_request_id = chat("two")
+        completions = f"types=request.completed&request_id={first_request_id},{second_request_id}"
+
+        # Resume from before both chats, as `?after=` (a browser EventSource
+        # cannot set headers itself): both completions replay, in order, each
+        # with the cursor it was published under.
+        marker, completed_one, completed_two = _event_frames(client, f"/v1/events?{completions}&after={before_both}", count=3)
+        assert _events_marker(marker) == {
+            "after": before_both, "replayed": 2, "lost": 0, "latest": bus.latest_cursor,
+            "retained": _events_marker(marker)["retained"], "replay_buffer_size": 4096,
+        }
+        assert completed_one["data"]["payload"]["request_id"] == first_request_id
+        assert completed_two["data"]["payload"]["request_id"] == second_request_id
+        assert completed_one["id"] == completed_one["data"]["cursor"], "the id: line is the cursor in the body"
+
+        # The client dropped after the first completion. Reconnect the way an
+        # EventSource does: Last-Event-ID of the last frame it saw.
+        marker, missed = _event_frames(client, f"/v1/events?{completions}", count=2, headers={"Last-Event-ID": completed_one["id"]})
+        payload = _events_marker(marker)
+        assert payload["after"] == completed_one["id"] and payload["replayed"] == 1 and payload["lost"] == 0
+        assert missed["id"] == completed_two["id"], "exactly the missed frame, under its original cursor"
+
+        # The header is the fresher cursor: it wins over a stale `?after=` kept in the URL.
+        (marker,) = _event_frames(client, f"/v1/events?{completions}&after={before_both}", count=1, headers={"Last-Event-ID": completed_two["id"]})
+        assert _events_marker(marker)["after"] == completed_two["id"]
+
+        # A cursor from another server lifetime is not matched against this one.
+        (marker,) = _event_frames(client, "/v1/events?types=request.completed&after=deadbeef:1", count=1)
+        assert _events_marker(marker)["lost"] is None and _events_marker(marker)["replayed"] == 0
+
+        # Live after replay: a stream opened at the latest cursor replays nothing
+        # and the next chat arrives on it, under the bus's newest cursor.
+        resume_point = bus.latest_cursor
+        with client.stream("GET", f"/v1/events?types=request.completed&after={resume_point}") as response:
+            lines = response.iter_lines()
+            assert _events_marker(_read_frame(lines))["replayed"] == 0
+            third_request_id = chat("three")
+            live = _read_frame(lines)
+        assert live["data"]["payload"]["request_id"] == third_request_id
+        epoch, _, sequence = live["id"].partition(":")
+        assert epoch == resume_point.partition(":")[0] and int(sequence) > int(resume_point.partition(":")[2])

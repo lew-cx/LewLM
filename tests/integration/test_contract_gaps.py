@@ -563,3 +563,90 @@ def test_websocket_event_stream_refuses_a_bad_filter_before_accepting(client) ->
 
     assert refused.value.code == 1008
     assert refused.value.reason == "invalid_request"
+
+
+# --- the event stream can be resumed (G13) -----------------------------------
+# SSE resume is proven over a real loopback server in test_chap_contract.py,
+# because an in-process TestClient cannot close an open SSE stream early.
+
+
+def _complete_one_chat(client: TestClient, model_id: str) -> None:
+    assert client.post(
+        "/v1/chat/completions",
+        json={"model": model_id, "messages": [{"role": "user", "content": "hi"}]},
+    ).status_code == 200
+
+
+def test_a_malformed_cursor_is_refused_before_the_stream_opens(client) -> None:
+    response = client.get("/v1/events?after=yesterday")
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert error["details"]["field"] == "after"
+
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with client.websocket_connect("/v1/events?after=yesterday"):
+            pass
+    assert refused.value.code == 1008 and refused.value.reason == "invalid_request"
+
+
+def test_websocket_resume_delivers_the_marker_then_the_replay(client) -> None:
+    model_id = _gguf_model_id(client)
+    _complete_one_chat(client, model_id)  # the bus issues its first cursor with its first event
+    before = client.app.state.services.event_bus.latest_cursor
+    assert before is not None
+    _complete_one_chat(client, model_id)
+
+    with client.websocket_connect(f"/v1/events?types=request.accepted,request.completed&after={before}") as websocket:
+        marker = websocket.receive_json()
+        accepted = websocket.receive_json()
+        completed = websocket.receive_json()
+
+    assert marker["type"] == "events.resumed" and marker["cursor"] is None
+    assert marker["payload"]["after"] == before
+    assert marker["payload"]["replayed"] == 2 and marker["payload"]["lost"] == 0
+    assert (accepted["type"], completed["type"]) == ("request.accepted", "request.completed")
+    # The JSON body carries the cursor too, so a WebSocket reader can resume
+    # over either transport with the same value.
+    assert accepted["cursor"] and completed["cursor"] and accepted["cursor"] != completed["cursor"]
+
+
+def test_a_websocket_cursor_from_another_server_lifetime_reports_unknown_loss(client) -> None:
+    with client.websocket_connect("/v1/events?after=deadbeef:1") as websocket:
+        marker = websocket.receive_json()
+
+    assert marker["type"] == "events.resumed"
+    assert marker["payload"]["lost"] is None and marker["payload"]["replayed"] == 0
+
+
+def test_exclude_types_collapses_everything_but_the_flood(client) -> None:
+    model_id = _gguf_model_id(client)
+
+    with client.websocket_connect("/v1/events?scope=request&exclude_types=token.delta,reasoning.delta") as websocket:
+        client.post(
+            "/v1/chat/completions",
+            json={"model": model_id, "messages": [{"role": "user", "content": "hi"}], "stream": True},
+        )
+        delivered = [websocket.receive_json()["type"] for _ in range(2)]
+
+    assert "token.delta" not in delivered
+    assert delivered[0] == "request.accepted"
+
+
+def test_exclude_types_refuses_a_value_that_names_nothing(client) -> None:
+    response = client.get("/v1/events?exclude_types=token.deltas")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["fields"] == [
+        {"field": "exclude_types", "message": "`token.deltas` is not a known type value.", "type": "enum"},
+    ]
+
+
+def test_resume_and_exclude_are_advertised_in_the_openapi_document(client) -> None:
+    operation = client.get("/v1/openapi.json").json()["paths"]["/v1/events"]["get"]
+    parameters = {(item["in"], item["name"]): item for item in operation["parameters"]}
+
+    assert ("query", "after") in parameters and ("header", "Last-Event-ID") in parameters
+    assert "token.delta" in parameters[("query", "exclude_types")]["schema"]["items"]["enum"]
+    assert "events.resumed" in parameters[("query", "types")]["schema"]["items"]["enum"]

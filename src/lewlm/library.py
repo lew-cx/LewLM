@@ -684,14 +684,21 @@ class LewLM:
             async_name="LewLM.runtime_stats",
         )
 
-    def subscribe_events(self, event_filter: EventFilter | None = None) -> EventSubscription:
+    def subscribe_events(
+        self,
+        event_filter: EventFilter | None = None,
+        *,
+        after: str | None = None,
+    ) -> EventSubscription:
         """Subscribe to the in-process event bus from an active asyncio loop.
 
         An `EventFilter` narrows the subscription at the bus, so events it
-        excludes are never queued for this subscriber.
+        excludes are never queued for this subscriber. `after` resumes from a
+        cursor a previous subscription delivered: the queue then starts with an
+        `events.resumed` marker and the retained events newer than the cursor.
         """
 
-        return self.services.event_bus.subscribe(event_filter)
+        return self.services.event_bus.subscribe(event_filter, after=after)
 
     def close(self) -> None:
         """Release long-lived worker resources owned by this facade."""

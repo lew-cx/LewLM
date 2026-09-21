@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterable
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from lewlm.api.dependencies import get_services
@@ -24,9 +24,17 @@ _FILTER_DESCRIPTION = "Repeatable or comma-separated. Values here are alternativ
 #: RFC 6455 close codes for the two ways a handshake can be refused.
 _WEBSOCKET_CLOSE_CODES = {401: 1008, 403: 1008, 429: 1013}
 _EVENT_STREAM_EXAMPLE = (
+    'id: 3f9c2a1b:42\n'
     'event: request.completed\n'
-    'data: {"event_id":"evt-001","type":"request.completed","scope":"request",'
+    'data: {"event_id":"evt-001","cursor":"3f9c2a1b:42","type":"request.completed","scope":"request",'
     '"created_at":"2026-04-17T17:46:33Z","payload":{"request_id":"req-chat-001","path":"/v1/chat/completions"}}\n\n'
+)
+_AFTER_DESCRIPTION = (
+    "Resume after this cursor: the `id:` of the last frame received (also `cursor` in its body). "
+    "The stream then begins with one `events.resumed` frame reporting how many retained events were "
+    "replayed and how many were lost (`null` when the cursor is from another server lifetime), "
+    "followed by the replayed events and then live ones. A `Last-Event-ID` header, which an "
+    "EventSource sends on its own reconnect, takes precedence over this parameter."
 )
 
 
@@ -67,6 +75,15 @@ async def stream_events(
         list[str],
         Query(description=f"Deliver only events about these models. {_FILTER_DESCRIPTION}"),
     ] = (),
+    exclude_types: Annotated[
+        list[str],
+        Query(
+            description=f"Event types to leave out, applied after `types`. {_FILTER_DESCRIPTION}",
+            json_schema_extra=_EVENT_TYPE_SCHEMA,
+        ),
+    ] = (),
+    after: Annotated[str | None, Query(description=_AFTER_DESCRIPTION)] = None,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID", description=_AFTER_DESCRIPTION)] = None,
 ) -> StreamingResponse:
     """Stream runtime and request lifecycle events over SSE.
 
@@ -75,11 +92,24 @@ async def stream_events(
     `?types=token.delta&request_id=req-1` is one request's tokens and nothing
     else. Filtering happens before an event is queued for this connection, so an
     excluded event costs the connection nothing.
+
+    Every frame carries `id:`; send it back as `Last-Event-ID` or `?after=` to
+    resume from it. The resumed stream says what it could and could not
+    replay before delivering anything.
     """
 
     services = get_services(request)
     subscription = services.event_bus.subscribe(
-        _event_filter_from_query(types=types, scope=scope, request_id=request_id, model_id=model_id),
+        _event_filter_from_query(
+            types=types,
+            scope=scope,
+            request_id=request_id,
+            model_id=model_id,
+            exclude_types=exclude_types,
+        ),
+        # The header is the fresher cursor: an EventSource keeps its URL from
+        # construction but sends the id it last saw.
+        after=last_event_id if last_event_id is not None else after,
     )
 
     async def iterator() -> AsyncIterator[str]:
@@ -117,24 +147,26 @@ async def websocket_events(websocket: WebSocket) -> None:
             await websocket.close(code=_WEBSOCKET_CLOSE_CODES.get(exc.status_code, 1008), reason=exc.code)
             return
 
+    services = websocket.app.state.services
     try:
         event_filter = _event_filter_from_query(
             types=websocket.query_params.getlist("types"),
             scope=websocket.query_params.getlist("scope"),
             request_id=websocket.query_params.getlist("request_id"),
             model_id=websocket.query_params.getlist("model_id"),
+            exclude_types=websocket.query_params.getlist("exclude_types"),
         )
+        after = websocket.headers.get("last-event-id") or websocket.query_params.get("after")
+        subscription = services.event_bus.subscribe(event_filter, after=after)
     except InvalidRequestError as exc:
         # Refuse before accepting, for the same reason the guard does: a client
-        # that mistyped a filter should see a failed handshake, not an open
-        # socket that silently delivers everything or nothing.
+        # that mistyped a filter or a cursor should see a failed handshake, not
+        # an open socket that silently delivers everything or nothing.
         await websocket.close(code=1008, reason=exc.code)
         return
 
-    await websocket.accept()
-    services = websocket.app.state.services
-    subscription = services.event_bus.subscribe(event_filter)
     try:
+        await websocket.accept()
         while True:
             event = await subscription.get()
             await websocket.send_json(event.model_dump(mode="json"))
@@ -150,6 +182,7 @@ def _event_filter_from_query(
     scope: Iterable[str] | None,
     request_id: Iterable[str] | None,
     model_id: Iterable[str] | None,
+    exclude_types: Iterable[str] | None = None,
 ) -> EventFilter:
     """Build a filter from query parameters, refusing values that name nothing.
 
@@ -160,6 +193,14 @@ def _event_filter_from_query(
     invalid_fields: list[dict[str, str]] = []
     event_types = frozenset(
         _resolve_enum_values(EventType, _split_values(types), field="types", invalid_fields=invalid_fields),
+    )
+    excluded_types = frozenset(
+        _resolve_enum_values(
+            EventType,
+            _split_values(exclude_types),
+            field="exclude_types",
+            invalid_fields=invalid_fields,
+        ),
     )
     scopes = frozenset(
         _resolve_enum_values(EventScope, _split_values(scope), field="scope", invalid_fields=invalid_fields),
@@ -174,6 +215,7 @@ def _event_filter_from_query(
         scopes=scopes,
         request_ids=frozenset(_split_values(request_id)),
         model_ids=frozenset(_split_values(model_id)),
+        excluded_types=excluded_types,
     )
 
 
@@ -200,8 +242,16 @@ def _resolve_enum_values(
             invalid_fields.append(
                 {
                     "field": field,
-                    "message": f"`{value}` is not a known {field.rstrip('s')} value.",
+                    "message": f"`{value}` is not a known {_value_noun(field)} value.",
                     "type": "enum",
                 },
             )
     return resolved
+
+
+
+def _value_noun(field: str) -> str:
+    """`types` and `exclude_types` both name event types; `scope` names a scope."""
+
+    return "type" if field.endswith("types") else field.rstrip("s")
+

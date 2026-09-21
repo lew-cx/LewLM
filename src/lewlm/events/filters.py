@@ -13,7 +13,10 @@ stays shallow while an unfiltered one grows.
 
 Every dimension is optional. Values inside one dimension are alternatives (any
 may match); dimensions are combined (all must match). An empty filter admits
-everything, which is what an unfiltered subscriber gets.
+everything, which is what an unfiltered subscriber gets. `excluded_types` is
+the one negative dimension: "everything except the token flood" is a common
+ask, and spelling it as the other fifty types is not a filter a client will
+write.
 """
 
 from __future__ import annotations
@@ -31,15 +34,18 @@ class EventFilter:
     scopes: frozenset[EventScope] = field(default_factory=frozenset)
     request_ids: frozenset[str] = field(default_factory=frozenset)
     model_ids: frozenset[str] = field(default_factory=frozenset)
+    excluded_types: frozenset[EventType] = field(default_factory=frozenset)
 
     @property
     def is_empty(self) -> bool:
         """True when the filter constrains nothing and can be skipped entirely."""
 
-        return not (self.types or self.scopes or self.request_ids or self.model_ids)
+        return not (self.types or self.scopes or self.request_ids or self.model_ids or self.excluded_types)
 
     def matches(self, event: StreamEvent) -> bool:
         if self.types and event.type not in self.types:
+            return False
+        if event.type in self.excluded_types:
             return False
         if self.scopes and event.scope not in self.scopes:
             return False

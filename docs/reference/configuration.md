@@ -50,6 +50,7 @@ Built-in feature pack names: `documents`.
 | `LEWLM_REQUEST_MAX_BYTES` | `52428800` | request size limit |
 | `LEWLM_RATE_LIMIT_REQUESTS` | `120` | requests per window |
 | `LEWLM_RATE_LIMIT_WINDOW_SECONDS` | `60` | rate-limit window |
+| `LEWLM_EVENT_REPLAY_BUFFER_SIZE` | `4096` | events retained for `/v1/events` resume after a reconnect, across every type; `0` disables replay while frames still carry cursors |
 
 ## Scheduling and concurrency
 

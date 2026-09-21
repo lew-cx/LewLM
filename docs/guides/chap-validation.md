@@ -79,6 +79,7 @@ the fixture first, then against a real engine recipe.
 | 10 | Fallback explanation | When `metadata.routing.fallback_from_model_id` is set, the UI says which model actually answered and why (`fallback_reason`) | pending |
 | 11 | Identity headers | Every request sends `x-lewlm-application-id: chap`, a unique `x-request-id`, and the conversation's `x-lewlm-correlation-id`; the echoed values match | pending |
 | 12 | Browser origin | Chap's origin is in `LEWLM_CORS_ALLOW_ORIGINS`; preflight and SSE responses carry it; `x-request-id` is readable from the browser (`cors_expose_headers`); no wildcard is configured | pending |
+| 13 | Events reconnect | The events explorer reconnects with the last frame's `id:` (`Last-Event-ID`, or `?after=` when it cannot set headers); it renders the `events.resumed` marker as a continuous timeline when `lost` is `0`, and as an exact gap ("n events lost" / "unknown, server restarted" when `lost` is `null`) otherwise; a `?exclude_types=token.delta` subscription shows no token deltas | pending |
 
 The backend side of items 1–12 is covered by `tests/integration/test_chap_contract.py`
 and the smoke script above. Fill this table in Chap's own repository against a

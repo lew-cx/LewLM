@@ -61,6 +61,10 @@ class LewLMSettings(BaseSettings):
     lifecycle_operator_api_keys: tuple[SecretStr, ...] = ()
     lifecycle_administrator_api_keys: tuple[SecretStr, ...] = ()
     api_key_required: bool = False
+    # Events retained for `/v1/events` replay after a reconnect. Counted across
+    # every type, so a streaming generation's token deltas consume it fastest.
+    # 0 disables replay; frames still carry cursors.
+    event_replay_buffer_size: int = Field(default=4096, ge=0)
     # Off by default: LewLM is local-first, and a permissive default would let
     # any page the operator visits reach a loopback model server.
     cors_enabled: bool = False
