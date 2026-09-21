@@ -782,12 +782,20 @@ def test_external_adapter_runtime_surfaces_explicit_vision_probe_endpoint_reason
 
     monkeypatch.setattr(runtime, "_request_json", fake_request_json)
 
-    assert runtime.supports_manifest_capability(manifest, CapabilityName.VISION) is False
-    reason = runtime.manifest_capability_reason(manifest, CapabilityName.VISION)
+    # Readiness sends nothing: the model list advertises vision, so it is a
+    # candidate with no reason against it until something exercises it.
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.VISION) is True
+    assert runtime.manifest_capability_reason(manifest, CapabilityName.VISION) is None
 
+    supported, reason = runtime.probe_manifest_capability(manifest, CapabilityName.VISION)
+
+    assert supported is False
     assert reason is not None
     assert "`/v1/chat/completions`" in reason
     assert "OpenAI-style image content blocks" in reason
+    # The observation is what readiness reports from now on.
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.VISION) is False
+    assert runtime.manifest_capability_reason(manifest, CapabilityName.VISION) == reason
 
 
 def test_external_adapter_runtime_rejects_missing_image_attachment_path(tmp_path: Path, monkeypatch) -> None:
@@ -906,8 +914,14 @@ def test_external_adapter_runtime_supports_audio_transcription_and_speech(tmp_pa
     assert [(item.format, item.verified) for item in before_probe.formats] == [("wav", False)]
     assert before_probe.exhaustive is False
 
+    # Readiness answers from the advertised model list without a request.
     assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is True
     assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) is True
+    assert transcription_calls == []
+
+    assert runtime.probe_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) == (True, None)
+    assert runtime.probe_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) == (True, None)
+    assert len(transcription_calls) == 1, "the explicit probe is the one request sent before use"
 
     # The speech probe returned audio for `wav`, so that one is now observed;
     # nothing else was probed and the list stays open.
@@ -995,11 +1009,10 @@ def test_external_adapter_runtime_reports_bridge_only_audio_transcription_probe_
 
     monkeypatch.setattr(runtime, "_request_multipart_json", failing_request_multipart_json)
 
-    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is False
-    reason = runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_TRANSCRIPTION)
-    assert reason is not None
-    assert "/v1/audio/transcriptions" in reason
-    assert "bridge-only non-Apple audio" in reason
+    # Nothing has exercised the endpoint yet, so readiness reports the
+    # advertised capability and no reason.
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is True
+    assert runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is None
 
     asyncio.run(runtime.load_model(manifest))
     with pytest.raises(RuntimeUnavailableError) as exc_info:
@@ -1018,6 +1031,12 @@ def test_external_adapter_runtime_reports_bridge_only_audio_transcription_probe_
     assert exc_info.value.details["expected_endpoint"] == "/v1/audio/transcriptions"
     assert exc_info.value.details["bridge_only"] is True
     assert any("/v1/audio/transcriptions" in item for item in exc_info.value.details["fallback_guidance"])
+    # The request observed the refusal; readiness reports it from now on.
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_TRANSCRIPTION) is False
+    reason = runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_TRANSCRIPTION)
+    assert reason is not None
+    assert "/v1/audio/transcriptions" in reason
+    assert "bridge-only non-Apple audio" in reason
 
 
 def test_external_adapter_runtime_reports_bridge_only_audio_speech_probe_failure(
@@ -1068,11 +1087,8 @@ def test_external_adapter_runtime_reports_bridge_only_audio_speech_probe_failure
 
     monkeypatch.setattr(runtime, "_request_bytes", failing_request_bytes)
 
-    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) is False
-    reason = runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_SPEECH)
-    assert reason is not None
-    assert "/v1/audio/speech" in reason
-    assert "bridge-only non-Apple" in reason
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) is True
+    assert runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_SPEECH) is None
 
     asyncio.run(runtime.load_model(manifest))
     with pytest.raises(RuntimeUnavailableError) as exc_info:
@@ -1091,6 +1107,13 @@ def test_external_adapter_runtime_reports_bridge_only_audio_speech_probe_failure
     assert exc_info.value.details["expected_endpoint"] == "/v1/audio/speech"
     assert exc_info.value.details["bridge_only"] is True
     assert any("/v1/audio/speech" in item for item in exc_info.value.details["fallback_guidance"])
+
+    # The request observed the refusal; readiness reports it from now on.
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.AUDIO_SPEECH) is False
+    reason = runtime.manifest_capability_reason(manifest, CapabilityName.AUDIO_SPEECH)
+    assert reason is not None
+    assert "/v1/audio/speech" in reason
+    assert "bridge-only non-Apple" in reason
 
 
 def test_external_adapter_runtime_reports_connection_refusal_in_candidate_report(tmp_path: Path, monkeypatch) -> None:
@@ -1284,6 +1307,15 @@ def test_external_adapter_runtime_reports_semantic_capability_probe_failures(
 
     monkeypatch.setattr(runtime, "_request_json", fake_request_json)
 
+    # Advertised and unexercised: a candidate, and no request was sent to say so.
+    assert runtime.supports_capability(CapabilityName.RERANK) is True
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.RERANK) is True
+    assert runtime.manifest_capability_reason(manifest, CapabilityName.RERANK) is None
+
+    supported, reason = runtime.probe_manifest_capability(manifest, CapabilityName.RERANK)
+
+    assert supported is False and "/v1/rerank" in str(reason)
+    # The only advertised model refused, so the runtime-level answer is a refusal too.
     assert runtime.supports_capability(CapabilityName.RERANK) is False
     assert runtime.supports_manifest_capability(manifest, CapabilityName.RERANK) is False
     assert "/v1/rerank" in str(runtime.manifest_capability_reason(manifest, CapabilityName.RERANK))

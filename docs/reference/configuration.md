@@ -167,6 +167,15 @@ advertised model:
 - **Refresh.** `lewlm scan` always re-reads. Between scans a lookup re-reads
   after `LEWLM_EXTERNAL_INVENTORY_TTL_SECONDS`; a failed read is retried after
   a short fixed interval.
+- **Capabilities are advertised until exercised.** Health, model listing, and
+  the capabilities route read only the model list: a model whose record says
+  it embeds, sees, or speaks is a candidate for that capability, with the
+  evidence state `discovered`. They never send a generation to decide — doing
+  so made `GET /v1/health` ask Ollama to load every advertised model before it
+  could answer. The first request exercises the capability (one extra
+  request, then cached), and so does `POST /v1/lewlm/probes` for chat-like
+  generation; a refusal observed either way is what readiness reports from
+  then on, with the endpoint's reason.
 
 Every routing decision and execution-metadata envelope records the
 `endpoint_id`, `engine_profile`, and `execution_locality` that served it, and a

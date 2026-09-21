@@ -480,8 +480,6 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._first_advertised_at: datetime | None = None
         self._inventory_stale = False
         self._force_refresh = False
-        self._capability_support_cache: dict[CapabilityName, bool] = {}
-        self._capability_reason_cache: dict[CapabilityName, str | None] = {}
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
         self._model_capability_reason_cache: dict[tuple[str, CapabilityName], str | None] = {}
         self._transport = AsyncBridgeTransport(endpoint=self.endpoint, runtime_name=self.name)
@@ -748,34 +746,55 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             fallback_used=False,
         )
 
+    # Readiness, health, and model listing ask the three methods below on every
+    # refresh. They never send a request: doing so made `GET /v1/health` issue
+    # a generation per advertised model, which on Ollama loads every model
+    # before health can answer. A capability the endpoint's model list
+    # advertises is a routing candidate until a request, or an explicit
+    # `probe_manifest_capability`, observes otherwise; that observation is
+    # cached and reported here from then on, with its reason.
+
     def supports_capability(self, capability: CapabilityName) -> bool:
         if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
             return super().supports_capability(capability)
         if capability not in self.supported_capabilities or not self.is_available():
             return False
-        if capability in self._capability_support_cache:
-            return self._capability_support_cache[capability]
-        try:
-            for remote_model_id in self._available_remote_models():
-                supported, reason = self._probe_remote_model_capability(remote_model_id, capability)
-                if supported:
-                    self._capability_support_cache[capability] = True
-                    self._capability_reason_cache[capability] = None
-                    return True
-                if reason:
-                    self._capability_reason_cache[capability] = reason
-        except RuntimeUnavailableError as exc:
-            self._capability_support_cache[capability] = False
-            self._capability_reason_cache[capability] = str(exc)
+        observed = {
+            model_id: supported
+            for (model_id, observed_capability), supported in self._model_capability_support_cache.items()
+            if observed_capability == capability
+        }
+        if any(observed.values()):
+            return True
+        remote_model_ids = list(self._available_remote_models())
+        if not remote_model_ids:
             return False
-        self._capability_support_cache[capability] = False
-        if capability not in self._capability_reason_cache:
-            self._capability_reason_cache[capability] = (
-                "The configured external accelerator did not advertise any local models."
-                if not self._available_remote_models()
-                else f"No advertised local model accepted `{capability.value}` through the adapter contract."
-            )
-        return False
+        # Every advertised model was exercised and refused: that is a refusal,
+        # not an unknown.
+        return not all(model_id in observed for model_id in remote_model_ids)
+
+    def probe_manifest_capability(
+        self,
+        manifest: ModelManifest,
+        capability: CapabilityName,
+    ) -> tuple[bool, str | None]:
+        """Exercise `capability` against the endpoint for `manifest`, once, and remember the outcome.
+
+        The explicit operation: it sends one request (a one-image chat, an
+        embedding, a rerank, a transcription, or a synthesis) and may make the
+        engine load the model. Readiness paths never call it.
+        """
+
+        if not self.supports_manifest(manifest):
+            return False, self.manifest_capability_reason(manifest, capability)
+        if not _manifest_supports_external_capability(manifest, capability):
+            return False, self.manifest_capability_reason(manifest, capability)
+        if capability in {CapabilityName.CHAT, CapabilityName.STREAMING}:
+            return True, None
+        remote_model_id = self._resolve_remote_model_id(manifest)
+        if remote_model_id is None:
+            return False, self.manifest_capability_reason(manifest, capability)
+        return self._probe_remote_model_capability(remote_model_id, capability)
 
     def _record_structured_output_runtime(self, request: GenerateRequest) -> None:
         status = self.structured_output_runtime_status(request.structured_output)
@@ -793,8 +812,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         remote_model_id = self._resolve_remote_model_id(manifest)
         if remote_model_id is None:
             return False
-        supported, _ = self._probe_remote_model_capability(remote_model_id, capability)
-        return supported
+        observed = self._model_capability_support_cache.get((remote_model_id, capability))
+        return True if observed is None else observed
 
     def manifest_capability_reason(self, manifest: ModelManifest, capability: CapabilityName) -> str | None:
         if not self.supports_manifest(manifest):
@@ -819,8 +838,9 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 "The configured external accelerator endpoint did not advertise a compatible local model id. "
                 f"Available ids: {list(self._available_remote_models()) or ['none discovered']}."
             )
-        _, reason = self._probe_remote_model_capability(remote_model_id, capability)
-        return reason
+        if (remote_model_id, capability) not in self._model_capability_support_cache:
+            return None
+        return self._model_capability_reason_cache.get((remote_model_id, capability))
 
     async def _load_model(self, manifest: ModelManifest) -> None:
         remote_model_id = self._resolve_remote_model_id(manifest)

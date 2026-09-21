@@ -299,3 +299,60 @@ def test_cloud_cannot_be_enabled_without_discovery(tmp_path: Path) -> None:
             data_dir=tmp_path / "state",
             ollama_cloud_enabled=True,
         )
+
+
+def test_health_and_listing_never_send_a_generation_to_the_daemon(tmp_path: Path, monkeypatch) -> None:
+    """Readiness reads the advertised model list; it does not exercise capabilities.
+
+    Found by the Ollama-only quickstart: `GET /v1/health` used to send an
+    embedding (and a vision chat) per advertised model to decide readiness,
+    which made Ollama load every model before health could answer. The
+    endpoint's model list is enough to list a candidate; the first request, or
+    an explicit probe, is what verifies it.
+    """
+
+    from fastapi.testclient import TestClient
+
+    from lewlm.api.app import create_app
+    from lewlm.core.contracts import CapabilityName
+    from lewlm.runtime.adapters.openai_compatible import LocalOpenAICompatibleAdapterRuntime
+
+    (tmp_path / "models").mkdir(parents=True, exist_ok=True)
+    _serve(monkeypatch, [_LLAMA_RECORD, _EMBED_RECORD])
+    posts: list[tuple[str, str]] = []
+
+    def fake_request_json(self, method: str, path: str, payload):
+        if method == "GET" and path == "/v1/models":
+            return {"data": [{"id": "llama3.1:latest"}, {"id": "nomic-embed-text:latest"}]}
+        posts.append((method, path))
+        if path == "/v1/embeddings":
+            return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(LocalOpenAICompatibleAdapterRuntime, "_request_json", fake_request_json)
+    services = bootstrap_services(_settings(tmp_path))
+    assert services.model_registry.scan().discovered_count == 2
+
+    with TestClient(create_app(services.settings, services=services)) as client:
+        health = client.get("/v1/health").json()
+        models = client.get("/v1/models").json()
+        embed_id = next(item["model_id"] for item in models["items"] if item["display_name"] == "nomic-embed-text:latest")
+        capabilities = client.get(f"/v1/models/{embed_id}/capabilities").json()
+        health_again = client.get("/v1/health").json()
+
+    assert posts == [], "health, listing, and the capabilities route sent no generation upstream"
+    assert health["status"] == "ok" and health_again["status"] == "ok"
+    embeddings = next(item for item in health["readiness"]["capabilities"] if item["capability"] == "embeddings")
+    assert embeddings["ready"] is True, "advertised by the daemon's model list, so it is a candidate"
+    assert embed_id in embeddings["ready_model_ids"]
+    assert "embeddings" in {item["capability"] for item in capabilities["capabilities"]}
+
+    # The explicit probe is what exercises the endpoint, once, and the
+    # observation is then what readiness reports.
+    runtime = services.runtime_catalog.get_runtime(RuntimeAffinity.EXTERNAL_ACCELERATOR)
+    manifest = services.model_registry.get_manifest(embed_id)
+    assert runtime.probe_manifest_capability(manifest, CapabilityName.EMBEDDINGS) == (True, None)
+    assert posts == [("POST", "/v1/embeddings")]
+    assert runtime.supports_manifest_capability(manifest, CapabilityName.EMBEDDINGS) is True
+    assert runtime.probe_manifest_capability(manifest, CapabilityName.EMBEDDINGS) == (True, None)
+    assert len(posts) == 1, "a second probe is answered from the observation"
