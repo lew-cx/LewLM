@@ -149,6 +149,34 @@ class ChapSmoke:
             return Check("request_identity", "failed", observations, "x-lewlm-correlation-id was not echoed in the header and metadata")
         return Check("request_identity", "passed", observations)
 
+    def responses_finish_reason(self) -> Check:
+        """Both surfaces say why generation stopped, so truncation is visible on either."""
+
+        vocabulary = {"stop", "length", "tool_calls"}
+        finished = self.client.post("/v1/responses", json={"model": self.model, "input": "Reply with: ok", "max_output_tokens": 16})
+        truncated = self.client.post("/v1/responses", json={"model": self.model, "input": "Write a long story.", "max_output_tokens": 4 if self.fixture is None else 256})
+        chat = self.harness.chat([{"role": "user", "content": "Reply with: ok"}])
+        finished_body = finished.json() if finished.status_code == 200 else {}
+        truncated_body = truncated.json() if truncated.status_code == 200 else {}
+        chat_body = chat.json() if chat.status_code == 200 else {}
+        observations = {
+            "finished_status": finished.status_code,
+            "finished_finish_reason": finished_body.get("finish_reason"),
+            "truncated_status": truncated.status_code,
+            "truncated_finish_reason": truncated_body.get("finish_reason"),
+            "chat_finish_reason": ((chat_body.get("choices") or [{}])[0]).get("finish_reason"),
+        }
+        if finished.status_code != 200 or truncated.status_code != 200 or chat.status_code != 200:
+            return Check("responses_finish_reason", "failed", observations, "a responses or chat request failed")
+        for label, value in (("finished", observations["finished_finish_reason"]), ("truncated", observations["truncated_finish_reason"])):
+            if value not in vocabulary:
+                return Check("responses_finish_reason", "failed", observations, f"the {label} reply's finish_reason is not in {sorted(vocabulary)}")
+        if observations["chat_finish_reason"] not in vocabulary:
+            return Check("responses_finish_reason", "failed", observations, "the chat surface's finish_reason is not in the published vocabulary")
+        if self.fixture is not None and observations["truncated_finish_reason"] != "length":
+            return Check("responses_finish_reason", "failed", observations, "the fixture's truncated reply must report `length`")
+        return Check("responses_finish_reason", "passed", observations)
+
     def unavailable_engine(self) -> Check:
         if self.fixture is None:
             return Check("unavailable_engine", "skipped", {}, "needs fixture mode to stop the engine")
@@ -218,7 +246,7 @@ class ChapSmoke:
 
     # ---- runner ----------------------------------------------------------------
 
-    CHAP_CHECKS = ("service_health", "runtime_startup", "model_picker", "request_identity")
+    CHAP_CHECKS = ("service_health", "runtime_startup", "model_picker", "request_identity", "responses_finish_reason")
     HARNESS_CASES = ("chat_streaming", "chat_nonstreaming", "structured_output", "tools", "reasoning", "cancellation", "failure")
     FIXTURE_ONLY = ("unavailable_engine", "stream_interrupted")
 

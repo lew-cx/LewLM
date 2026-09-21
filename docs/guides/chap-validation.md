@@ -37,6 +37,7 @@ python examples/chap_backend_smoke.py --base-url http://127.0.0.1:8080 --model <
 | `runtime_startup` | `GET /v1/runtime.startup` reports LewLM ready, engine state, warm models — without probing |
 | `model_picker` | `GET /v1/models.capability_availability[]` names `chat_ready`, `reason`, `endpoint_id`, `engine_profile`, `engine_state`; `GET /v1/models/{id}/capabilities` predicts structured-output enforcement |
 | `request_identity` | `x-request-id` and `x-lewlm-correlation-id` are echoed on the response and in `metadata`; `x-lewlm-application-id: chap` is accepted and grants nothing |
+| `responses_finish_reason` | `POST /v1/responses` publishes `finish_reason` on its sync body from the chat vocabulary (`stop`, `length`, `tool_calls`), so a reply truncated by `max_output_tokens` is distinguishable on both surfaces; the fixture's long reply must be `length` |
 | `chat_streaming` / `chat_nonstreaming` | one terminal chunk with `finish_reason`, honest `usage` (and `cached_tokens` when the backend reports it), `[DONE]` |
 | `structured_output` | `json_schema` output validated after generation; `structured_output.enforcement` / `decoder_enforced` say what actually happened |
 | `tools` | a native tool call arrives as `tool_calls` with parsed arguments; the tool-result continuation works |

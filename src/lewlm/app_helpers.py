@@ -1163,6 +1163,7 @@ class _EmbeddedAppClientBackend:
                     ),
                 ],
                 output_text=execution.response.output_text,
+                finish_reason=execution.response.finish_reason,
                 usage=_completion_usage(execution.response.usage),
                 metadata=execution.metadata,
                 citations=execution.response.citations,

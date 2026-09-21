@@ -7684,6 +7684,19 @@
           "title": "Output Text",
           "type": "string"
         },
+        "finish_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why generation stopped, from the same vocabulary the chat surface publishes: `stop`, `length` (the reply hit `max_output_tokens` and is truncated), or `tool_calls`. Always set by this server; `null` only from a LewLM older than this field.",
+          "title": "Finish Reason"
+        },
         "usage": {
           "$ref": "#/$defs/CompletionUsage"
         },
@@ -19102,6 +19115,7 @@
       "service_vs_engine_vs_model": "`GET /v1/health.status` is this service. Engine reachability is `health.engines[].state` and `GET /v1/runtime.startup.engines[]` (cached inventory: advertised | stale | failed | unknown; no probe). Model warmth is `runtime.startup.warm_models[]` / `GET /v1/runtime/residencies`. A 200 from health never implies an engine is up or a model is warm.",
       "model_picker": "`GET /v1/models.capability_availability[]` gives, per model: `chat_ready`, `reason`, `endpoint_id`/`engine_profile`/`execution_locality` (null for packaged runtimes), and `engine_state` (`packaged`, or the endpoint's cached state). `GET /v1/models/{id}/capabilities.structured_output` predicts enforcement before a request is spent.",
       "chat_metadata": "`metadata.model` names `resolved_model_id`, `runtime_name`, `endpoint_id`, `engine_profile`, `execution_locality`; `metadata.routing.fallback_from_model_id`/`fallback_reason` are set only when an explicit fallback alias substituted the model before generation; `metadata.serving.runtime_adapter_kind` is `backend_native_batch` for engines that batch themselves.",
+      "finish_reason": "Both surfaces publish why generation stopped from one vocabulary: chat in `choices[0].finish_reason`, responses in `finish_reason` on the sync body and on the terminal chunk (`done: true`). `length` means the reply hit the output limit and is truncated; `stop` means the model finished; `tool_calls` means it stopped to call a tool.",
       "usage": "`usage` is on the non-streaming body and on the terminal streaming chunk only; earlier chunks carry `usage: null`. `usage.measured` is false when counts were estimated. `usage.cached_tokens` is present only when the backend reported prefix-cache hits; absent means unknown.",
       "streaming": "SSE `data:` frames of `chat.stream` chunks, then `data: [DONE]`. Exactly one chunk carries a non-null `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`, or `error`). Native tool-call fragments arrive as `delta.tool_calls[]` with `index`; arguments are concatenated per index.",
       "incomplete_stream": "If generation fails after output has started, the stream still returns HTTP 200: the last chunk has `finish_reason: \"error\"` and an `error` envelope (`code`, `message`, redacted `details`, `partial_output: true`), followed by `[DONE]`. Delivered text stands; LewLM never replays. A cancelled stream ends with `finish_reason: \"cancelled\"`.",
@@ -20115,7 +20129,7 @@
         "build": {
           "package_version": "0.4.2",
           "api_schema_version": "v1",
-          "source_commit": "a6f90cf928c9f631199c059eb8d04c57859f6d83",
+          "source_commit": "2d93d7c6ffa941163d2f9a9ace1ec48808f15f89",
           "source_dirty": true,
           "distribution_digest": null,
           "install_kind": "installed",
@@ -21564,13 +21578,13 @@
           "tool_calls": null,
           "error": {
             "code": "runtime_unavailable",
-            "message": "External accelerator request timed out.",
+            "message": "External accelerator stream failed.",
             "details": {
               "runtime": "local_external_adapter:fixture",
               "endpoint_id": "fixture",
               "path": "/v1/chat/completions",
-              "error_kind": "timeout",
-              "reason": ""
+              "error_kind": "unavailable",
+              "reason": "peer closed connection without sending complete message body (incomplete chunked read)"
             },
             "partial_output": true
           },
@@ -21584,13 +21598,43 @@
         "body": {
           "error": {
             "code": "runtime_unavailable",
-            "message": "Could not connect to the configured external accelerator endpoint.",
+            "message": "The engine behind endpoint `fixture` is unavailable for the requested model.",
             "details": {
-              "runtime": "local_external_adapter:fixture",
+              "requested_capability": "chat",
+              "requested_model_id": "fixture-chat-fixture-example",
+              "required_modalities": [
+                "text"
+              ],
+              "estimated_context_tokens": 33,
+              "unknown_context_token_limit": 4096,
+              "alternatives": [
+                "fixture-chat-fixture-6953e947: external_accelerator: [Errno 61] Connection refused"
+              ],
+              "fallback_guidance": [
+                "Run `lewlm list-models --json` or call `GET /v1/models` to inspect runnable local models.",
+                "Inspect `lewlm capabilities fixture-chat-fixture-6953e947` or `GET /v1/models/fixture-chat-fixture-6953e947/capabilities` for runtime and capability diagnostics.",
+                "Choose a model that supports `chat` on the current host.",
+                "Retry with a model that includes these modalities: text."
+              ],
               "endpoint_id": "fixture",
-              "path": "/v1/chat/completions",
-              "error_kind": "unavailable",
-              "reason": "All connection attempts failed"
+              "engine_profile": "openai_compatible",
+              "fallback_policy": "none",
+              "endpoint": {
+                "endpoint_id": "fixture",
+                "profile": "openai_compatible",
+                "enabled": true,
+                "inventory_state": "stale",
+                "inventory_error": "[Errno 61] Connection refused",
+                "inventory_age_seconds": 0,
+                "inventory_ttl_seconds": 30.0,
+                "advertised_model_ids": [
+                  "fixture-chat"
+                ],
+                "capability_evidence": [],
+                "first_advertised_at": "2026-01-01T00:00:00+00:00",
+                "upstream_residency": "unknown",
+                "upstream_cancellation": "unknown"
+              }
             }
           }
         }
@@ -22273,7 +22317,7 @@
           ]
         },
         "readiness": {
-          "status": "partial",
+          "status": "blocked",
           "host_platform": {
             "system": "Darwin",
             "release": "25.2.0",
@@ -22286,60 +22330,48 @@
           "discovered_model_count": 1,
           "runnable_model_count": 1,
           "capability_count": 7,
-          "ready_capability_count": 2,
+          "ready_capability_count": 0,
           "capabilities": [
             {
               "capability": "chat",
-              "ready": true,
-              "readiness_state": "ready",
-              "reason": "LewLM can serve `chat` on this host through a bridge-backed local runtime.",
-              "available_runtime_names": [
-                "local_external_adapter:fixture"
-              ],
-              "available_support_paths": [
-                "bridge"
-              ],
+              "ready": false,
+              "readiness_state": "runtime_unavailable",
+              "reason": "LewLM found runnable `chat` candidates, but no compatible local runtime is ready.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
               "packaged_runtime_names": [],
-              "bridge_runtime_names": [
-                "local_external_adapter:fixture"
-              ],
-              "bridge_only": true,
+              "bridge_runtime_names": [],
+              "bridge_only": false,
               "candidate_model_count": 1,
               "runnable_model_count": 1,
-              "ready_model_ids": [
+              "ready_model_ids": [],
+              "blocked_model_ids": [
                 "fixture-chat-fixture-6953e947"
               ],
-              "blocked_model_ids": [],
               "conversion_required_model_ids": [],
               "notes": [
-                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+                "external_accelerator: [Errno 61] Connection refused"
               ]
             },
             {
               "capability": "streaming",
-              "ready": true,
-              "readiness_state": "ready",
-              "reason": "LewLM can serve `streaming` on this host through a bridge-backed local runtime.",
-              "available_runtime_names": [
-                "local_external_adapter:fixture"
-              ],
-              "available_support_paths": [
-                "bridge"
-              ],
+              "ready": false,
+              "readiness_state": "runtime_unavailable",
+              "reason": "LewLM found runnable `streaming` candidates, but no compatible local runtime is ready.",
+              "available_runtime_names": [],
+              "available_support_paths": [],
               "packaged_runtime_names": [],
-              "bridge_runtime_names": [
-                "local_external_adapter:fixture"
-              ],
-              "bridge_only": true,
+              "bridge_runtime_names": [],
+              "bridge_only": false,
               "candidate_model_count": 1,
               "runnable_model_count": 1,
-              "ready_model_ids": [
+              "ready_model_ids": [],
+              "blocked_model_ids": [
                 "fixture-chat-fixture-6953e947"
               ],
-              "blocked_model_ids": [],
               "conversion_required_model_ids": [],
               "notes": [
-                "Ready support is bridge-backed only; LewLM depends on a compatible loopback-only local server for this capability on this host."
+                "external_accelerator: [Errno 61] Connection refused"
               ]
             },
             {
@@ -22428,9 +22460,7 @@
               "notes": []
             }
           ],
-          "notes": [
-            "Some capabilities are currently available only through bridge-backed local runtimes."
-          ]
+          "notes": []
         },
         "storage": {
           "healthy": true,
@@ -22600,6 +22630,120 @@
             "details": {
               "model_id": "no-such-model"
             }
+          }
+        }
+      },
+      "responses.truncated": {
+        "id": "chatcmpl-example",
+        "object": "response",
+        "created": 0,
+        "model": "fixture-chat-fixture-example",
+        "session_id": null,
+        "output": [
+          {
+            "type": "output_text",
+            "text": "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12",
+            "reasoning": {
+              "visibility": "hidden",
+              "available": false,
+              "content": null,
+              "summary": null
+            }
+          }
+        ],
+        "output_text": "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12",
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 12,
+          "total_tokens": 24,
+          "measured": true,
+          "cached_tokens": 8
+        },
+        "metadata": {
+          "version": "v1",
+          "request_id": "req-example",
+          "correlation_id": null,
+          "created": 0,
+          "result_origin": "runtime",
+          "model": {
+            "requested_model_id": "fixture-chat-fixture-example",
+            "resolved_model_id": "fixture-chat-fixture-example",
+            "runtime_name": "local_external_adapter:fixture",
+            "runtime_affinity": "external_accelerator",
+            "endpoint_id": "fixture",
+            "engine_profile": "openai_compatible",
+            "execution_locality": "loopback_unverified"
+          },
+          "routing": {
+            "kind": "model_router",
+            "reason": "Using explicitly requested model `fixture-chat-fixture-6953e947` via bridge-backed `local_external_adapter:fixture` for `chat`; context fit 261/8192 tokens; model already loaded; context fit 261/8192 tokens; memory estimate unavailable; already loaded; the request did not require multimodal conditioning..",
+            "request_modality": "text_only",
+            "modality_path": "text_default",
+            "modality_path_reason": "The request did not require multimodal conditioning.",
+            "alternatives": [],
+            "fallback_from_model_id": null,
+            "fallback_reason": null
+          },
+          "timing": {
+            "queue_milliseconds": 0,
+            "load_milliseconds": 0,
+            "execute_milliseconds": 0,
+            "total_milliseconds": 0
+          },
+          "serving": {
+            "capability": "chat",
+            "phase": "completed",
+            "streaming": false,
+            "streaming_owner": "none",
+            "runtime_adapter_kind": "request_scoped",
+            "cancellation_requested": false,
+            "queue_residency_milliseconds": 0,
+            "queue_count": 0,
+            "batched": false,
+            "batch_size": 1
+          },
+          "components": [],
+          "sampling": {
+            "runtime": "local_external_adapter:fixture",
+            "requested": {},
+            "applied": {},
+            "unsupported": [],
+            "deterministic": false
+          },
+          "idempotency_key": null,
+          "idempotent_replay": false
+        },
+        "citations": [],
+        "structured_output": null,
+        "tool_calls": null,
+        "prompt_trace": null,
+        "serving_profile": {
+          "status": "not_found",
+          "source": "persisted_autotune",
+          "capability": "chat",
+          "workload_class": "text_only",
+          "preset": "interactive",
+          "profile_id": null,
+          "stale_inputs": {},
+          "runtime": "local_external_adapter:fixture",
+          "reason": "No persisted serving profile is available for this host/model/runtime/workload tuple and the `interactive` preset.",
+          "recommendation_reason": null,
+          "recommended_at": null,
+          "artifact_id": null,
+          "accepted_settings": {},
+          "rejected_settings": {},
+          "effective_settings": {
+            "runtime_policy": "balanced",
+            "continuous_batch_window_milliseconds": 8,
+            "continuous_batch_max_batch_size": 4,
+            "kv_cache_page_size": 256,
+            "kv_cache_max_pages": 64,
+            "kv_cache_quantization_bits": null,
+            "gpu_offload_layers": null,
+            "prefill_token_batch_size": 512,
+            "mlx_graph_compile_enabled": false,
+            "mlx_attention_kernel_mode": "stock"
           }
         }
       }

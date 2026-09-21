@@ -308,6 +308,14 @@ class ResponseCreateResponse(BaseModel):
     session_id: str | None = None
     output: list[ResponseOutputText]
     output_text: str
+    finish_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why generation stopped, from the same vocabulary the chat surface publishes: `stop`, "
+            "`length` (the reply hit `max_output_tokens` and is truncated), or `tool_calls`. Always "
+            "set by this server; `null` only from a LewLM older than this field."
+        ),
+    )
     usage: CompletionUsage = Field(default_factory=CompletionUsage)
     metadata: ExecutionMetadata
     citations: list[GeneratedCitationReference] = Field(default_factory=list)

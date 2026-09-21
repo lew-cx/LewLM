@@ -227,6 +227,11 @@ def capture_chap_examples() -> dict[str, Any]:
             examples["health.engine_down"] = client.get("/v1/health").json()
         client.post("/v1/models/scan", json={})
         examples["chat.model_not_found"] = {"http_status": 404, "body": client.post("/v1/chat/completions", json={"model": "no-such-model", "messages": [{"role": "user", "content": "hi"}]}).json()}
+
+        # Responses surface: a reply cut off by `max_output_tokens` says so in
+        # `finish_reason`, exactly as the chat surface does.
+        fixture.engine.long_reply_words = 12
+        examples["responses.truncated"] = client.post("/v1/responses", json={"model": model, "input": "Write a long story.", "max_output_tokens": 256}).json()
     return normalize(examples)
 
 
@@ -235,6 +240,7 @@ CHAP_FIELD_NOTES = {
     "service_vs_engine_vs_model": "`GET /v1/health.status` is this service. Engine reachability is `health.engines[].state` and `GET /v1/runtime.startup.engines[]` (cached inventory: advertised | stale | failed | unknown; no probe). Model warmth is `runtime.startup.warm_models[]` / `GET /v1/runtime/residencies`. A 200 from health never implies an engine is up or a model is warm.",
     "model_picker": "`GET /v1/models.capability_availability[]` gives, per model: `chat_ready`, `reason`, `endpoint_id`/`engine_profile`/`execution_locality` (null for packaged runtimes), and `engine_state` (`packaged`, or the endpoint's cached state). `GET /v1/models/{id}/capabilities.structured_output` predicts enforcement before a request is spent.",
     "chat_metadata": "`metadata.model` names `resolved_model_id`, `runtime_name`, `endpoint_id`, `engine_profile`, `execution_locality`; `metadata.routing.fallback_from_model_id`/`fallback_reason` are set only when an explicit fallback alias substituted the model before generation; `metadata.serving.runtime_adapter_kind` is `backend_native_batch` for engines that batch themselves.",
+    "finish_reason": "Both surfaces publish why generation stopped from one vocabulary: chat in `choices[0].finish_reason`, responses in `finish_reason` on the sync body and on the terminal chunk (`done: true`). `length` means the reply hit the output limit and is truncated; `stop` means the model finished; `tool_calls` means it stopped to call a tool.",
     "usage": "`usage` is on the non-streaming body and on the terminal streaming chunk only; earlier chunks carry `usage: null`. `usage.measured` is false when counts were estimated. `usage.cached_tokens` is present only when the backend reported prefix-cache hits; absent means unknown.",
     "streaming": "SSE `data:` frames of `chat.stream` chunks, then `data: [DONE]`. Exactly one chunk carries a non-null `finish_reason` (`stop`, `length`, `tool_calls`, `cancelled`, or `error`). Native tool-call fragments arrive as `delta.tool_calls[]` with `index`; arguments are concatenated per index.",
     "incomplete_stream": "If generation fails after output has started, the stream still returns HTTP 200: the last chunk has `finish_reason: \"error\"` and an `error` envelope (`code`, `message`, redacted `details`, `partial_output: true`), followed by `[DONE]`. Delivered text stands; LewLM never replays. A cancelled stream ends with `finish_reason: \"cancelled\"`.",

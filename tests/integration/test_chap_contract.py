@@ -23,7 +23,7 @@ from lewlm.api.schemas.health import HealthResponse
 from lewlm.core.contracts import ModelCapabilityAvailability
 from lewlm.core.errors import error_from_dict
 from lewlm.runtime.identity import RuntimeInfo
-from lewlm.testing import FakeBackendFixture
+from lewlm.testing import FakeBackendFixture, FakeOpenAIEngine
 
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = ROOT / "examples" / "integration-bundle.json"
@@ -191,3 +191,88 @@ def test_a_narrow_browser_origin_gets_cors_without_a_wildcard(stream: bool) -> N
         assert other.status_code == 200
         assert "access-control-allow-origin" not in other.headers
         assert "*" not in preflight.headers.get("access-control-allow-origin", "")
+
+
+# --- a truncated reply is distinguishable on both surfaces (G32) --------------
+
+
+def _sse_frames(response: httpx.Response) -> list[dict]:
+    frames: list[dict] = []
+    buffer = ""
+    for raw in response.iter_text():
+        buffer += raw
+        while "\n\n" in buffer:
+            event, buffer = buffer.split("\n\n", 1)
+            for line in event.splitlines():
+                if line.startswith("data:"):
+                    data = line[5:].strip()
+                    frames.append({"_done": True} if data == "[DONE]" else json.loads(data))
+    return frames
+
+
+def test_responses_publishes_the_same_finish_reason_as_chat() -> None:
+    """A reply that ran out of `max_output_tokens` must not look like one that finished.
+
+    The chat surface has always said so in `choices[0].finish_reason`; the
+    responses surface carried nothing on its sync body, so a truncation
+    indicator could not be built for it. Both surfaces now report the value the
+    runtime produced, and the streaming terminal chunk agrees with the sync body.
+    """
+
+    with FakeBackendFixture(engine=FakeOpenAIEngine(long_reply_words=40)) as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        truncated = "Write a long story."
+        finished = "hi"
+
+        chat_truncated = client.post(
+            "/v1/chat/completions",
+            json={"model": fixture.model_id, "messages": [{"role": "user", "content": truncated}], "max_tokens": 256},
+        ).json()
+        sync_truncated = client.post(
+            "/v1/responses",
+            json={"model": fixture.model_id, "input": truncated, "max_output_tokens": 256},
+        ).json()
+        sync_finished = client.post(
+            "/v1/responses",
+            json={"model": fixture.model_id, "input": finished, "max_output_tokens": 16},
+        ).json()
+        with client.stream(
+            "POST",
+            "/v1/responses",
+            json={"model": fixture.model_id, "input": truncated, "max_output_tokens": 256, "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            frames = _sse_frames(response)
+
+        assert chat_truncated["choices"][0]["finish_reason"] == "length"
+        assert sync_truncated["finish_reason"] == "length", sync_truncated
+        assert sync_finished["finish_reason"] == "stop", sync_finished
+        terminal = frames[-2]
+        assert frames[-1] == {"_done": True} and terminal["done"] is True
+        assert terminal["finish_reason"] == "length"
+        # The typed model round-trips the field, so a client built from the
+        # bundle reads it without a cast.
+        from lewlm.api.schemas.chat import ResponseCreateResponse
+
+        assert ResponseCreateResponse.model_validate(sync_truncated).finish_reason == "length"
+
+
+def test_a_native_tool_call_is_a_tool_calls_finish_on_the_responses_surface() -> None:
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        body = client.post(
+            "/v1/responses",
+            json={
+                "model": fixture.model_id,
+                "input": "What is the weather in Lisbon?",
+                "max_output_tokens": 64,
+                "tools": [
+                    {
+                        "name": "get_weather",
+                        "description": "Current weather for a city.",
+                        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+                    },
+                ],
+            },
+        ).json()
+        assert body["finish_reason"] == "tool_calls", body
