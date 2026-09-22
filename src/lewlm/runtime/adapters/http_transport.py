@@ -294,13 +294,15 @@ class AsyncBridgeTransport:
             else "invalid_request" if 400 <= status < 500
             else "unavailable"
         )
-        body = response.text[:4096]
+        # Streaming responses have not been read yet. Classify from headers
+        # alone so an unread (or stalled) error body cannot mask the status.
+        # Upstream diagnostics can also contain prompts and credentials and
+        # must not be copied into the public error envelope.
         raise self._error(
             f"External accelerator request failed with HTTP {status}.",
             path=path,
             error_kind=category,
             status_code=status,
-            body=body,
         )
 
     def _authorization_headers(self) -> dict[str, str]:

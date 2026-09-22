@@ -355,3 +355,107 @@ def test_bridge_stream_rejects_premature_eof(tmp_path) -> None:
         await runtime.aclose()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [(307, "redirect"), (401, "authentication"), (400, "invalid_request"),
+     (404, "model_not_found"), (429, "rate_limited"), (503, "unavailable")],
+)
+def test_stream_http_failure_preserves_status_and_closes_unread_body(status, kind):
+    async def run():
+        body = _FragmentStream([b'private upstream diagnostic'])
+        transport = AsyncBridgeTransport(endpoint=_endpoint(), runtime_name="test-runtime")
+        await transport._client.aclose()
+        transport._client = httpx.AsyncClient(
+            base_url="http://127.0.0.1:18080",
+            transport=httpx.MockTransport(lambda request: httpx.Response(status, stream=body)),
+        )
+        try:
+            with pytest.raises(RuntimeUnavailableError) as caught:
+                await anext(transport.stream_sse("POST", "/v1/chat/completions", payload={}))
+            assert caught.value.details["status_code"] == status
+            assert caught.value.details["error_kind"] == kind
+            assert "private upstream diagnostic" not in str(caught.value.details)
+            assert body.closed
+        finally:
+            await transport.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("frame,kind", [
+    ({"error": {"message": "private diagnostic"}}, "upstream_error"),
+    ({"choices": [None]}, "malformed_stream"),
+    ({"choices": [{"delta": None}]}, "malformed_stream"),
+    ({"choices": "invalid"}, "malformed_stream"),
+])
+def test_bridge_rejects_invalid_frames_and_closes_transport(tmp_path, frame, kind):
+    async def run():
+        runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+            data_dir=tmp_path / "state", external_accelerator_enabled=True,
+            external_accelerator_base_url="http://127.0.0.1:18080",
+        ))
+        body = _FragmentStream([f"data: {json.dumps(frame)}\n\n".encode(), b"data: [DONE]\n\n"])
+        await runtime._transport._client.aclose()
+        runtime._transport._client = httpx.AsyncClient(
+            base_url="http://127.0.0.1:18080",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=body)),
+        )
+        try:
+            with pytest.raises(RuntimeUnavailableError) as caught:
+                _ = [event async for event in runtime._stream_chat_completion({})]
+            assert caught.value.details["error_kind"] == kind
+            assert "private diagnostic" not in str(caught.value.details)
+            assert body.closed
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(run())
+
+
+def test_bridge_done_closes_transport_before_returning(tmp_path):
+    async def run():
+        runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+            data_dir=tmp_path / "state", external_accelerator_enabled=True,
+            external_accelerator_base_url="http://127.0.0.1:18080",
+        ))
+        body = _FragmentStream([b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+                                b"data: [DONE]\n\n"])
+        await runtime._transport._client.aclose()
+        runtime._transport._client = httpx.AsyncClient(
+            base_url="http://127.0.0.1:18080",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=body)),
+        )
+        try:
+            events = [event async for event in runtime._stream_chat_completion({})]
+            assert events[-1].finish_reason == "stop"
+            assert body.closed
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("choices", [[None], [{"message": None}], [{"message": "invalid"}]])
+def test_bridge_rejects_malformed_nonstreaming_choices(tmp_path, monkeypatch, choices):
+    async def run():
+        runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+            data_dir=tmp_path / "state", external_accelerator_enabled=True,
+            external_accelerator_base_url="http://127.0.0.1:18080",
+        ))
+        monkeypatch.setattr(runtime, "_require_remote_model_id", lambda manifest: "demo")
+
+        async def response(*args):
+            return {"choices": choices}
+
+        monkeypatch.setattr(runtime, "_request_json_async", response)
+        try:
+            with pytest.raises(RuntimeUnavailableError, match="invalid chat completion"):
+                await runtime._generate_with_manifest(None, GenerateRequest(
+                    model_id="demo", messages=[GenerateMessage(role="user", content="hello")],
+                ))
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(run())
