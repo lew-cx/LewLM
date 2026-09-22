@@ -147,3 +147,23 @@ def test_cuda_arch_validator_rejects_unsupported_and_native(tmp_path: Path) -> N
     assert run("all-major").returncode == 1
     assert run("abc").returncode == 1
     assert run("").returncode == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX container build shell")
+@pytest.mark.parametrize("path", DOCKERFILES, ids=lambda p: p.name)
+@pytest.mark.parametrize("requirement,expected", [
+    ("llama-cpp-python>=0.3.0,<1.0.0\n", "llama-cpp-python>=0.3.0,<1.0.0"),
+    ("llama-cpp-python==0.3.16 \\\n    --hash=sha256:abc\n", "llama-cpp-python==0.3.16"),
+    ("llama-cpp-python==0.3.16 ; python_version >= '3.11' \\\n    --hash=sha256:abc\n", "llama-cpp-python==0.3.16"),
+    ("httpx==0.28.1\n", ""),
+])
+def test_native_requirement_extraction_accepts_hashed_locks(path, requirement, expected, tmp_path):
+    # Execute the actual Docker build's extraction command against pip-compile
+    # output. A trailing continuation slash makes the native pip build fail.
+    command = next(line.strip() for line in _stage(_text(path), "deps").splitlines()
+                   if line.strip().startswith('spec="$('))
+    command = command.removesuffix("\\").rstrip()
+    (tmp_path / "requirements.txt").write_text(requirement, encoding="utf-8")
+    result = subprocess.run(["sh", "-eu", "-c", command + '\nprintf "%s" "$spec"'],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert result.stdout == expected
