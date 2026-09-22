@@ -1,0 +1,8 @@
+sssss                                                                    [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/hardware/test_backend_lanes_real.py:47: lane apple_silicon can run on this host but no engine was named: set LEWLM_LANE_BASE_URL, LEWLM_LANE_MODEL, and LEWLM_LANE_RECIPE (one of ['omlx']) after following examples/backends/<recipe>/README.md.
+SKIPPED [1] tests/hardware/test_backend_lanes_real.py:42: lane linux_nvidia deferred on this host: needs Linux, host is Darwin; needs a working NVIDIA driver (nvidia-smi: not found on PATH). Defer without supported NVIDIA hardware/driver.
+SKIPPED [1] tests/hardware/test_backend_lanes_real.py:42: lane linux_cpu deferred on this host: needs Linux, host is Darwin. Defer if Linux/container runtime unavailable.
+SKIPPED [1] tests/hardware/test_backend_lanes_real.py:42: lane native_windows deferred on this host: needs Windows, host is Darwin. Linux or WSL results do not satisfy this lane.
+SKIPPED [1] tests/hardware/test_backend_lanes_real.py:42: lane wsl2 deferred on this host: needs Linux, host is Darwin; needs a WSL2 kernel (no 'microsoft' in /proc/version). A Linux pass alone does not prove WSL networking.
+5 skipped in 0.01s

@@ -1,0 +1,81 @@
+{"timestamp": "2026-09-22T15:49:22.810477+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/models \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.820419+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/health \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.828052+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/runtime \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.829559+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/models \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.836154+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/models/fixture-chat-fixture-6953e947/capabilities \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.842273+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.843230+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.847826+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.848735+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/responses \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.851768+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.852702+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/responses \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.856428+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.857092+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.860415+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.860824+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.916480+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.917417+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.924565+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/models/fixture-chat-fixture-6953e947/capabilities \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.928196+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.929140+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.932753+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.933619+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.937005+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.937733+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.940840+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.941561+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.945603+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.946033+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.954375+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/requests/accept-cancel-1184faa0/cancel \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.960062+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/requests/accept-cancel-1184faa0/cancel \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.964047+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.964857+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:22.966321+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 404 Not Found\""}
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 55560)
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 442, in handle
+    self.handle_one_request()
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 408, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 718, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionResetError: [Errno 54] Connection reset by peer
+----------------------------------------
+{"timestamp": "2026-09-22T15:49:22.972717+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/health \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.467693+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/models/scan \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.469142+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 503 Service Unavailable\""}
+{"timestamp": "2026-09-22T15:49:23.474928+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/health \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.476207+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: GET http://127.0.0.1:55550/v1/models \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.479681+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/models/scan \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.482994+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.483856+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.487088+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.487405+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.499198+00:00", "level": "WARNING", "logger": "lewlm.api.routes.chat", "message": "Stream ended with a structured error.", "extra": {"request_id": "664aaa84-2a0b-4db1-9ac5-fb198022d99b", "error_code": "runtime_unavailable", "partial_output": true}}
+{"timestamp": "2026-09-22T15:49:23.503293+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55549/v1/chat/completions \"HTTP/1.1 200 OK\""}
+{"timestamp": "2026-09-22T15:49:23.504096+00:00", "level": "INFO", "logger": "httpx", "message": "HTTP Request: POST http://127.0.0.1:55550/v1/chat/completions \"HTTP/1.1 200 OK\""}
+LewLM: http://127.0.0.1:55550   model: fixture-chat-fixture-6953e947   mode: fixture
+PASS           service_health       
+PASS           runtime_startup      
+PASS           model_picker         
+PASS           request_identity     
+PASS           responses_finish_reason 
+PASS           chat_streaming       
+PASS           chat_nonstreaming    
+PASS           structured_output    
+PASS           tools                
+PASS           reasoning            
+PASS           cancellation         
+PASS           failure              
+PASS           unavailable_engine   
+PASS           stream_interrupted   
+summary: {'passed': 14, 'failed': 0, 'inconclusive': 0, 'skipped': 0}

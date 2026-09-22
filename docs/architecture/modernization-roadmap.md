@@ -3,6 +3,8 @@
 Status: implemented through step 12 on 2026-09-18; each step's portable acceptance passed and its hardware lanes are recorded as validated or deferred in the per-step validation records under `docs/validation/`. The step sections below keep their original wording plus an implementation-status line.
 Research date: 2026-09-16. Repository baseline: `caae222`, package version `0.4.2`.
 
+Post-implementation review: [2026-09-22 release review](../validation/modernization-review.md) records corrective fixes, independent portable regression results, installed-wheel acceptance, and remaining platform deferrals.
+
 The objective is faster installation, startup, and interactive inference while keeping LewLM a small, easy-to-integrate middleware layer. Complete the existing external-server integration, add ExLlamaV3 through TabbyAPI, and improve the portable CPU/CUDA paths. Keep native MLX, llama.cpp, llama.cpp-server, and Ollama available.
 
 ## Execution rules

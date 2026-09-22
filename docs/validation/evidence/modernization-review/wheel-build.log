@@ -1,0 +1,22 @@
+Processing ./.
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: lewlm
+  Building wheel for lewlm (pyproject.toml): started
+  Building wheel for lewlm (pyproject.toml): finished with status 'done'
+  Created wheel for lewlm: filename=lewlm-0.4.2-py3-none-any.whl size=763591 sha256=afeee3891e606deec01b926a0c1899496ae5a60877fdb0bcdcba492ce0be7477
+  Stored in directory: /private/var/folders/wd/mw1mz5kx15d9kjnyn4lgdfpr0000gn/T/pip-ephem-wheel-cache-cfdkljqr/wheels/bd/94/02/a9e1a00904b4d4d05c34082caf6a2d9d11fba5cea113d983ab
+Successfully built lewlm
+
+[notice] A new release of pip is available: 26.0.1 -> 26.2.1
+[notice] To update, run: /private/tmp/lewlm-review-venv/bin/python -m pip install --upgrade pip
+Processing /tmp/lewlm-review-dist/lewlm-0.4.2-py3-none-any.whl
+Installing collected packages: lewlm
+Successfully installed lewlm-0.4.2
+
+[notice] A new release of pip is available: 26.0.1 -> 26.2.1
+[notice] To update, run: /private/tmp/lewlm-review-venv/bin/python -m pip install --upgrade pip
