@@ -32,6 +32,15 @@ from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache
 pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
+@pytest.fixture(autouse=True)
+def fake_mlx_package_discovery(monkeypatch):
+    """These runtime tests use fake modules; discovery must use the same fixture."""
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_vision.runtime.find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[]),
+    )
+
+
 def test_mlx_vision_runtime_supports_real_mlx_vlm_signatures(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

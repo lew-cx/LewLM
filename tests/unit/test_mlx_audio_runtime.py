@@ -28,6 +28,15 @@ from lewlm.storage import BlockDiskCache, MetadataStore, MultimodalEncoderCache
 pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
+@pytest.fixture(autouse=True)
+def fake_mlx_package_discovery(monkeypatch):
+    """These runtime tests use fake modules; discovery must use the same fixture."""
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_audio.runtime.find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[]),
+    )
+
+
 def test_mlx_audio_runtime_supports_stt_submodule_layout(monkeypatch, sample_audio_bytes: bytes) -> None:
     captured: dict[str, object] = {}
 

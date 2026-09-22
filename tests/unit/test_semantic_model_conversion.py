@@ -532,10 +532,19 @@ class TestPairedArtifactPlanning:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         backend = MLXConversionBackend()
+        # The case is an installed mlx-lm missing one architecture, rather
+        # than an absent package (which deliberately retains the paired plan).
+        from importlib.util import find_spec
+        monkeypatch.setattr(
+            "lewlm.conversion.backend.importlib.util.find_spec",
+            lambda name: object() if name == "mlx_lm" else find_spec(name),
+        )
         monkeypatch.setattr(
             "lewlm.conversion.backend._mlx_lm_supports_model_type",
             lambda model_type: model_type != "gemma4",
         )
+        monkeypatch.setattr(backend, "availability_reason", lambda: None)
+        monkeypatch.setattr(backend, "_conversion_backend_available", lambda _backend: True)
         manifest = self._multimodal_manifest(tmp_path, model_type="gemma4")
 
         report = _report(backend, manifest, tmp_path / "out")

@@ -31,6 +31,15 @@ from lewlm.structured_output import JSONSchemaResponseFormat
 pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="MLX runtimes are macOS-only.")
 
 
+@pytest.fixture(autouse=True)
+def fake_mlx_package_discovery(monkeypatch):
+    """These runtime tests use fake modules; discovery must use the same fixture."""
+    monkeypatch.setattr(
+        "lewlm.runtime.mlx_text.runtime.find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[]),
+    )
+
+
 class FakeTokenizer:
     vocab_size = 1024
 
