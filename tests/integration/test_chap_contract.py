@@ -370,3 +370,44 @@ def test_an_sse_client_can_drop_and_resume_from_the_id_it_last_saw() -> None:
         assert live["data"]["payload"]["request_id"] == third_request_id
         epoch, _, sequence = live["id"].partition(":")
         assert epoch == resume_point.partition(":")[0] and int(sequence) > int(resume_point.partition(":")[2])
+
+
+@pytest.mark.parametrize("tool_name,arguments,issue", [
+    ("get_weather", '{"city":"Lisbon"}', None),
+    ("undeclared", '{"city":"Lisbon"}', "unknown_tool"),
+    ("get_weather", "null", "arguments_not_object"),
+])
+def test_nonstreaming_content_and_native_tools_are_both_preserved(monkeypatch, tool_name, arguments, issue):
+    engine = FakeOpenAIEngine()
+    original = engine._completion
+
+    def completion(reply):
+        result = original(reply)
+        message = result["choices"][0]["message"]
+        message["content"] = "I will check the weather."
+        message["tool_calls"][0]["function"]["name"] = tool_name
+        message["tool_calls"][0]["function"]["arguments"] = arguments
+        return result
+
+    monkeypatch.setattr(engine, "_completion", completion)
+    with FakeBackendFixture(engine=engine) as fixture:
+        with httpx.Client(base_url=fixture.base_url, timeout=30) as client:
+            response = client.post("/v1/chat/completions", json={
+                "model": fixture.model_id,
+                "messages": [{"role": "user", "content": "Weather in Lisbon?"}],
+                "tools": [{
+                    "name": "get_weather", "description": "Current weather.",
+                    "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+                }],
+            })
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["choices"][0]["message"]["content"] == "I will check the weather."
+            assert body["choices"][0]["finish_reason"] == "tool_calls"
+            assert body["tool_calls"]["status"] == ("failed" if issue else "parsed")
+            if issue is None:
+                assert body["tool_calls"]["tool_calls"][0]["call_id"] == "call_fixture_1"
+                assert body["tool_calls"]["tool_calls"][0]["arguments"] == {"city": "Lisbon"}
+            else:
+                assert body["tool_calls"]["tool_calls"] == []
+                assert body["tool_calls"]["issues"][0]["code"] == issue

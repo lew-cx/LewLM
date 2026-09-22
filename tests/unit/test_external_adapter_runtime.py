@@ -1555,3 +1555,71 @@ def test_external_adapter_runtime_maps_a_read_timeout_to_a_typed_error(
     assert runtime.candidate_report(
         _manifest(tmp_path, model_id="demo", display_name="demo"),
     ).supports_manifest is False
+
+
+def test_discovery_normalizes_legacy_v1_url_and_ignores_proxy(tmp_path, monkeypatch):
+    with _loopback_server({
+        ("GET", "/v1/models"): lambda handler, request: _write_json_response(
+            handler, {"data": [{"id": "demo"}]},
+        ),
+    }) as base_url:
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("no_proxy", "")
+        monkeypatch.setenv("NO_PROXY", "")
+        runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+            data_dir=tmp_path / "state", external_accelerator_enabled=True,
+            external_accelerator_base_url=base_url + "/v1/",
+        ))
+        try:
+            assert runtime.advertised_model_records() == ({"id": "demo"},)
+        finally:
+            asyncio.run(runtime.aclose())
+
+
+def test_discovery_refuses_redirect_without_contacting_destination(tmp_path):
+    redirected_requests = []
+    with _loopback_server({
+        ("GET", "/v1/models"): lambda handler, request: _write_json_response(
+            handler, {"data": [{"id": "redirected"}]}, redirected_requests, request,
+        ),
+    }) as destination:
+        def redirect(handler, request):
+            handler.send_response(302)
+            handler.send_header("Location", destination + "/v1/models")
+            handler.end_headers()
+
+        with _loopback_server({("GET", "/v1/models"): redirect}) as base_url:
+            runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+                data_dir=tmp_path / "state", external_accelerator_enabled=True,
+                external_accelerator_base_url=base_url,
+            ))
+            try:
+                with pytest.raises(RuntimeUnavailableError) as caught:
+                    runtime.advertised_model_records()
+                assert caught.value.details["status_code"] == 302
+                assert redirected_requests == []
+            finally:
+                asyncio.run(runtime.aclose())
+
+
+@pytest.mark.parametrize("invalid", [{}, {"error": "failure"}, {"data": None},
+                                      {"data": [None]}, {"data": [{"id": ""}]}])
+def test_malformed_inventory_preserves_last_known_models(tmp_path, monkeypatch, invalid):
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(
+        data_dir=tmp_path / "state", external_accelerator_enabled=True,
+        external_accelerator_base_url="http://127.0.0.1:18080",
+    ))
+    try:
+        monkeypatch.setattr(runtime, "_request_json", lambda *args: {"data": [{"id": "demo"}]})
+        assert runtime.advertised_model_records() == ({"id": "demo"},)
+        monkeypatch.setattr(runtime, "_request_json", lambda *args: invalid)
+        with pytest.raises(RuntimeUnavailableError):
+            runtime.advertised_model_records(refresh=True)
+        assert runtime.inventory_state == "stale"
+        assert runtime._discovered_model_records == ({"id": "demo"},)
+        monkeypatch.setattr(runtime, "_request_json", lambda *args: {"data": []})
+        assert runtime.advertised_model_records(refresh=True) == ()
+        assert runtime.inventory_state == "advertised"
+    finally:
+        asyncio.run(runtime.aclose())

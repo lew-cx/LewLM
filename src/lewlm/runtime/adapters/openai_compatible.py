@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import aclosing
 from io import BytesIO
 import json
 import os
@@ -14,7 +15,7 @@ from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 import wave
 
 from lewlm.config.settings import LewLMSettings
@@ -60,6 +61,17 @@ from lewlm.runtime.sampling import attach_sampling_report, resolve_sampling_cont
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Discovery and explicit capability probes use synchronous I/O. Apply the
+# same endpoint boundary as the async generation transport, including when
+# the process has ambient proxy settings.
+urlopen = build_opener(ProxyHandler({}), _RejectRedirects()).open
 # How long a failed `/v1/models` read stays cached before it is retried. Long
 # enough that a down server does not cost a connection attempt per lookup,
 # short enough that a server started after LewLM becomes usable on its own.
@@ -1086,20 +1098,24 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         payload = self._chat_payload(remote_model_id=remote_model_id, request=request, stream=False)
         response_payload = await self._request_json_async("POST", "/v1/chat/completions", payload)
         choices = response_payload.get("choices")
-        if not isinstance(choices, list) or not choices:
+        if (not isinstance(choices, list) or not choices
+                or not isinstance(choices[0], dict)
+                or not isinstance(choices[0].get("message"), dict)):
             raise RuntimeUnavailableError(
                 "External accelerator returned an invalid chat completion payload.",
                 details={"runtime": self.name, "response_keys": sorted(response_payload)},
             )
         message = choices[0].get("message", {})
         output_text = _normalize_content_text(message.get("content"))
+        tool_calls_text = _native_tool_calls_as_text(message.get("tool_calls"))
         if not output_text:
-            output_text = _native_tool_calls_as_text(message.get("tool_calls"))
+            output_text = tool_calls_text
         return GenerateResponse(
             model_id=request.model_id,
             output_text=output_text,
             finish_reason=str(choices[0].get("finish_reason", "stop")),
             usage=_normalize_usage(response_payload.get("usage")),
+            native_tool_calls=json.loads(tool_calls_text)["tool_calls"] if tool_calls_text else [],
         )
 
     def speech_formats(self, manifest: ModelManifest) -> AudioSpeechFormatSupport:
@@ -1198,6 +1214,18 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 self._record_discovery_failure(str(exc))
             raise
         data = payload.get("data")
+        if not isinstance(data, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"].strip()
+            for item in data
+        ):
+            reason = "External accelerator returned an invalid model inventory."
+            self._record_discovery_failure(reason)
+            raise RuntimeUnavailableError(
+                reason,
+                details={"runtime": self.name, "error_kind": "malformed_response"},
+            )
         model_ids: list[str] = []
         discovered_records: list[dict[str, Any]] = []
         if isinstance(data, list):
@@ -1375,51 +1403,65 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
 
     async def _stream_chat_completion(self, payload: dict[str, Any]):
         saw_done = False
-        async for message in self._transport.stream_sse(
+        async with aclosing(self._transport.stream_sse(
             "POST",
             "/v1/chat/completions",
             payload=payload,
-        ):
-            data = message.data.strip()
-            if data == "[DONE]":
-                saw_done = True
-                break
-            try:
-                event = json.loads(data)
-            except json.JSONDecodeError as exc:
-                raise RuntimeUnavailableError(
-                    "External accelerator returned malformed streaming JSON.",
-                    details={"runtime": self.name, "error_kind": "malformed_stream"},
-                ) from exc
-            if not isinstance(event, dict):
-                raise RuntimeUnavailableError(
-                    "External accelerator returned an unexpected streaming payload.",
-                    details={"runtime": self.name, "payload_type": type(event).__name__, "error_kind": "malformed_stream"},
-                )
-            usage = _normalize_usage(event.get("usage"))
-            if usage:
-                yield RuntimeStreamEvent(usage=usage)
-            choices = event.get("choices")
-            if not isinstance(choices, list) or not choices:
-                # OpenAI-style usage-only terminal events intentionally carry
-                # an empty choices array.
-                continue
-            delta = choices[0].get("delta", {})
-            if not isinstance(delta, dict):
-                continue
-            content = _normalize_content_text(delta.get("content"))
-            reasoning = _normalize_content_text(delta.get("reasoning_content", delta.get("reasoning")))
-            if content or reasoning:
-                yield RuntimeStreamEvent(content=content or None, reasoning=reasoning or None)
-            tool_calls = delta.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tool_call in tool_calls:
-                    normalized = _runtime_tool_call_delta(tool_call)
-                    if normalized is not None:
-                        yield RuntimeStreamEvent(tool_call=normalized)
-            finish_reason = choices[0].get("finish_reason")
-            if isinstance(finish_reason, str) and finish_reason:
-                yield RuntimeStreamEvent(finish_reason=finish_reason)
+        )) as stream:
+            async for message in stream:
+                data = message.data.strip()
+                if data == "[DONE]":
+                    saw_done = True
+                    break
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeUnavailableError(
+                        "External accelerator returned malformed streaming JSON.",
+                        details={"runtime": self.name, "error_kind": "malformed_stream"},
+                    ) from exc
+                if not isinstance(event, dict):
+                    raise RuntimeUnavailableError(
+                        "External accelerator returned an unexpected streaming payload.",
+                        details={"runtime": self.name, "payload_type": type(event).__name__, "error_kind": "malformed_stream"},
+                    )
+                if "error" in event or message.event == "error":
+                    raise RuntimeUnavailableError(
+                        "External accelerator reported a streaming error.",
+                        details={"runtime": self.name, "error_kind": "upstream_error"},
+                    )
+                usage = _normalize_usage(event.get("usage"))
+                if usage:
+                    yield RuntimeStreamEvent(usage=usage)
+                choices = event.get("choices")
+                if choices == []:
+                    # OpenAI-style usage-only terminal events intentionally carry
+                    # an empty choices array.
+                    continue
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    raise RuntimeUnavailableError(
+                        "External accelerator returned invalid streaming choices.",
+                        details={"runtime": self.name, "error_kind": "malformed_stream"},
+                    )
+                delta = choices[0].get("delta", {})
+                if not isinstance(delta, dict):
+                    raise RuntimeUnavailableError(
+                        "External accelerator returned an invalid streaming delta.",
+                        details={"runtime": self.name, "error_kind": "malformed_stream"},
+                    )
+                content = _normalize_content_text(delta.get("content"))
+                reasoning = _normalize_content_text(delta.get("reasoning_content", delta.get("reasoning")))
+                if content or reasoning:
+                    yield RuntimeStreamEvent(content=content or None, reasoning=reasoning or None)
+                tool_calls = delta.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        normalized = _runtime_tool_call_delta(tool_call)
+                        if normalized is not None:
+                            yield RuntimeStreamEvent(tool_call=normalized)
+                finish_reason = choices[0].get("finish_reason")
+                if isinstance(finish_reason, str) and finish_reason:
+                    yield RuntimeStreamEvent(finish_reason=finish_reason)
         if not saw_done:
             raise RuntimeUnavailableError(
                 "External accelerator event stream ended before the `[DONE]` marker.",
@@ -1537,7 +1579,7 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 reason or "External accelerator adapter is unavailable.",
                 details={"runtime": self.name},
             )
-        base_url = self._settings.external_accelerator_base_url or ""
+        base_url = server_root(self.endpoint.base_url)
         if payload is not None and body is not None:
             raise ValueError("payload and body cannot both be provided to the external accelerator request helper.")
         request_headers = {"Accept": accept, **(headers or {})}
@@ -1561,10 +1603,10 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         try:
             return urlopen(request, timeout=self._settings.external_accelerator_timeout_seconds)
         except HTTPError as exc:
-            body = self._redact_backend_secret(exc.read().decode("utf-8", errors="ignore"))
+            exc.close()
             raise RuntimeUnavailableError(
                 f"External accelerator request failed with HTTP {exc.code}.",
-                details={"runtime": self.name, "path": path, "body": body, "status_code": exc.code},
+                details={"runtime": self.name, "path": path, "status_code": exc.code},
             ) from exc
         except URLError as exc:
             self._record_discovery_failure(str(exc.reason))

@@ -1342,7 +1342,7 @@ class ChatOrchestrator:
                 request_metadata=dict(context.request.metadata),
                 metadata=response_metadata,
                 structured_output=_structured_output_result(context.request, context.prompt_trace, response.output_text),
-                tool_calls=_tool_call_result(context.prompt_trace, response.output_text),
+                tool_calls=_tool_call_result(context.prompt_trace, response.output_text, response.native_tool_calls),
                 serving_profile=self._serving_profile_from_metadata(context.request.metadata),
             )
         except Exception as exc:
@@ -1673,7 +1673,7 @@ class ChatOrchestrator:
                         request_metadata=dict(context.request.metadata),
                         metadata=response_metadata,
                         structured_output=_structured_output_result(context.request, context.prompt_trace, response.output_text),
-                        tool_calls=_tool_call_result(context.prompt_trace, response.output_text),
+                        tool_calls=_tool_call_result(context.prompt_trace, response.output_text, response.native_tool_calls),
                         serving_profile=self._serving_profile_from_metadata(context.request.metadata),
                     ),
                 )

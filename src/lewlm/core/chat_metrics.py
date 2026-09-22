@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 from lewlm.core.citations import CitationContextPackage
-from lewlm.core.contracts import GenerateMessage, GenerateRequest
+from lewlm.core.contracts import GenerateMessage, GenerateRequest, RuntimeToolCall
 from lewlm.prompting import PromptCompilationTrace, PromptToolDefinition
 from lewlm.runtime.scheduler import FrontierBatchMetrics
 from lewlm.structured_output import StructuredOutputResult, analyze_structured_output
@@ -49,6 +51,7 @@ def _structured_output_result(
 def _tool_call_result(
     prompt_trace: PromptCompilationTrace,
     output_text: str,
+    native_tool_calls: list[RuntimeToolCall] | None = None,
 ) -> ToolCallParseResult | None:
     """Strictly parse model-emitted tool calls against the declared tools.
 
@@ -66,6 +69,8 @@ def _tool_call_result(
     ]
     if not tools:
         return None
+    if native_tool_calls:
+        output_text = json.dumps({"tool_calls": [call.model_dump() for call in native_tool_calls]})
     return parse_tool_calls(output_text, tools=tools)
 
 

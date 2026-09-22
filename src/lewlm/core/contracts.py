@@ -1622,6 +1622,14 @@ class GenerateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RuntimeToolCall(BaseModel):
+    """Complete native call, still subject to the declared-tool validator."""
+
+    id: str | None = None
+    name: str
+    arguments: Any
+
+
 class GenerateResponse(BaseModel):
     """Runtime-agnostic generation response."""
 
@@ -1631,6 +1639,7 @@ class GenerateResponse(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
     reasoning: ReasoningOutput | None = None
     citations: list[GeneratedCitationReference] = Field(default_factory=list)
+    native_tool_calls: list[RuntimeToolCall] = Field(default_factory=list)
 
 
 class RuntimeToolCallDelta(BaseModel):
