@@ -296,18 +296,25 @@ def test_end_to_end_external_multimodal_model_converts_and_handles_multimodal_io
 
 
 def test_end_to_end_real_external_gguf_prompt_smoke_is_opt_in(
-    external_models_settings,
-    external_models_root: Path,
+    temp_settings,
+    external_models_source_root: Path,
 ) -> None:
     if os.environ.get("LEWLM_RUN_REAL_MODEL_SMOKE") != "1":
         pytest.skip("Set LEWLM_RUN_REAL_MODEL_SMOKE=1 to exercise the real Gemma-4-E2B GGUF prompt path.")
     pytest.importorskip("llama_cpp")
 
-    app = create_app(external_models_settings)
+    # The real weights, read in place: `external_models_root` holds stub copies
+    # whose .gguf files are placeholder bytes that cannot load.
+    real_model_dir = external_models_source_root / "Gemma-4-E2B-Hauhau"
+    settings = temp_settings.with_updates(
+        models_dir=(real_model_dir,),
+        file_access_roots=(temp_settings.data_dir, real_model_dir),
+    )
+    app = create_app(settings)
     with TestClient(app) as client:
         scan_response = client.post(
             "/v1/models/scan",
-            json={"paths": [str(external_models_root / "Gemma-4-E2B-Hauhau")]},
+            json={"paths": [str(real_model_dir)]},
         )
         assert scan_response.status_code == 200
         model_id = scan_response.json()["manifests"][0]["model_id"]
