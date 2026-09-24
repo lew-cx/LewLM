@@ -66,6 +66,11 @@ _SGLANG_BRIDGE_PARAMETERS: dict[str, str] = {
     name: parameter for name, parameter in _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS.items() if name != "seed"
 }
 
+#: TabbyAPI (pinned 53da7919) implements top_k/min_p/repetition_penalty in its
+#: sampler request (common/sampling.py) and has no seed at all: the field is
+#: accepted by the OpenAI schema and dropped.
+_EXLLAMAV3_TABBY_PARAMETERS: dict[str, str] = dict(_SGLANG_BRIDGE_PARAMETERS)
+
 SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "llamacpp": _LLAMACPP_PARAMETERS,
     "mlx_text": _MLX_TEXT_PARAMETERS,
@@ -73,6 +78,7 @@ SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "external_bridge": _EXTERNAL_BRIDGE_PARAMETERS,
     "external_bridge_extended": _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS,
     "external_bridge_sglang": _SGLANG_BRIDGE_PARAMETERS,
+    "external_bridge_tabby": _EXLLAMAV3_TABBY_PARAMETERS,
 }
 
 

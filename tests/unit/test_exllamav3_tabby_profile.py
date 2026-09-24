@@ -172,3 +172,19 @@ def test_unavailable_tabby_endpoint_leaves_ollama_routable_and_conversion_refuse
             fake.stop()
         except Exception:
             pass
+
+
+def test_tabby_sampling_map_matches_what_the_pinned_server_implements(tmp_path: Path) -> None:
+    # TabbyAPI 53da7919's sampler request has top_k/min_p/repetition_penalty and
+    # no seed (accepted by the schema, then dropped): never claim determinism.
+    from lewlm.core.contracts import GenerateMessage, GenerateRequest, SamplingControls
+    from lewlm.runtime.adapters import LocalOpenAICompatibleAdapterRuntime
+
+    endpoint = ExternalEndpoint(endpoint_id="tabby", profile="exllamav3_tabby", base_url="http://127.0.0.1:5000/v1")
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(data_dir=tmp_path, external_endpoints=(endpoint,)), endpoint=endpoint)
+    request = GenerateRequest(model_id="m", messages=[GenerateMessage(role="user", content="hi")], max_tokens=8, temperature=0.9,
+                              sampling=SamplingControls(seed=7, top_k=20, min_p=0.05, repetition_penalty=1.1))
+    payload = runtime._chat_payload(remote_model_id="qwen-exl3", request=request, stream=False)
+    report = request.metadata["sampling_controls"]
+    assert "seed" not in payload and (payload["top_k"], payload["min_p"], payload["repetition_penalty"]) == (20, 0.05, 1.1)
+    assert report["unsupported"] == ["seed"] and report["deterministic"] is False
