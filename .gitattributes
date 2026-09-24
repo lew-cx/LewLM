@@ -1,2 +1,17 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Files executed or parsed inside Linux containers keep LF on every checkout,
+# including Windows with core.autocrlf=true: a CRLF shell script fails under
+# sh ("set: Illegal option -"), and a CRLF requirements line leaves a trailing
+# \r in the llama-cpp-python spec the Dockerfiles extract for pip.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+.dockerignore text eol=lf
+requirements/**/*.txt text eol=lf
+examples/backends/**/*.txt text eol=lf
+examples/backends/**/*.yml text eol=lf
+examples/backends/**/*.env.example text eol=lf
+docker-compose.yml text eol=lf
+.env.example text eol=lf

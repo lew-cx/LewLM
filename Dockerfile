@@ -184,7 +184,7 @@ RUN --mount=type=cache,id=lewlm-pip,target=/root/.cache/pip \
     --mount=type=cache,id=lewlm-pip-native-${CACHE_SCOPE},target=/root/.cache/pip-native \
     --mount=type=cache,id=lewlm-ccache-${CACHE_SCOPE},target=/root/.cache/ccache \
     set -eu; \
-    spec="$(grep -i '^llama[-_]cpp[-_]python' requirements.txt | head -n1 | sed 's/[[:space:]]*;.*$//; s/[[:space:]]*\\$//')"; \
+    spec="$(tr -d '\r' < requirements.txt | grep -i '^llama[-_]cpp[-_]python' | head -n1 | sed 's/[[:space:]]*;.*$//; s/[[:space:]]*\\$//')"; \
     if [ -z "$spec" ]; then echo "flavor ${IMAGE_FLAVOR}: no llama-cpp-python in the dependency input; skipping"; exit 0; fi; \
     mkdir -p /wheels/native; \
     if [ -n "${LLAMA_CPP_PYTHON_WHEEL_INDEX}" ]; then \

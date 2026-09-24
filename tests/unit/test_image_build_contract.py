@@ -11,14 +11,17 @@ timings are produced by ``scripts/docker/measure_rebuild.sh`` on a Docker host.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILES = (REPO_ROOT / "Dockerfile", REPO_ROOT / "Dockerfile.cuda")
+# Git for Windows ships sh; these run wherever one is on PATH so a Windows
+# checkout proves its own copies of the container scripts.
+needs_sh = pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh on PATH (Git for Windows provides one)")
 
 
 def _text(path: Path) -> str:
@@ -123,7 +126,7 @@ def test_dockerignore_keeps_wheel_inputs_and_drops_the_rest() -> None:
         assert needed not in ignore and f"{needed}/" not in ignore
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh script")
+@needs_sh
 def test_cuda_arch_validator_rejects_unsupported_and_native(tmp_path: Path) -> None:
     script = REPO_ROOT / "scripts" / "docker" / "validate_cuda_archs.sh"
     toolkit = tmp_path / "nvcc-list.txt"
@@ -149,13 +152,17 @@ def test_cuda_arch_validator_rejects_unsupported_and_native(tmp_path: Path) -> N
     assert run("").returncode == 2
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX container build shell")
+@needs_sh
 @pytest.mark.parametrize("path", DOCKERFILES, ids=lambda p: p.name)
 @pytest.mark.parametrize("requirement,expected", [
     ("llama-cpp-python>=0.3.0,<1.0.0\n", "llama-cpp-python>=0.3.0,<1.0.0"),
     ("llama-cpp-python==0.3.16 \\\n    --hash=sha256:abc\n", "llama-cpp-python==0.3.16"),
     ("llama-cpp-python==0.3.16 ; python_version >= '3.11' \\\n    --hash=sha256:abc\n", "llama-cpp-python==0.3.16"),
     ("httpx==0.28.1\n", ""),
+    # A requirements file that reached the build context with CRLF endings (a
+    # copied or zip-extracted Windows tree) must not leave a trailing \r.
+    ("llama-cpp-python>=0.3.0,<1.0.0\r\n", "llama-cpp-python>=0.3.0,<1.0.0"),
+    ("llama-cpp-python==0.3.16 \\\r\n    --hash=sha256:abc\r\n", "llama-cpp-python==0.3.16"),
 ])
 def test_native_requirement_extraction_accepts_hashed_locks(path, requirement, expected, tmp_path):
     # Execute the actual Docker build's extraction command against pip-compile
@@ -163,7 +170,32 @@ def test_native_requirement_extraction_accepts_hashed_locks(path, requirement, e
     command = next(line.strip() for line in _stage(_text(path), "deps").splitlines()
                    if line.strip().startswith('spec="$('))
     command = command.removesuffix("\\").rstrip()
-    (tmp_path / "requirements.txt").write_text(requirement, encoding="utf-8")
-    result = subprocess.run(["sh", "-eu", "-c", command + '\nprintf "%s" "$spec"'],
-                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    (tmp_path / "requirements.txt").write_bytes(requirement.encode("utf-8"))
+    # A script file, not `sh -c`: on Windows the MSYS runtime re-parses the
+    # command line and would collapse the sed expression's backslashes.
+    (tmp_path / "extract.sh").write_bytes((command + '\nprintf "%s" "$spec"\n').encode("utf-8"))
+    result = subprocess.run(["sh", "-eu", "extract.sh"], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert result.stdout == expected
+
+
+@needs_sh
+def test_checked_out_container_scripts_run_under_sh() -> None:
+    # On Windows with core.autocrlf only .gitattributes keeps these LF; a CRLF
+    # copy fails under sh before it validates anything.
+    for script in sorted((REPO_ROOT / "scripts" / "docker").glob("*.sh")):
+        data = script.read_bytes()
+        assert b"\r" not in data, f"{script.name} has CRLF line endings"
+        shell = data.split(b"\n", 1)[0].split()[-1].decode()  # "#!/usr/bin/env bash" -> bash
+        interpreter = shutil.which(shell)
+        # Windows' System32\bash.exe is the WSL launcher, not a shell for this checkout.
+        if interpreter is None or "system32" in interpreter.lower():
+            continue
+        result = subprocess.run([interpreter, "-n", str(script)], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, f"{script.name}: {result.stderr}"
+
+
+def test_gitattributes_pins_lf_for_container_inputs() -> None:
+    rules = {line.split()[0]: line.split()[1:] for line in _text(REPO_ROOT / ".gitattributes").splitlines()
+             if line.strip() and not line.startswith("#")}
+    for pattern in ("*.sh", "Dockerfile", "Dockerfile.*", "requirements/**/*.txt"):
+        assert "eol=lf" in rules.get(pattern, []), f"{pattern} must be checked out with LF"
