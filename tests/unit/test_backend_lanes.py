@@ -45,6 +45,20 @@ def test_detect_names_every_roadmap_lane_and_why_a_mac_cannot_run_the_hardware_o
     assert by_lane["wsl2"]["deferral_rule"] == "A Linux pass alone does not prove WSL networking"
 
 
+def test_the_wsl2_lane_runs_from_either_side_of_the_boundary_but_never_from_plain_linux() -> None:
+    module = _load()
+
+    def wsl2(**facts):
+        report = module.detect(_host(module, **facts))
+        return next(lane for lane in report["lanes"] if lane["lane"] == "wsl2")
+
+    assert wsl2(system="Linux", wsl=True)["runnable_here"], "inside a WSL2 distribution"
+    assert wsl2(system="Windows", machine="AMD64", wsl=True)["runnable_here"], "Windows with a running WSL2 VM (Chap's side)"
+    assert "WSL2 kernel" in wsl2(system="Linux", wsl=False)["blockers"][0], "a Linux pass alone does not prove WSL networking"
+    assert "running WSL2 distribution" in wsl2(system="Windows", machine="AMD64", wsl=False)["blockers"][0]
+    assert "needs Linux or Windows" in wsl2(system="Darwin", machine="arm64", wsl=False)["blockers"][0]
+
+
 def test_a_hardware_lane_on_the_wrong_host_is_a_deferred_record_with_the_next_command(tmp_path: Path) -> None:
     module = _load()
     record = module.run_lane(

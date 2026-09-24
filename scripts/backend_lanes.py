@@ -44,7 +44,7 @@ Runner = Callable[[Sequence[str]], tuple[int, str, str]]
 class Lane:
     lane: str
     title: str
-    system: str | None            # platform.system() required, or None for any
+    system: str | tuple[str, ...] | None  # platform.system() required (any of a tuple), or None for any
     machine: str | None           # platform.machine() required (arm64 for Apple Silicon), or None
     needs_nvidia: bool
     needs_wsl: bool
@@ -80,8 +80,11 @@ LANES: dict[str, Lane] = {
         "Core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation; ExLlamaV3 only if separately promoted",
         "Linux or WSL results do not satisfy this lane",
     ),
+    # Runnable from either side of the boundary: inside a WSL2 distribution, or
+    # from Windows (where Chap and a host-run LewLM live) while a WSL2 VM runs
+    # the engine -- Docker Desktop's WSL2 backend included.
     "wsl2": Lane(
-        "wsl2", "Windows + WSL2", "Linux", None, False, True, ("vllm", "sglang", "exllamav3-tabby"),
+        "wsl2", "Windows + WSL2", ("Linux", "Windows"), None, False, True, ("vllm", "sglang", "exllamav3-tabby"),
         "Documented engine recipes and Windows-Chap-to-LewLM connectivity",
         "A Linux pass alone does not prove WSL networking",
     ),
@@ -112,12 +115,34 @@ class HostFacts:
         code, out, err = runner(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"])
         nvidia = code == 0 and bool(out.strip())
         detail = out.strip().splitlines()[0] if nvidia else (err.strip() or "nvidia-smi unavailable")[:200]
-        wsl = False
-        try:
-            wsl = "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
-        except OSError:
-            wsl = False
-        return cls(system=platform.system(), machine=platform.machine(), nvidia=nvidia, nvidia_detail=detail, wsl=wsl)
+        system = platform.system()
+        if system == "Windows":
+            wsl = _windows_wsl2_running()
+        else:
+            try:
+                wsl = "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
+            except OSError:
+                wsl = False
+        return cls(system=system, machine=platform.machine(), nvidia=nvidia, nvidia_detail=detail, wsl=wsl)
+
+
+def _windows_wsl2_running() -> bool:
+    """Whether `wsl.exe -l -v` lists a running version-2 distribution (Docker Desktop's included)."""
+
+    if shutil.which("wsl.exe") is None:
+        return False
+    try:
+        completed = subprocess.run(["wsl.exe", "-l", "-v"], capture_output=True, timeout=30,
+                                   env={**os.environ, "WSL_UTF8": "1"})
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # Older wsl.exe ignores WSL_UTF8 and writes UTF-16LE.
+    text = completed.stdout.decode("utf-8", errors="replace").replace("\x00", "")
+    for line in text.splitlines()[1:]:
+        fields = line.replace("*", " ").split()
+        if len(fields) >= 3 and fields[-2].lower() == "running" and fields[-1] == "2":
+            return True
+    return False
 
 
 def _default_runner(command: Sequence[str]) -> tuple[int, str, str]:
@@ -133,14 +158,18 @@ def lane_blockers(lane: Lane, host: HostFacts) -> list[str]:
     blockers: list[str] = []
     if not lane.runnable_by_script:
         blockers.append("this lane is a manual checklist; the script never marks it complete")
-    if lane.system is not None and host.system != lane.system:
-        blockers.append(f"needs {lane.system}, host is {host.system}")
+    systems = (lane.system,) if isinstance(lane.system, str) else lane.system
+    if systems is not None and host.system not in systems:
+        blockers.append(f"needs {' or '.join(systems)}, host is {host.system}")
     if lane.machine is not None and host.machine != lane.machine:
         blockers.append(f"needs {lane.machine}, host is {host.machine}")
     if lane.needs_nvidia and not host.nvidia:
         blockers.append(f"needs a working NVIDIA driver ({host.nvidia_detail})")
     if lane.needs_wsl and not host.wsl:
-        blockers.append("needs a WSL2 kernel (no 'microsoft' in /proc/version)")
+        if host.system == "Windows":
+            blockers.append("needs a running WSL2 distribution (`wsl.exe -l -v` lists none running at version 2)")
+        else:
+            blockers.append("needs a WSL2 kernel (no 'microsoft' in /proc/version)")
     return blockers
 
 
