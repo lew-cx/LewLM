@@ -995,7 +995,10 @@ class DistributedClusterService:
     def _refreshed_workers(self) -> list[ClusterWorkerRecord]:
         workers = self._stored_workers()
         refreshed = [self._refresh_worker_state(worker) for worker in workers]
-        self._store_workers(refreshed)
+        # status() runs on every telemetry snapshot; only a state change is
+        # worth a durable commit (each one is a real fsync on NTFS and ext4).
+        if refreshed != workers:
+            self._store_workers(refreshed)
         return refreshed
 
     def _refresh_worker_state(self, worker: ClusterWorkerRecord) -> ClusterWorkerRecord:

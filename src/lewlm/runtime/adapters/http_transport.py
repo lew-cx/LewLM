@@ -5,14 +5,28 @@ from __future__ import annotations
 import codecs
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
+import ssl
 from typing import Any
 
 import httpx
 
 from lewlm.config.endpoints import ExternalEndpoint, server_root
 from lewlm.core.errors import RuntimeUnavailableError
+
+
+@lru_cache(maxsize=1)
+def _verified_ssl_context() -> ssl.SSLContext:
+    """One CA-verified context shared by every bridge transport in the process.
+
+    httpx builds a fresh context per client by default, and loading the CA
+    bundle costs ~0.1 s on Windows for each endpoint and bootstrap. The context
+    matches the client's ``trust_env=False``.
+    """
+
+    return httpx.create_ssl_context(trust_env=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +154,7 @@ class AsyncBridgeTransport:
                 max_connections=max_connections,
                 max_keepalive_connections=max_keepalive_connections,
             ),
+            verify=_verified_ssl_context(),
             trust_env=False,
             follow_redirects=False,
             headers=self._authorization_headers(),

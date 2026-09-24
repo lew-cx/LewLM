@@ -233,7 +233,9 @@ class MetadataStore:
 
     def initialize(self) -> None:
         with self.connection() as connection:
-            connection.executescript(SCHEMA_SQL)
+            # executescript runs in autocommit mode; one explicit transaction
+            # makes a fresh schema one fsync instead of one per statement.
+            connection.executescript(f"BEGIN;\n{SCHEMA_SQL}\nCOMMIT;")
             self._ensure_column(connection, "job_records", "cache_key", "TEXT")
             self._ensure_column(connection, "model_manifests", "source_path_encrypted", "TEXT")
             connection.execute(
