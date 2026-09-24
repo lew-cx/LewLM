@@ -70,7 +70,10 @@ count_native() {
 }
 
 run_build() {
-    local label="$1" context="$2" log="$out/$label.log"
+    # Separate statements: `local` expands every word before assigning any, so
+    # "$label" in the same statement would still be unset under `set -u`.
+    local label="$1" context="$2"
+    local log="$out/$label.log"
     shift 2
     local start end elapsed
     echo "== $label (context: $context)"
