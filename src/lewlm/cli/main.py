@@ -716,12 +716,31 @@ def _add_idempotency_key_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _utf8_redirected_output() -> None:
+    """Write UTF-8 when stdout/stderr are redirected on Windows.
+
+    A Windows console receives Unicode through the console API, but a pipe or
+    file gets the ANSI code page (cp1252), which cannot encode most of what a
+    model may reply with (CJK, arrows, emoji): `lewlm chat > out.txt` would
+    raise UnicodeEncodeError after the generation had already run.
+    """
+
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None or stream.isatty() or (stream.encoding or "").lower().replace("-", "") == "utf8":
+            continue
+        reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     settings: LewLMSettings | None = None,
     services: LewLMServices | None = None,
 ) -> int:
+    _utf8_redirected_output()
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     resolved_settings = settings or get_settings()

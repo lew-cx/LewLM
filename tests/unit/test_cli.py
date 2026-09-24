@@ -2012,3 +2012,27 @@ def test_cli_main_preserves_injected_services_and_still_closes_owned_failures(
     assert exit_code == 0
     assert payload["discovered_count"] == 1
     assert injected_close_calls == 0
+
+
+def test_redirected_windows_output_is_utf8_so_model_replies_cannot_crash_the_cli(monkeypatch) -> None:
+    import io
+    import sys
+
+    from lewlm.cli.main import _utf8_redirected_output
+
+    # A pipe or file on Windows gets the ANSI code page, which cannot encode
+    # most model output; the reply must survive `lewlm chat > out.txt`.
+    redirected = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdout", redirected)
+    _utf8_redirected_output()
+    print("東京 → \U0001f680")
+    redirected.flush()
+    assert redirected.buffer.getvalue().decode("utf-8") == "東京 → \U0001f680\n"
+
+    # POSIX streams are left as they are.
+    untouched = io.TextIOWrapper(io.BytesIO(), encoding="latin-1")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "stdout", untouched)
+    _utf8_redirected_output()
+    assert sys.stdout.encoding == "latin-1"
