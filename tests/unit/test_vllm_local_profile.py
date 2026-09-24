@@ -21,7 +21,7 @@ import pytest
 from lewlm.config.endpoints import ExternalEndpoint
 from lewlm.config.settings import LewLMSettings
 from lewlm.core.bootstrap import bootstrap_services
-from lewlm.core.contracts import CapabilityName, GenerateMessage, RuntimeProvider
+from lewlm.core.contracts import CapabilityName, GenerateMessage, GenerateRequest, RuntimeProvider, SamplingControls
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.core.serving_core import ServingRuntimeAdapterKind, continuous_batching_ownership, describe_serving_runtime_adapter
 from lewlm.runtime.adapters import LocalOpenAICompatibleAdapterRuntime
@@ -169,6 +169,29 @@ def test_json_schema_is_forwarded_natively_and_reported_as_upstream_enforced(tmp
     assert status.enforcement_evidence == "upstream_native"
     assert status.decoder_enforced is False, "LewLM never observes vLLM's decoder; validation happens after generation"
     assert status.fallback_used is False
+
+
+def test_seeded_requests_bypass_vllm_prefix_cache_so_the_seed_reproduces(tmp_path: Path) -> None:
+    # Observed on vLLM v0.29.0: with prefix caching on, a fresh prompt and its
+    # cached repeat can sample different text under the same seed.
+    endpoint = _endpoint("http://127.0.0.1:8000/v1")
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(data_dir=tmp_path, external_endpoints=(endpoint,)), endpoint=endpoint)
+
+    def payload(**sampling) -> dict:
+        request = GenerateRequest(model_id="m", messages=[GenerateMessage(role="user", content="hi")], max_tokens=8,
+                                  temperature=0.9, sampling=SamplingControls(**sampling))
+        return runtime._chat_payload(remote_model_id="qwen", request=request, stream=False)
+
+    first, second = payload(seed=7), payload(seed=7)
+    assert first["seed"] == 7 and len(first["cache_salt"]) == 64
+    assert first["cache_salt"] != second["cache_salt"], "each seeded request evaluates its whole prompt"
+    assert "cache_salt" not in payload(top_p=0.9), "unseeded requests keep prefix reuse"
+
+    apple = _endpoint("http://127.0.0.1:8001/v1", endpoint_id="vllm-mlx", profile="vllm_mlx")
+    other = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(data_dir=tmp_path, external_endpoints=(apple,)), endpoint=apple)
+    request = GenerateRequest(model_id="m", messages=[GenerateMessage(role="user", content="hi")], max_tokens=8,
+                              temperature=0.9, sampling=SamplingControls(seed=7))
+    assert "cache_salt" not in other._chat_payload(remote_model_id="qwen", request=request, stream=False)
 
 
 def test_bridge_never_opens_a_lewlm_microbatch_window_but_reports_backend_batching(tmp_path: Path) -> None:

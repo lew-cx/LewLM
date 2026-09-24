@@ -1374,6 +1374,13 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         }
         if stream:
             payload["stream_options"] = {"include_usage": True}
+        if "seed" in sampling and self.endpoint.profile == "vllm_local":
+            # vLLM's prefix cache makes a seeded reply depend on cache state: a
+            # hit re-evaluates only the prompt's tail, and the shifted logits can
+            # change what the seed samples. A fresh salt forces the whole prompt
+            # to be evaluated, so the reported determinism holds; unseeded
+            # requests keep full prefix reuse.
+            payload["cache_salt"] = token_hex(32)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = request.metadata.get("tool_choice", "auto")
