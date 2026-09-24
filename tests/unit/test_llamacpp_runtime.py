@@ -21,6 +21,7 @@ from lewlm.core.contracts import (
     ModelValidationResult,
     RerankRequest,
     RuntimeAffinity,
+    SamplingControls,
     SpeculationMode,
     ValidationState,
     utc_now,
@@ -1188,6 +1189,84 @@ def test_llamacpp_prefix_cache_wrapper_uses_longest_prefix_matches() -> None:
 
     assert (1, 2, 3, 4) in cache
     assert cache[(1, 2, 3, 4)] == "cached-state"
+
+
+class _SamplingRecordingLlama:
+    """Records what each completion saw: its kwargs, a reset, and the attached cache."""
+
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.cache = "attached-prefix-cache"
+        self._reset_since_last_call = False
+
+    def reset(self) -> None:
+        self._reset_since_last_call = True
+
+    def create_chat_completion(self, *, messages, max_tokens, temperature, stream=False,
+                               top_p=None, seed=None, stop=None):
+        type(self).calls.append({"seed": seed, "top_p": top_p, "stop": stop, "stream": stream,
+                                 "reset": self._reset_since_last_call, "cache": self.cache})
+        self._reset_since_last_call = False
+        if stream:
+            return iter([{"choices": [{"delta": {"content": "a"}}]}, {"choices": [{"delta": {"content": "b"}}]}])
+        return {"choices": [{"message": {"content": "ab"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}}
+
+    def tokenize(self, payload: bytes) -> list[int]:
+        return list(payload)
+
+    def detokenize(self, tokens: list[int]) -> bytes:
+        return bytes(tokens)
+
+
+def _sampling_runtime(monkeypatch, tmp_path: Path) -> LlamaCppRuntime:
+    _SamplingRecordingLlama.calls = []
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(Llama=_SamplingRecordingLlama) if name == "llama_cpp" else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    asyncio.run(runtime.load_model(_manifest()))
+    return runtime
+
+
+def _sampled_request(**controls) -> GenerateRequest:
+    return GenerateRequest(model_id="gguf-model", messages=[GenerateMessage(role="user", content="hi")],
+                           max_tokens=8, temperature=0.9, sampling=SamplingControls(**controls))
+
+
+def test_llamacpp_streaming_applies_and_reports_sampling_controls(monkeypatch, tmp_path: Path) -> None:
+    runtime = _sampling_runtime(monkeypatch, tmp_path)
+    request = _sampled_request(top_p=0.8, stop=["\n\n"])
+
+    async def consume() -> str:
+        return "".join([chunk async for chunk in runtime.stream_generate(request)])
+
+    assert asyncio.run(consume()) == "ab"
+    call = _SamplingRecordingLlama.calls[-1]
+    assert call["stream"] is True and call["top_p"] == 0.8 and call["stop"] == ["\n\n"]
+    assert request.metadata["sampling_controls"]["applied"] == {"top_p": 0.8, "stop": ["\n\n"]}
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["nonstreaming", "streaming"])
+def test_llamacpp_seeded_requests_evaluate_from_an_empty_kv_state(monkeypatch, tmp_path: Path, stream: bool) -> None:
+    # A repeated prompt otherwise reuses KV state and re-evaluates only its tail,
+    # which changes the logits enough for two seeded runs to diverge.
+    runtime = _sampling_runtime(monkeypatch, tmp_path)
+
+    async def run(request: GenerateRequest) -> None:
+        if stream:
+            [chunk async for chunk in runtime.stream_generate(request)]
+        else:
+            await runtime.generate(request)
+
+    asyncio.run(run(_sampled_request(seed=7)))
+    asyncio.run(run(_sampled_request(top_p=0.9)))
+    seeded, unseeded = _SamplingRecordingLlama.calls[-2:]
+    assert seeded["seed"] == 7 and seeded["reset"] is True and seeded["cache"] is None
+    assert unseeded["reset"] is False and unseeded["cache"] == "attached-prefix-cache", "unseeded requests keep prefix reuse"
+    assert runtime._clients["gguf-model"].cache == "attached-prefix-cache", "the cache is restored after a seeded request"
 
 
 def _manifest(

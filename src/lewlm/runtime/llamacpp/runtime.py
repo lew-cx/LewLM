@@ -6,7 +6,8 @@ import asyncio
 import copy
 import inspect
 import math
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 import platform
@@ -262,14 +263,15 @@ class LlamaCppRuntime(ManagedTextRuntime):
         prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
         structured_output_options = self._structured_output_options(request=request, client=client)
         sampling_options = self._sampling_options(request, client)
-        response = client.create_chat_completion(
-            messages=[{"role": message.role, "content": message.content} for message in request.messages],
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=False,
-            **sampling_options,
-            **structured_output_options,
-        )
+        with _fresh_evaluation_when_seeded(client, sampling_options):
+            response = client.create_chat_completion(
+                messages=[{"role": message.role, "content": message.content} for message in request.messages],
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                stream=False,
+                **sampling_options,
+                **structured_output_options,
+            )
         self._record_prefix_cache_request(
             request=request,
             client=client,
@@ -303,18 +305,21 @@ class LlamaCppRuntime(ManagedTextRuntime):
         request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
         prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
         structured_output_options = self._structured_output_options(request=request, client=client)
-        chunks = client.create_chat_completion(
-            messages=[{"role": message.role, "content": message.content} for message in request.messages],
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=True,
-            **structured_output_options,
-        )
-        for chunk in chunks:
-            content = _llama_stream_chunk_text(chunk)
-            if content:
-                yield content
-            await asyncio.sleep(0)
+        sampling_options = self._sampling_options(request, client)
+        with _fresh_evaluation_when_seeded(client, sampling_options):
+            chunks = client.create_chat_completion(
+                messages=[{"role": message.role, "content": message.content} for message in request.messages],
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                stream=True,
+                **sampling_options,
+                **structured_output_options,
+            )
+            for chunk in chunks:
+                content = _llama_stream_chunk_text(chunk)
+                if content:
+                    yield content
+                await asyncio.sleep(0)
         self._record_prefix_cache_request(
             request=request,
             client=client,
@@ -1682,6 +1687,35 @@ def _llamacpp_gpu_offload_capability(llama_cpp_module: Any) -> bool | None:
 
 def _normalized_model_path(source_path: str | Path) -> str:
     return str(Path(source_path).expanduser())
+
+
+@contextmanager
+def _fresh_evaluation_when_seeded(client: Any, sampling_options: dict[str, Any]) -> Iterator[None]:
+    """Evaluate a seeded request's whole prompt from an empty KV state.
+
+    A seed reproduces output only when the logits reproduce. llama.cpp reuses
+    the previous prompt's KV state (and LewLM's RAM prefix cache restores it),
+    so a repeated prompt re-evaluates only its tail in a different batch shape
+    and yields slightly different logits: two seeded runs then diverge even
+    though the seed was applied. Seeded requests trade prefix reuse for
+    reproducibility; unseeded requests are untouched.
+    """
+
+    if "seed" not in sampling_options:
+        yield
+        return
+    reset = getattr(client, "reset", None)
+    if callable(reset):
+        reset()
+    has_cache = hasattr(client, "cache")
+    cache = getattr(client, "cache", None)
+    if has_cache:
+        client.cache = None
+    try:
+        yield
+    finally:
+        if has_cache:
+            client.cache = cache
 
 
 def _llama_stream_chunk_text(chunk: Any) -> str:
