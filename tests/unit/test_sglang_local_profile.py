@@ -220,3 +220,18 @@ def test_stopped_sglang_is_a_structured_endpoint_failure_that_keeps_native_candi
             fake.stop()
         except Exception:
             pass
+
+
+def test_seed_is_reported_unsupported_because_sglang_ignores_it_by_default(tmp_path: Path) -> None:
+    # SGLang v0.5.19 accepts `seed` but applies it only under
+    # --enable-deterministic-inference; claiming it would claim determinism.
+    from lewlm.core.contracts import GenerateRequest, SamplingControls
+
+    endpoint = ExternalEndpoint(endpoint_id="sglang", profile="sglang_local", base_url="http://127.0.0.1:30000/v1")
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(data_dir=tmp_path, external_endpoints=(endpoint,)), endpoint=endpoint)
+    request = GenerateRequest(model_id="m", messages=[GenerateMessage(role="user", content="hi")], max_tokens=8, temperature=0.9,
+                              sampling=SamplingControls(seed=7, top_p=0.9, top_k=20))
+    payload = runtime._chat_payload(remote_model_id="qwen", request=request, stream=False)
+    report = request.metadata["sampling_controls"]
+    assert "seed" not in payload and payload["top_p"] == 0.9 and payload["top_k"] == 20
+    assert report["unsupported"] == ["seed"] and report["deterministic"] is False

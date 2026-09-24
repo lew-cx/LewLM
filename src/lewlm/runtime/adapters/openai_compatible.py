@@ -1351,8 +1351,10 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             request.sampling,
             runtime_name=self.name,
             family=(
-                "external_bridge_extended"
-                if self.endpoint.profile in {"vllm_local", "vllm_mlx", "sglang_local"}
+                "external_bridge_sglang"
+                if self.endpoint.profile == "sglang_local"
+                else "external_bridge_extended"
+                if self.endpoint.profile in {"vllm_local", "vllm_mlx"}
                 else "external_bridge"
             ),
         )

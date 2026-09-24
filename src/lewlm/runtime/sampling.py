@@ -58,12 +58,21 @@ _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS: dict[str, str] = {
     "repetition_penalty": "repetition_penalty",
 }
 
+#: SGLang accepts `seed` on its OpenAI routes but, at the pinned v0.5.19, only
+#: applies it when the server runs with --enable-deterministic-inference
+#: (sampling_batch_info.py); otherwise it is silently ignored. Reporting it as
+#: applied would claim a determinism the engine does not provide.
+_SGLANG_BRIDGE_PARAMETERS: dict[str, str] = {
+    name: parameter for name, parameter in _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS.items() if name != "seed"
+}
+
 SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "llamacpp": _LLAMACPP_PARAMETERS,
     "mlx_text": _MLX_TEXT_PARAMETERS,
     "onnx_genai": _ONNX_GENAI_PARAMETERS,
     "external_bridge": _EXTERNAL_BRIDGE_PARAMETERS,
     "external_bridge_extended": _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS,
+    "external_bridge_sglang": _SGLANG_BRIDGE_PARAMETERS,
 }
 
 
