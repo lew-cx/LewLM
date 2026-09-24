@@ -48,6 +48,11 @@ services:
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - VLLM_NO_USAGE_STATS=1
       - DO_NOT_TRACK=1
+      # Windows (Docker Desktop) / WSL2 only: at this commit pinned memory is
+      # opt-in under a WSL2 kernel (platforms/cuda.py), and the default V2 model
+      # runner refuses to start without it ("UVA is not available"). Ignored
+      # outside WSL2, where pinned memory is always on.
+      - VLLM_WSL2_ENABLE_PIN_MEMORY=1
     volumes:
       - ${VLLM_HF_CACHE_DIR:-./cache/huggingface}:/cache/huggingface
       - ${VLLM_COMPILE_CACHE_DIR:-./cache/vllm}:/cache/vllm
