@@ -52,6 +52,15 @@ def evaluate(flavor, *, expect: str, hint: str | None) -> tuple[int, str]:
             return 1, f"expected a GPU-offload-capable build but {summary}"
         if hint and hint not in flavor.accelerator_hints:
             return 1, f"expected accelerator hint {hint!r} but {summary}"
+    if expect == "gpu-build":
+        # Inside `docker build` there is no GPU (and only the driver stub), so
+        # llama.cpp registers no device and reports no offload. What the build
+        # can prove is that the accelerator backend was compiled in.
+        if not hint:
+            return 1, "--expect gpu-build needs --hint naming the backend (e.g. cuda)"
+        if hint not in flavor.accelerator_hints:
+            return 1, f"expected a build with the {hint!r} backend compiled in but {summary}"
+        return 0, f"{summary}; the {hint} backend is compiled in (device offload is proven on hardware)"
     return 0, summary
 
 
@@ -59,14 +68,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--expect",
-        choices=("cpu", "gpu", "any"),
+        choices=("cpu", "gpu", "gpu-build", "any"),
         default="any",
-        help="Flavor the installation was supposed to produce (default: any, only checks loadability).",
+        help=(
+            "Flavor the installation was supposed to produce (default: any, only checks loadability). "
+            "gpu-build: the --hint backend is compiled in, for image builds that have no GPU."
+        ),
     )
     parser.add_argument(
         "--hint",
         default=None,
-        help="With --expect gpu, additionally require this accelerator hint (e.g. cuda, vulkan, metal).",
+        help="With --expect gpu, additionally require this accelerator hint (e.g. cuda, vulkan, metal); required by gpu-build.",
     )
     parser.add_argument("--json", action="store_true", help="Print the full detected flavor as JSON.")
     args = parser.parse_args(argv)

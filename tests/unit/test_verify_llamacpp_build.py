@@ -68,3 +68,12 @@ def test_main_uses_live_detection_and_json(monkeypatch, capsys) -> None:
 
     assert verifier.main(["--expect", "cpu"]) == 1
     assert "FAIL" in capsys.readouterr().err
+
+
+def test_gpu_build_accepts_a_compiled_backend_with_no_device_visible() -> None:
+    # Inside `docker build`: CUDA compiled in (system info names it), no device,
+    # so offload is False. A CPU-only wheel must still be refused.
+    verifier = _load_verifier()
+    assert verifier.evaluate(_flavor(offload=False, hints=["cuda"]), expect="gpu-build", hint="cuda")[0] == 0
+    assert verifier.evaluate(_flavor(offload=False, hints=[]), expect="gpu-build", hint="cuda")[0] == 1
+    assert verifier.evaluate(_flavor(offload=False, hints=["cuda"]), expect="gpu-build", hint=None)[0] == 1

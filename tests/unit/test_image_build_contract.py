@@ -96,7 +96,12 @@ def test_cuda_image_validates_architectures_and_proves_offload() -> None:
     assert "-DCMAKE_CUDA_COMPILER_LAUNCHER=ccache" in text
     assert 'ARG TORCH_INDEX_URL="https://download.pytorch.org/whl/cu126"' in text
     assert "12.6.2-devel-ubuntu24.04" in text and "12.6.2-runtime-ubuntu24.04" in text
-    assert "verify_llamacpp_build.py --expect gpu --hint cuda" in _stage(text, "app")
+    app = _stage(text, "app")
+    # No GPU during a build: the driver stub lets libllama.so load, and the
+    # proof is that the CUDA backend is compiled in.
+    assert "verify_llamacpp_build.py --expect gpu-build --hint cuda" in app
+    assert "/usr/local/cuda/lib64/stubs/libcuda.so" in app
+    assert 'ARG LLAMA_CMAKE_ARGS="-DGGML_NATIVE=OFF"' in text, "the CUDA image's CPU code must not be -march=native"
     assert 'ARG CUDA_ARCHITECTURES="75;80;86;89"' in text
 
 

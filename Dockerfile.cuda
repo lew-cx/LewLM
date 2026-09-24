@@ -141,8 +141,11 @@ ARG DEPENDENCY_INPUT="requirements/${IMAGE_FLAVOR}.txt"
 # 90 (Hopper), 120 (Blackwell / RTX 50-series, needs a CUDA >= 12.8 image).
 ARG CUDA_ARCHITECTURES="75;80;86;89"
 
-# Extra llama.cpp CMake flags appended after the CUDA ones.
-ARG LLAMA_CMAKE_ARGS=""
+# Extra llama.cpp CMake flags appended after the CUDA ones. GGML_NATIVE=OFF
+# keeps the CPU half of the build off `-march=native`, exactly as in the CPU
+# image: without it the image only runs on CPUs with the builder's ISA (an
+# Arrow Lake builder bakes in AVX-VNNI). -DGGML_NATIVE=ON is the opt-in.
+ARG LLAMA_CMAKE_ARGS="-DGGML_NATIVE=OFF"
 
 # Prebuilt-wheel path, e.g. https://abetlen.github.io/llama-cpp-python/whl/cu126
 # (the index name must match the CUDA version of this image). When set, no
@@ -219,8 +222,10 @@ RUN --mount=type=cache,id=lewlm-pip,target=/root/.cache/pip \
     pip check
 
 # A CPU-only wheel installs just as cleanly as a CUDA one; refuse it here.
-# `llama_supports_gpu_offload` reads the build's compile-time backend list, so
-# this proof does not need a GPU at build time -- real offload and generation
+# A build has no GPU: libllama.so needs the driver's libcuda.so.1 just to load,
+# so the toolkit's stub stands in for this one command (it never reaches the
+# runtime image), and with no device llama.cpp reports no offload. The build
+# therefore proves the CUDA backend is compiled in; real offload and generation
 # are verified on hardware with `lewlm runtime probe`.
 RUN set -eu; \
     case "${IMAGE_FLAVOR}" in \
@@ -228,7 +233,11 @@ RUN set -eu; \
         full) : ;; \
         *) echo "IMAGE_FLAVOR '${IMAGE_FLAVOR}' is not supported by Dockerfile.cuda (expected serving or full)" >&2; exit 1 ;; \
     esac; \
-    python scripts/verify_llamacpp_build.py --expect gpu --hint cuda; \
+    stub_dir="$(mktemp -d)"; \
+    ln -s /usr/local/cuda/lib64/stubs/libcuda.so "${stub_dir}/libcuda.so.1"; \
+    LD_LIBRARY_PATH="${stub_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+        python scripts/verify_llamacpp_build.py --expect gpu-build --hint cuda; \
+    rm -rf "${stub_dir}"; \
     lewlm --help >/dev/null
 
 ###############################################################################
