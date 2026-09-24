@@ -123,3 +123,33 @@ def test_build_flavor_reports_partial_detection_honestly(monkeypatch) -> None:
     assert flavor.system_info is None
     assert "do not expose `llama_supports_gpu_offload`" in flavor.reason
     assert "do not expose `llama_print_system_info`" in flavor.reason
+
+
+def test_build_cpu_features_the_host_lacks_are_reported_only_when_checkable() -> None:
+    from lewlm.runtime.llamacpp.build_flavor import _missing_cpu_features
+
+    # The prebuilt cu130 Windows wheel (llama-cpp-python 0.3.35) on an Arrow Lake CPU.
+    info = ("CUDA : ARCHS = 750,800,860,890,900 | USE_GRAPHS = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | "
+            "F16C = 1 | FMA = 1 | AVX512 = 1 | AVX512_VNNI = 0 | LLAMAFILE = 1 |")
+    windows = ({"SSE3", "SSSE3", "AVX", "AVX2"}, {"SSE3", "SSSE3", "AVX", "AVX2", "AVX512"})
+    assert _missing_cpu_features(info, windows) == ["AVX512"], "F16C/FMA cannot be checked on Windows and are not claimed missing"
+    assert _missing_cpu_features(info.replace("AVX512 = 1", "AVX512 = 0"), windows) == []
+    assert _missing_cpu_features(info, None) is None, "an unreadable host stays unknown"
+    assert _missing_cpu_features(None, windows) is None
+
+
+def test_the_verifier_refuses_a_build_that_would_crash_at_first_load() -> None:
+    import sys
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    from lewlm.runtime.llamacpp.build_flavor import LlamaCppBuildFlavor
+
+    spec = spec_from_file_location("verify_llamacpp_build_isa", Path(__file__).resolve().parents[2] / "scripts" / "verify_llamacpp_build.py")
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    flavor = LlamaCppBuildFlavor(installed=True, gpu_offload_supported=True, accelerator_hints=["cuda"],
+                                 missing_cpu_features=["AVX512"], detection_state="detected", reason="detected")
+    code, message = module.evaluate(flavor, expect="gpu", hint="cuda")
+    assert code == 2 and "AVX512" in message and "illegal instruction" in message

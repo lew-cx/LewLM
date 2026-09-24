@@ -486,6 +486,12 @@ def _llamacpp_build_notes(build: LlamaCppBuildFlavor | None, *, system: str) -> 
     if build.detection_state == "unavailable":
         return [build.reason]
     notes: list[str] = []
+    if build.missing_cpu_features:
+        notes.append(
+            f"Installed llama.cpp build uses CPU features this host lacks ({', '.join(build.missing_cpu_features)}); "
+            "it imports but will stop with an illegal instruction at the first model load. Install a wheel built "
+            "without them or build from source on this host; on Linux/Windows the container image is the fallback.",
+        )
     if build.gpu_offload_supported is True:
         hint_label = ", ".join(build.accelerator_hints) if build.accelerator_hints else "backend did not name a specific accelerator"
         notes.append(

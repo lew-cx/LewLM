@@ -30,6 +30,13 @@ def evaluate(flavor, *, expect: str, hint: str | None) -> tuple[int, str]:
 
     if not flavor.installed or flavor.detection_state == "unavailable":
         return 2, f"llama-cpp-python is not usable on this host: {flavor.reason}"
+    missing = getattr(flavor, "missing_cpu_features", None)
+    if missing:
+        return 2, (
+            f"llama-cpp-python was built for CPU features this host lacks ({', '.join(missing)}): it imports, "
+            "then dies with an illegal instruction at the first model load. Install a wheel built without them "
+            "(or build from source here), or use the container image."
+        )
 
     offload = flavor.gpu_offload_supported
     hints = ", ".join(flavor.accelerator_hints) or "none"
