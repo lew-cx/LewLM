@@ -46,7 +46,11 @@ services:
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     volumes:
       - ${SGLANG_HF_CACHE_DIR:-./cache/huggingface}:/cache/huggingface
-      - ${SGLANG_KERNEL_CACHE_DIR:-./cache/kernels}:/root/.cache
+      # A named volume by default: SGLang's JIT builds each kernel in a staging
+      # directory and renames it into place, which a Docker Desktop bind mount
+      # of a Windows (NTFS) folder refuses with PermissionError, crash-looping
+      # the scheduler. A host path still works on Linux via the variable.
+      - ${SGLANG_KERNEL_CACHE_DIR:-sglang-kernels}:/root/.cache
     # The image's entrypoint is NVIDIA's shell wrapper; the server is launched
     # explicitly. SGLang reads the inference key only from the command line at
     # this commit, so it is visible in `ps` inside the container namespace.
@@ -83,3 +87,6 @@ services:
       # #running-req: N" line, which is how the acceptance run proves two
       # requests overlapped upstream.
     restart: unless-stopped
+
+volumes:
+  sglang-kernels:
