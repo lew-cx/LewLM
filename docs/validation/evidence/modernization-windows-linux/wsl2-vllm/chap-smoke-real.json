@@ -1,0 +1,266 @@
+{
+  "format": "lewlm-chap-smoke-v1",
+  "captured_at": "2026-09-24T18:24:22Z",
+  "base_url": "http://127.0.0.1:18182",
+  "mode": "real",
+  "model": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+  "endpoint_id": "vllm",
+  "summary": {
+    "passed": 12,
+    "failed": 0,
+    "inconclusive": 0,
+    "skipped": 2
+  },
+  "checks": [
+    {
+      "name": "service_health",
+      "status": "passed",
+      "observations": {
+        "status": "ok",
+        "readiness": "partial",
+        "engines": [
+          {
+            "endpoint_id": "vllm",
+            "profile": "vllm_local",
+            "enabled": true,
+            "state": "advertised",
+            "advertised_model_count": 1
+          }
+        ],
+        "x_request_id_echoed": true
+      },
+      "reason": null,
+      "elapsed_ms": 15
+    },
+    {
+      "name": "runtime_startup",
+      "status": "passed",
+      "observations": {
+        "lewlm_ready_seconds": 0.171,
+        "engines": [
+          {
+            "endpoint_id": "vllm",
+            "state": "advertised",
+            "first_advertised_at": "2026-09-24T18:24:20.343686Z"
+          }
+        ],
+        "warm_models": [
+          "qwen2-5-0-5b-instruct-vllm-ff6cafa3"
+        ],
+        "loading_models": []
+      },
+      "reason": null,
+      "elapsed_ms": 16
+    },
+    {
+      "name": "model_picker",
+      "status": "passed",
+      "observations": {
+        "count": 1,
+        "chat_ready_count": 1,
+        "availability": {
+          "model_id": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+          "servable": true,
+          "chat_ready": true,
+          "ready_capabilities": [
+            "chat",
+            "streaming"
+          ],
+          "blocked_capabilities": [],
+          "reason": "Every advertised capability has a compatible runtime on this host.",
+          "endpoint_id": "vllm",
+          "engine_profile": "vllm_local",
+          "execution_locality": "loopback_unverified",
+          "engine_state": "advertised"
+        },
+        "structured_output_prediction": {
+          "decode_time_modes": [],
+          "prompt_guided_modes": null
+        }
+      },
+      "reason": null,
+      "elapsed_ms": 16
+    },
+    {
+      "name": "request_identity",
+      "status": "passed",
+      "observations": {
+        "status": 200,
+        "x_request_id": "chap-5aa901f029",
+        "x_lewlm_correlation_id": "conv-ca15f84e",
+        "metadata_request_id": "chap-5aa901f029",
+        "metadata_correlation_id": "conv-ca15f84e"
+      },
+      "reason": null,
+      "elapsed_ms": 47
+    },
+    {
+      "name": "responses_finish_reason",
+      "status": "passed",
+      "observations": {
+        "finished_status": 200,
+        "finished_finish_reason": "stop",
+        "truncated_status": 200,
+        "truncated_finish_reason": "length",
+        "chat_finish_reason": "stop"
+      },
+      "reason": null,
+      "elapsed_ms": 140
+    },
+    {
+      "name": "chat_streaming",
+      "status": "passed",
+      "observations": {
+        "chunks": 48,
+        "content": "Sure! Here's the count from 1 to 5 in words:\n\nOne\nTwo\nThree\nFour\nFive\n\nThis is how you would write it out in Chinese characters as \"\u4e00 \u4e8c \u4e09 \u56db \u4e94\".",
+        "terminal_chunks": 1,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 38,
+          "completion_tokens": 48,
+          "total_tokens": 86,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "saw_done": true,
+        "time_to_first_content_ms": 31,
+        "total_ms": 172,
+        "malformed_chunks": 0
+      },
+      "reason": null,
+      "elapsed_ms": 172
+    },
+    {
+      "name": "chat_nonstreaming",
+      "status": "passed",
+      "observations": {
+        "content": "waiting",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 36,
+          "completion_tokens": 2,
+          "total_tokens": 38,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "endpoint_id": "vllm",
+        "engine_profile": "vllm_local",
+        "execution_locality": "loopback_unverified",
+        "runtime_name": "local_external_adapter:vllm",
+        "execute_milliseconds": 21
+      },
+      "reason": null,
+      "elapsed_ms": 31
+    },
+    {
+      "name": "structured_output",
+      "status": "passed",
+      "observations": {
+        "advertised_decode_time_modes": [],
+        "enforcement": "decode_time",
+        "decoder_enforced": false,
+        "fallback_used": false,
+        "validation": {
+          "state": "valid",
+          "validator": "full_json_schema",
+          "message": "LewLM validated the parsed JSON against the requested JSON schema after generation.",
+          "issues": []
+        },
+        "content": "{\n \"city\": \"Paris\",\n \"population\": 20194358\n}",
+        "valid_json": true
+      },
+      "reason": null,
+      "elapsed_ms": 344
+    },
+    {
+      "name": "tools",
+      "status": "passed",
+      "observations": {
+        "tool_calls": [
+          {
+            "call_id": "chatcmpl-tool-ab8cce85359873f6",
+            "name": "get_weather",
+            "arguments": {
+              "city": "Lisbon"
+            }
+          }
+        ],
+        "content": "{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Lisbon\"},\"id\":\"chatcmpl-tool-ab8cce85359873f6\"}]}",
+        "finish_reason": "tool_calls",
+        "continuation_status": 200,
+        "continuation_content": "The current temperature in Lisbon is 21 degrees Celsius and it's clear sky outside."
+      },
+      "reason": null,
+      "elapsed_ms": 156
+    },
+    {
+      "name": "reasoning",
+      "status": "passed",
+      "observations": {
+        "content": "Sure, I can solve this addition problem for you:\n\nStep 1: Write down the numbers to be added.\n17 and 25\n\nStep 2: Add the ones place digits together.\n1 (from 17)",
+        "reasoning_field": {
+          "visibility": "hidden",
+          "available": false,
+          "content": null,
+          "summary": null
+        }
+      },
+      "reason": null,
+      "elapsed_ms": 141
+    },
+    {
+      "name": "cancellation",
+      "status": "passed",
+      "observations": {
+        "cancel_state_after_first_chunk": "cancelling",
+        "cancel_state_final": "cancelling",
+        "chunks_before_stop": 9,
+        "stream_elapsed_ms": 47,
+        "follow_up_status": 200,
+        "upstream_stop_verified": false,
+        "note": "Middleware stop, transport close, and lease release observed; whether the engine aborted GPU work must be read from the engine's own logs."
+      },
+      "reason": null,
+      "elapsed_ms": 78
+    },
+    {
+      "name": "failure",
+      "status": "passed",
+      "observations": {
+        "missing_model_status": 404,
+        "missing_model_error": {
+          "code": "model_not_found",
+          "message": "Requested model was not found in the local registry.",
+          "details": {
+            "model_id": "missing-aeb13e"
+          }
+        },
+        "health_after": "ok",
+        "not_exercised": [
+          "bad_key",
+          "timeout",
+          "overload",
+          "server_stop",
+          "truncated_stream"
+        ],
+        "manual_steps": "Stop or misconfigure the engine and repeat chat_nonstreaming; expect a 4xx/5xx JSON error, health still 200, no automatic replay."
+      },
+      "reason": null,
+      "elapsed_ms": 16
+    },
+    {
+      "name": "unavailable_engine",
+      "status": "skipped",
+      "observations": {},
+      "reason": "needs fixture mode to stop the engine",
+      "elapsed_ms": 0
+    },
+    {
+      "name": "stream_interrupted",
+      "status": "skipped",
+      "observations": {},
+      "reason": "needs fixture mode to kill the engine mid-stream",
+      "elapsed_ms": 0
+    }
+  ]
+}

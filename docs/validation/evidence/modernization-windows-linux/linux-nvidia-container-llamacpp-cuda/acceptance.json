@@ -1,0 +1,291 @@
+{
+  "format": "lewlm-backend-acceptance-v1",
+  "captured_at": "2026-09-24T19:12:38Z",
+  "label": "lewlm:cuda (Dockerfile.cuda, CUDA 12.8.0, SM 120, GGML_NATIVE=OFF) in Docker Desktop WSL2, RTX 5090 Laptop, Gemma-4-E2B Q8_K_P, LEWLM_GPU_OFFLOAD_LAYERS=-1",
+  "base_url": "http://127.0.0.1:8080",
+  "model": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+  "endpoint_id": null,
+  "lewlm_version": "0.4.2",
+  "host": {
+    "system": "Linux",
+    "release": "6.6.87.2-microsoft-standard-WSL2",
+    "machine": "x86_64",
+    "python": "3.12.3"
+  },
+  "summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "cases": [
+    {
+      "case": "discovery_identity",
+      "status": "passed",
+      "observations": {
+        "source_path": "/data/models/Gemma-4-E2B-Hauhau/Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf",
+        "format_type": "gguf",
+        "external_endpoint_id": null,
+        "external_upstream_model_id": null,
+        "execution_locality": null,
+        "health_status": "ok"
+      },
+      "reason": null,
+      "elapsed_seconds": 0.026
+    },
+    {
+      "case": "chat_nonstreaming",
+      "status": "passed",
+      "observations": {
+        "content": "ready",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 16,
+          "completion_tokens": 1,
+          "total_tokens": 17,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "endpoint_id": null,
+        "engine_profile": null,
+        "execution_locality": "host_local",
+        "runtime_name": "llamacpp",
+        "execute_milliseconds": 296
+      },
+      "reason": null,
+      "elapsed_seconds": 19.583
+    },
+    {
+      "case": "chat_streaming",
+      "status": "passed",
+      "observations": {
+        "chunks": 6,
+        "content": "One two three four five",
+        "terminal_chunks": 1,
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 6,
+          "total_tokens": 18,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "saw_done": true,
+        "time_to_first_content_ms": 64,
+        "total_ms": 268,
+        "malformed_chunks": 0
+      },
+      "reason": null,
+      "elapsed_seconds": 0.268
+    },
+    {
+      "case": "sampling",
+      "status": "passed",
+      "observations": {
+        "runtime": "llamacpp",
+        "requested": {
+          "top_p": 0.9,
+          "seed": 7,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "applied": {
+          "top_p": 0.9,
+          "seed": 7,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "unsupported": [],
+        "deterministic": true,
+        "seeded_outputs_identical": true,
+        "seeded_output": "The ocean is a vast, mysterious realm of breathtaking beauty and immense power that covers most of our planet."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.465
+    },
+    {
+      "case": "structured_output",
+      "status": "passed",
+      "observations": {
+        "advertised_decode_time_modes": [
+          "json_schema",
+          "grammar"
+        ],
+        "enforcement": "decode_time",
+        "decoder_enforced": true,
+        "fallback_used": false,
+        "validation": {
+          "state": "valid",
+          "validator": "full_json_schema",
+          "message": "LewLM enforced the requested JSON schema at decode time on the selected runtime path.",
+          "issues": []
+        },
+        "content": "{\"city\": \"Paris\", \"population\": 2141000}",
+        "valid_json": true
+      },
+      "reason": null,
+      "elapsed_seconds": 1.455
+    },
+    {
+      "case": "tools",
+      "status": "passed",
+      "observations": {
+        "tool_calls": [
+          {
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": {
+              "city": "Lisbon"
+            }
+          }
+        ],
+        "content": "{\"tool_call\": {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Lisbon\"}}}",
+        "finish_reason": "stop",
+        "continuation_status": 200,
+        "continuation_content": "The weather in Lisbon right now is **21\u00b0C and clear skies**."
+      },
+      "reason": null,
+      "elapsed_seconds": 1.753
+    },
+    {
+      "case": "reasoning",
+      "status": "passed",
+      "observations": {
+        "content": "Here is the step-by-step thinking process to solve the problem:\n\n**1. Understand the Goal:**\nThe request asks to find the sum of 17 and 25 ($17 + 25$).",
+        "reasoning_field": {
+          "visibility": "hidden",
+          "available": false,
+          "content": null,
+          "summary": null
+        }
+      },
+      "reason": null,
+      "elapsed_seconds": 0.598
+    },
+    {
+      "case": "cancellation",
+      "status": "passed",
+      "observations": {
+        "cancel_state_after_first_chunk": "cancelling",
+        "cancel_state_final": "cancelled",
+        "chunks_before_stop": 4,
+        "stream_elapsed_ms": 83,
+        "follow_up_status": 200,
+        "upstream_stop_verified": false,
+        "note": "Middleware stop, transport close, and lease release observed; whether the engine aborted GPU work must be read from the engine's own logs."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.689
+    },
+    {
+      "case": "concurrency",
+      "status": "passed",
+      "observations": {
+        "cancelled_request": {
+          "status": 200,
+          "chunks": 4,
+          "content_chars": 10
+        },
+        "surviving_request": {
+          "status": 200,
+          "chunks": 129,
+          "content_chars": 755
+        },
+        "overlapped_at_lewlm": true,
+        "note": "Overlap is observed at LewLM's boundary; upstream concurrency must be read from the engine's own metrics."
+      },
+      "reason": null,
+      "elapsed_seconds": 1.585
+    },
+    {
+      "case": "failure",
+      "status": "passed",
+      "observations": {
+        "missing_model_status": 404,
+        "missing_model_error": {
+          "code": "model_not_found",
+          "message": "Requested model was not found in the local registry.",
+          "details": {
+            "model_id": "missing-f663e3"
+          }
+        },
+        "health_after": "ok",
+        "not_exercised": [
+          "bad_key",
+          "timeout",
+          "overload",
+          "server_stop",
+          "truncated_stream"
+        ],
+        "manual_steps": "Stop or misconfigure the engine and repeat chat_nonstreaming; expect a 4xx/5xx JSON error, health still 200, no automatic replay."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.016
+    },
+    {
+      "case": "fallback",
+      "status": "not_exercised",
+      "observations": {
+        "registered_runtimes": [
+          "distributed_experimental",
+          "local_external_adapter",
+          "mlx_text",
+          "mlx_audio",
+          "mlx_vision",
+          "llamacpp",
+          "onnx_genai",
+          "frontier_experimental"
+        ],
+        "available_runtimes": [
+          "llamacpp",
+          "frontier_experimental"
+        ],
+        "manual_steps": "Disable or stop this endpoint, rescan, and confirm native/Ollama candidates still route; with external_fallback_policy=explicit_alias confirm the decision records fallback_from_model_id."
+      },
+      "reason": "requires stopping the engine",
+      "elapsed_seconds": 0.039
+    },
+    {
+      "case": "lifetime",
+      "status": "passed",
+      "observations": {
+        "warm_status": 200,
+        "warm_result": {
+          "status": "warmed",
+          "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+          "runtime": "llamacpp",
+          "reason": "Model is loaded and its backend warm hook completed.",
+          "runtime_instance_id": "eb9cea5e-ac01-4a47-b75d-2d835a339dc5",
+          "operation_id": "fcabedf9-a7d2-4d62-8a41-74abeb1a7b71",
+          "previous_state": "ready",
+          "current_state": "ready",
+          "active_usage_count": 0,
+          "backend_operation_performed": false,
+          "joined_existing_operation": false
+        },
+        "residency_status": 200,
+        "unload_status": 200,
+        "unload_result": {
+          "status": "unloaded",
+          "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+          "runtime": "llamacpp",
+          "reason": "Model unloaded.",
+          "runtime_instance_id": "eb9cea5e-ac01-4a47-b75d-2d835a339dc5",
+          "operation_id": "6b9a4eb9-5d0b-48b4-9b6f-c79e5d49e9a7",
+          "previous_state": "ready",
+          "current_state": null,
+          "active_usage_count": 0,
+          "backend_operation_performed": true,
+          "joined_existing_operation": false
+        },
+        "upstream_residency_reported": null,
+        "note": "A LewLM unload releases the bridge lease only; upstream RAM is the engine's to manage and is reported as unknown."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.436
+    }
+  ]
+}

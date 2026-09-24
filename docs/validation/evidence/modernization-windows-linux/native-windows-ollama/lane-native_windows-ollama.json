@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T19:44:25Z",
+  "lane": "native_windows",
+  "title": "Native Windows",
+  "recipe": "ollama",
+  "profile": null,
+  "host": {
+    "system": "Windows",
+    "machine": "AMD64",
+    "nvidia": true,
+    "nvidia_detail": "NVIDIA GeForce RTX 5090 Laptop GPU, 610.47",
+    "wsl": true
+  },
+  "label": "LewLM native Windows 11 (lean install) -> Ollama 0.34.4 (ollama/ollama@sha256:8262851b, Docker Desktop, 127.0.0.1:11434, OLLAMA_NUM_PARALLEL=4) qwen2.5:0.5b",
+  "required_proof": "Core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation; ExLlamaV3 only if separately promoted",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "native-windows-ollama/acceptance.json",
+    "native-windows-ollama/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

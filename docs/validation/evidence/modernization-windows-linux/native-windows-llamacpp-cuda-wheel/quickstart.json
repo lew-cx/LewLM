@@ -1,0 +1,70 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "host_python": "3.11.9",
+  "doctor_seconds": 4.75,
+  "doctor_active_profile_ids": [
+    "core_only",
+    "gguf_fallback_backend"
+  ],
+  "llamacpp_build": {
+    "gpu_offload_supported": true,
+    "accelerator_hints": [
+      "cuda"
+    ],
+    "version": null
+  },
+  "scan": {
+    "seconds": 1.21,
+    "exit": 0,
+    "tail": [
+      "scanned 1 root(s), found 1 model(s) (1 new, 0 updated, 0 unchanged, 0 removed)",
+      "- Gemma-4-E2B-hauhau_agg.Q8_K_P [gguf/text] %USERPROFILE%\\.lewlm\\models\\Gemma-4-E2B-Hauhau\\Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf"
+    ]
+  },
+  "serve_to_health_seconds": 1.43,
+  "health": {
+    "status": "ok"
+  },
+  "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+  "models_listed": 1,
+  "first_chat": {
+    "status": 503,
+    "wall_seconds_including_load": 2.13,
+    "text": {
+      "error": {
+        "code": "runtime_unavailable",
+        "message": "llama.cpp failed to load the model because the installed llama-cpp-python build used CPU instructions that are not available on this host. Install a CPU-compatible wheel or rebuild llama-cpp-python locally with conservative GGML CPU flags.",
+        "details": {
+          "runtime": "llamacpp",
+          "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+          "model_path": "%USERPROFILE%\\.lewlm\\models\\Gemma-4-E2B-Hauhau\\Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf",
+          "cause_type": "OSError",
+          "cause": "[WinError -1073741795] Windows Error 0xc000001d"
+        }
+      }
+    },
+    "finish_reason": null,
+    "usage": null,
+    "runtime": null
+  },
+  "warm_chat_seconds": 2.47,
+  "warm_chat_status": 503,
+  "hook": {
+    "command": "\"<scratch>\\venv-cuda\\Scripts\\python.exe\" scripts/backend_acceptance.py --base-url http://127.0.0.1:18185 --model gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667 --output \"<scratch>\\ev\\win-cuda\\acceptance.json\" --label \"native Windows 11 + llama-cpp-python 0.3.35 cu130 wheel + nvidia-cublas 13.8 (pip), RTX 5090 Laptop SM120, Gemma-4-E2B Q8_K_P, LEWLM_GPU_OFFLOAD_LAYERS=-1\"",
+    "exit": 1,
+    "seconds": 23.5,
+    "stdout_tail": "PASS           discovery_identity   \nFAIL           chat_nonstreaming    \nFAIL           chat_streaming       \nFAIL           sampling             \nFAIL           structured_output    \nFAIL           tools                \nFAIL           reasoning            \nFAIL           cancellation         \nFAIL           concurrency          the surviving request did not complete\nPASS           failure              \nNOT EXERCISED  fallback             requires stopping the engine\nFAIL           lifetime             warm or unload did not succeed\nwrote <scratch>\\ev\\win-cuda\\acceptance.json\nsummary: {\"passed\": 2, \"failed\": 9, \"inconclusive\": 0, \"not_exercised\": 1, \"skipped\": 0}\n",
+    "stderr_tail": ""
+  },
+  "runtime_before_shutdown": {
+    "loaded_model_count": 0,
+    "active_request_count": 0
+  },
+  "shutdown": {
+    "signal": "CTRL_BREAK_EVENT",
+    "exit_code": 3,
+    "seconds": 0.67,
+    "log_has_shutdown_complete": true,
+    "port_released": true
+  }
+}

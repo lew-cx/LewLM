@@ -164,11 +164,14 @@ docker build -f Dockerfile.cuda \
   -t lewlm:cuda .
 ```
 
-The CUDA image proves at build time that the installed `llama-cpp-python`
-reports CUDA offload (`scripts/verify_llamacpp_build.py --expect gpu --hint
-cuda`); a CPU-only wheel — from a wrong wheel index or a source build that
-silently lost its toolkit — fails the build. That proof needs no GPU. Real
-offload and generation are verified on hardware:
+The CUDA image proves at build time that the installed `llama-cpp-python` has
+the CUDA backend compiled in (`scripts/verify_llamacpp_build.py --expect
+gpu-build --hint cuda`); a CPU-only wheel — from a wrong wheel index or a
+source build that silently lost its toolkit — fails the build. A build has no
+GPU: the CUDA library needs the driver's `libcuda.so.1` just to load, so the
+toolkit's stub stands in for that one command (it never reaches the runtime
+image), and with no device llama.cpp cannot report offload. Real offload and
+generation are verified on hardware:
 
 ```bash
 docker run --rm --gpus all lewlm:cuda doctor --json | python -c "import json,sys; b=json.load(sys.stdin)['install_profiles']['llamacpp_build']; print(b['gpu_offload_supported'], b['accelerator_hints'])"
@@ -200,7 +203,7 @@ the [configuration reference](../reference/configuration.md)). The most relevant
 | `DEPENDENCY_INPUT` | `requirements/<flavor>.txt` | The dependency-layer input. Point it at a lock from `scripts/docker/lock_dependencies.sh` for pinned, hashed installs |
 | `BUILD_JOBS` | `4` | Parallel compile jobs for llama.cpp and the conversion tools (`CMAKE_BUILD_PARALLEL_LEVEL`, `MAX_JOBS`, `-j`). Deliberately not `nproc`: raise it on a large build host, lower it on a memory-constrained one |
 | `LLAMA_CPP_PYTHON_WHEEL_INDEX` | *(empty)* | When set, install `llama-cpp-python` only as a prebuilt wheel from that index (e.g. `https://abetlen.github.io/llama-cpp-python/whl/cpu`, `/whl/cu126`) and skip the source build. Wheel availability is release-specific; a missing wheel fails the build rather than silently compiling. The flavor is still verified |
-| `LLAMA_CMAKE_ARGS` (CPU) | `-DGGML_NATIVE=OFF` | llama.cpp build flags. Keep `GGML_NATIVE=OFF` for a distributable image; `-DGGML_NATIVE=ON` is the explicit host-tuned local option |
+| `LLAMA_CMAKE_ARGS` | `-DGGML_NATIVE=OFF` (CPU and CUDA) | llama.cpp build flags. Keep `GGML_NATIVE=OFF` for a distributable image; `-DGGML_NATIVE=ON` is the explicit host-tuned local option. On the CUDA image this governs the CPU half of the build (appended after the CUDA flags) |
 | `LLAMA_BUILD_EXPECT` (CPU) | `cpu` | What the installed llama.cpp must report: `cpu`, `gpu` (when `LLAMA_CMAKE_ARGS` enabled an accelerator such as Vulkan), or `any` |
 | `TORCH_INDEX_URL` | CPU: `…/whl/cpu`; CUDA: `…/whl/cu126` | Where torch resolves from in the `full` flavor. Never inferred from PyPI's default build; keep it on the image's CUDA version |
 | `PYTHON_VERSION` (CPU) | `3.11` | Base Python version |
@@ -289,6 +292,16 @@ and test generation on the oldest CPU you intend to support with
 the build host is an explicit local choice: `--build-arg
 LLAMA_CMAKE_ARGS=-DGGML_NATIVE=ON`; do not distribute that image.
 
+Measured on 2026-09-24 (llama.cpp in `llama-cpp-python` 0.3.35, both images):
+`CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1`.
+With `GGML_NATIVE=OFF` llama.cpp still enables AVX2/FMA/F16C/BMI2 by default,
+so the practical floor of these images is **x86-64-v3** (Intel Haswell / AMD
+Excavator, 2013–2015, or newer). Older CPUs need a build with those features
+turned off in `LLAMA_CMAKE_ARGS`. `lewlm doctor` and
+`scripts/verify_llamacpp_build.py` compare the build against the host
+(`llamacpp_build.missing_cpu_features`) and say so before the first model
+load crashes with an illegal instruction.
+
 ## Converting models in the container
 
 ```bash
@@ -338,3 +351,16 @@ converting them in place.
 - Docker Desktop on Windows gives the VM a fraction of host RAM by default, so
   `lewlm doctor` inside the container reports less memory than the host has.
   Raise it in `.wslconfig` if model residency needs more.
+- Windows checkouts: `.gitattributes` keeps the shell scripts, Dockerfiles, and
+  `requirements/` inputs LF even with `core.autocrlf=true`; a CRLF copy breaks
+  the build (`sh` rejects the scripts, pip rejects the native requirement). If
+  you copied the tree some other way, run `git add --renormalize .` or convert
+  those files to LF before building.
+- Windows bind mounts (Docker Desktop, NTFS) are fine for model folders and
+  data, but they refuse some directory renames that Linux filesystems allow.
+  Engine caches that stage and rename (SGLang's kernel JIT) belong on a named
+  volume, as the recipes do.
+- Validated end to end on Windows 11 + Docker Desktop 4.74 (WSL2 kernel 6.6.87)
+  with an RTX 5090 Laptop GPU on 2026-09-24: the CPU `bridge`, `serving`, and
+  `full` images, the rebuild contract, and the CUDA image for SM 120 with full
+  offload. See the [Windows/Linux validation record](../validation/modernization-windows-linux.md).

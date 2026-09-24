@@ -1,0 +1,134 @@
+{
+  "format": "lewlm-bridge-prefix-benchmark-v1",
+  "captured_at": "2026-09-24T18:32:18Z",
+  "label": null,
+  "host": {
+    "system": "Linux",
+    "release": "6.6.87.2-microsoft-standard-WSL2",
+    "machine": "x86_64"
+  },
+  "settings": {
+    "requests": 12,
+    "warmups": 3,
+    "concurrency": 1,
+    "prefix_tokens_approx": 600,
+    "prefix_chars": 4550,
+    "max_tokens": 32,
+    "lewlm_response_cache": "not applicable to chat",
+    "engine_prefix_cache_hits": "unknown (not exposed through the bridge)"
+  },
+  "via_lewlm": {
+    "cold_first_request": {
+      "status": 200,
+      "ttfc_ms": 30904.8,
+      "total_ms": 31766.0,
+      "chunks": 11
+    },
+    "warmups": [
+      {
+        "status": 200,
+        "ttfc_ms": 1014.9,
+        "total_ms": 1914.0,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 534.2,
+        "total_ms": 1493.6,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 651.6,
+        "total_ms": 1642.4,
+        "chunks": 11
+      }
+    ],
+    "measured_count": 12,
+    "succeeded": 12,
+    "ttfc_ms": {
+      "p50": 628.8,
+      "p95": 999.6,
+      "mean": 761.3
+    },
+    "total_ms": {
+      "p50": 1652.3,
+      "p95": 1963.9,
+      "mean": 1682.1
+    },
+    "runs": [
+      {
+        "status": 200,
+        "ttfc_ms": 1727.6,
+        "total_ms": 2449.8,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 599.8,
+        "total_ms": 1568.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 927.7,
+        "total_ms": 1963.9,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 876.0,
+        "total_ms": 1807.4,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 626.2,
+        "total_ms": 1562.0,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 628.8,
+        "total_ms": 1652.3,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 289.6,
+        "total_ms": 1358.9,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 901.3,
+        "total_ms": 1741.8,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 606.2,
+        "total_ms": 1583.1,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 999.6,
+        "total_ms": 1879.4,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 431.3,
+        "total_ms": 1222.4,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 521.0,
+        "total_ms": 1395.8,
+        "chunks": 11
+      }
+    ]
+  }
+}

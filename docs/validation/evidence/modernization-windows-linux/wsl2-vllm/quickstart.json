@@ -1,0 +1,64 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "host_python": "3.11.9",
+  "doctor_seconds": 1.09,
+  "doctor_active_profile_ids": [
+    "core_only",
+    "gguf_fallback_backend",
+    "external_accelerator_bridge_backend"
+  ],
+  "llamacpp_build": {
+    "gpu_offload_supported": false,
+    "accelerator_hints": [],
+    "version": null
+  },
+  "scan": {
+    "seconds": 0.87,
+    "exit": 0,
+    "tail": [
+      "scanned 2 root(s), found 1 model(s) (1 new, 0 updated, 0 unchanged, 0 removed)",
+      "- qwen2.5-0.5b-instruct [unknown/text] external://vllm/qwen2.5-0.5b-instruct",
+      "note: Endpoint `vllm` (vllm_local) advertised 1 model(s) at http://127.0.0.1:8000."
+    ]
+  },
+  "serve_to_health_seconds": 1.29,
+  "health": {
+    "status": "ok"
+  },
+  "model_id": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+  "models_listed": 1,
+  "first_chat": {
+    "status": 200,
+    "wall_seconds_including_load": 0.25,
+    "text": "ok",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 36,
+      "completion_tokens": 2,
+      "total_tokens": 38,
+      "measured": true,
+      "cached_tokens": null
+    },
+    "runtime": null
+  },
+  "warm_chat_seconds": 0.08,
+  "warm_chat_status": 200,
+  "hook": {
+    "command": "\"<scratch>\\venv-lcpp\\Scripts\\python.exe\" scripts/backend_lanes.py run --lane wsl2 --recipe vllm --base-url http://127.0.0.1:18182 --model qwen2-5-0-5b-instruct-vllm-ff6cafa3 --output-dir \"<scratch>\\ev\\vllm\\lane\" --label \"LewLM native Windows 11 -> vLLM v0.29.0 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct BF16\"",
+    "exit": 0,
+    "seconds": 4.1,
+    "stdout_tail": "PASS           discovery_identity   \nPASS           chat_nonstreaming    \nPASS           chat_streaming       \nPASS           sampling             \nPASS           structured_output    \nPASS           tools                \nPASS           reasoning            \nPASS           cancellation         \nPASS           concurrency          \nPASS           failure              \nNOT EXERCISED  fallback             requires stopping the engine\nPASS           lifetime             \nwrote <scratch>\\ev\\vllm\\lane\\acceptance.json\nsummary: {\"passed\": 11, \"failed\": 0, \"inconclusive\": 0, \"not_exercised\": 1, \"skipped\": 0}\n{\n  \"format\": \"lewlm-bridge-prefix-benchmark-v1\",\n  \"captured_at\": \"2026-09-24T18:21:04Z\",\n  \"label\": null,\n  \"host\": {\n    \"system\": \"Windows\",\n    \"release\": \"10\",\n    \"machine\": \"AMD64\"\n  },\n  \"settings\": {\n    \"requests\": 12,\n    \"warmups\": 3,\n    \"concurrency\": 1,\n    \"prefix_tokens_approx\": 600,\n    \"prefix_chars\": 4550,\n    \"max_tokens\": 32,\n    \"lewlm_response_cache\": \"not applicable to chat\",\n    \"engine_prefix_cache_hits\": \"unknown (not exposed through the bridge)\"\n  },\n  \"via_lewlm\": {\n    \"cold_first_request\": {\n      \"status\": 200,\n      \"ttfc_ms\": 45.7,\n      \"total_ms\": 92.9,\n      \"chunks\": 20\n    },\n    \"warmups\": [\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 45.8,\n        \"total_ms\": 91.3,\n        \"chunks\": 20\n      },\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 43.0,\n        \"total_ms\": 86.0,\n        \"chunks\": 20\n      },\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 44.1,\n        \"total_ms\": 86.0,\n        \"chunks\": 20\n      }\n    ],\n    \"measured_count\": 12,\n    \"succeeded\": 12,\n    \"ttfc_ms\": {\n      \"p50\": 46.2,\n      \"p95\": 58.1,\n      \"mean\": 42.4\n    },\n    \"total_ms\": {\n      \"p50\": 89.2,\n      \"p95\": 100.5,\n      \"mean\": 84.6\n    }\n  }\n}\nwrote <scratch>\\ev\\vllm\\lane\\prefix-benchmark-c1.json\n{\n  \"lane\": \"wsl2\",\n  \"recipe\": \"vllm\",\n  \"status\": \"passed\",\n  \"reason\": null,\n  \"next_command\": null,\n  \"record_path\": \"<scratch>\\\\ev\\\\vllm\\\\lane\\\\lane-wsl2-vllm.json\"\n}\n",
+    "stderr_tail": ""
+  },
+  "runtime_before_shutdown": {
+    "loaded_model_count": 1,
+    "active_request_count": 0
+  },
+  "shutdown": {
+    "signal": "CTRL_BREAK_EVENT",
+    "exit_code": 3,
+    "seconds": 0.18,
+    "log_has_shutdown_complete": true,
+    "port_released": true
+  }
+}

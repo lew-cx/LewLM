@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T18:21:02Z",
+  "lane": "wsl2",
+  "title": "Windows + WSL2",
+  "recipe": "vllm",
+  "profile": "vllm_local",
+  "host": {
+    "system": "Windows",
+    "machine": "AMD64",
+    "nvidia": true,
+    "nvidia_detail": "NVIDIA GeForce RTX 5090 Laptop GPU, 610.47",
+    "wsl": true
+  },
+  "label": "LewLM native Windows 11 -> vLLM v0.29.0 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct BF16",
+  "required_proof": "Documented engine recipes and Windows-Chap-to-LewLM connectivity",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "wsl2-vllm/acceptance.json",
+    "wsl2-vllm/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

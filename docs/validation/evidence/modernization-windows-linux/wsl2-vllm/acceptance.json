@@ -1,0 +1,302 @@
+{
+  "format": "lewlm-backend-acceptance-v1",
+  "captured_at": "2026-09-24T18:21:04Z",
+  "label": "LewLM native Windows 11 -> vLLM v0.29.0 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct BF16",
+  "base_url": "http://127.0.0.1:18182",
+  "model": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+  "endpoint_id": "vllm",
+  "lewlm_version": "0.4.2",
+  "host": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64",
+    "python": "3.11.9"
+  },
+  "summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "cases": [
+    {
+      "case": "discovery_identity",
+      "status": "passed",
+      "observations": {
+        "source_path": "external://vllm/qwen2.5-0.5b-instruct",
+        "format_type": "unknown",
+        "external_endpoint_id": "vllm",
+        "external_upstream_model_id": "qwen2.5-0.5b-instruct",
+        "execution_locality": "loopback_unverified",
+        "health_status": "ok",
+        "endpoint_snapshot": {
+          "endpoint_id": "vllm",
+          "profile": "vllm_local",
+          "inventory_state": "advertised",
+          "inventory_error": null,
+          "inventory_age_seconds": 0.828,
+          "inventory_ttl_seconds": 30.0,
+          "advertised_model_ids": [
+            "qwen2.5-0.5b-instruct"
+          ],
+          "upstream_residency": "unknown",
+          "upstream_cancellation": "unknown"
+        }
+      },
+      "reason": null,
+      "elapsed_seconds": 0.094
+    },
+    {
+      "case": "chat_nonstreaming",
+      "status": "passed",
+      "observations": {
+        "content": "Ready",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 36,
+          "completion_tokens": 2,
+          "total_tokens": 38,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "endpoint_id": "vllm",
+        "engine_profile": "vllm_local",
+        "execution_locality": "loopback_unverified",
+        "runtime_name": "local_external_adapter:vllm",
+        "execute_milliseconds": 28
+      },
+      "reason": null,
+      "elapsed_seconds": 0.031
+    },
+    {
+      "case": "chat_streaming",
+      "status": "passed",
+      "observations": {
+        "chunks": 49,
+        "content": "Sure! Here's the count from 1 to 5:\n\n1. One\n2. Two\n3. Three\n4. Four\n5. Five\n\nI hope this meets your request for counting from one to five using words only",
+        "terminal_chunks": 1,
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 38,
+          "completion_tokens": 48,
+          "total_tokens": 86,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "saw_done": true,
+        "time_to_first_content_ms": 47,
+        "total_ms": 188,
+        "malformed_chunks": 0
+      },
+      "reason": null,
+      "elapsed_seconds": 0.188
+    },
+    {
+      "case": "sampling",
+      "status": "passed",
+      "observations": {
+        "runtime": "local_external_adapter:vllm",
+        "requested": {
+          "top_p": 0.9,
+          "seed": 7,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "applied": {
+          "top_p": 0.9,
+          "seed": 7,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "unsupported": [],
+        "deterministic": true,
+        "seeded_outputs_identical": true,
+        "seeded_output": "The vast and boundless ocean is a natural wonder of nature, where vast swaths of water cover miles upon miles, offering "
+      },
+      "reason": null,
+      "elapsed_seconds": 0.39
+    },
+    {
+      "case": "structured_output",
+      "status": "passed",
+      "observations": {
+        "advertised_decode_time_modes": [],
+        "enforcement": "decode_time",
+        "decoder_enforced": false,
+        "fallback_used": false,
+        "validation": {
+          "state": "valid",
+          "validator": "full_json_schema",
+          "message": "LewLM validated the parsed JSON against the requested JSON schema after generation.",
+          "issues": []
+        },
+        "content": "{\n \"city\": \"Paris\",\n \"population\": 20194358\n}",
+        "valid_json": true
+      },
+      "reason": null,
+      "elapsed_seconds": 0.344
+    },
+    {
+      "case": "tools",
+      "status": "passed",
+      "observations": {
+        "tool_calls": [
+          {
+            "call_id": "chatcmpl-tool-972a9448cb3d4136",
+            "name": "get_weather",
+            "arguments": {
+              "city": "Lisbon"
+            }
+          }
+        ],
+        "content": "{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Lisbon\"},\"id\":\"chatcmpl-tool-972a9448cb3d4136\"}]}",
+        "finish_reason": "tool_calls",
+        "continuation_status": 200,
+        "continuation_content": "The current temperature in Lisbon is 21 degrees Celsius and it's clear sky outside."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.172
+    },
+    {
+      "case": "reasoning",
+      "status": "passed",
+      "observations": {
+        "content": "Sure! Let's break down the addition problem:\n\n1. First, we start with the numbers: 17 and 25.\n2. We need to add these two numbers together.\n\nTo do this, let's write it out",
+        "reasoning_field": {
+          "visibility": "hidden",
+          "available": false,
+          "content": null,
+          "summary": null
+        }
+      },
+      "reason": null,
+      "elapsed_seconds": 0.172
+    },
+    {
+      "case": "cancellation",
+      "status": "passed",
+      "observations": {
+        "cancel_state_after_first_chunk": "cancelling",
+        "cancel_state_final": "cancelling",
+        "chunks_before_stop": 2,
+        "stream_elapsed_ms": 15,
+        "follow_up_status": 200,
+        "upstream_stop_verified": false,
+        "note": "Middleware stop, transport close, and lease release observed; whether the engine aborted GPU work must be read from the engine's own logs."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.078
+    },
+    {
+      "case": "concurrency",
+      "status": "passed",
+      "observations": {
+        "cancelled_request": {
+          "status": 200,
+          "chunks": 9,
+          "content_chars": 36
+        },
+        "surviving_request": {
+          "status": 200,
+          "chunks": 129,
+          "content_chars": 636
+        },
+        "overlapped_at_lewlm": true,
+        "note": "Overlap is observed at LewLM's boundary; upstream concurrency must be read from the engine's own metrics."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.328
+    },
+    {
+      "case": "failure",
+      "status": "passed",
+      "observations": {
+        "missing_model_status": 404,
+        "missing_model_error": {
+          "code": "model_not_found",
+          "message": "Requested model was not found in the local registry.",
+          "details": {
+            "model_id": "missing-4edb86"
+          }
+        },
+        "health_after": "ok",
+        "not_exercised": [
+          "bad_key",
+          "timeout",
+          "overload",
+          "server_stop",
+          "truncated_stream"
+        ],
+        "manual_steps": "Stop or misconfigure the engine and repeat chat_nonstreaming; expect a 4xx/5xx JSON error, health still 200, no automatic replay."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.016
+    },
+    {
+      "case": "fallback",
+      "status": "not_exercised",
+      "observations": {
+        "registered_runtimes": [
+          "distributed_experimental",
+          "mlx_text",
+          "mlx_audio",
+          "mlx_vision",
+          "llamacpp",
+          "onnx_genai",
+          "frontier_experimental",
+          "local_external_adapter:vllm"
+        ],
+        "available_runtimes": [
+          "llamacpp",
+          "frontier_experimental",
+          "local_external_adapter:vllm"
+        ],
+        "manual_steps": "Disable or stop this endpoint, rescan, and confirm native/Ollama candidates still route; with external_fallback_policy=explicit_alias confirm the decision records fallback_from_model_id."
+      },
+      "reason": "requires stopping the engine",
+      "elapsed_seconds": 0.062
+    },
+    {
+      "case": "lifetime",
+      "status": "passed",
+      "observations": {
+        "warm_status": 200,
+        "warm_result": {
+          "status": "warmed",
+          "model_id": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+          "runtime": "local_external_adapter:vllm",
+          "reason": "Model is loaded and its backend warm hook completed. Warm sent a one-token probe to the external server; residency and eviction remain the server's.",
+          "runtime_instance_id": "b4ca905c-71da-4422-9c03-d32bcf34c340",
+          "operation_id": "e373eba6-a682-4d61-af9d-ab0d9919f95d",
+          "previous_state": "ready",
+          "current_state": "ready",
+          "active_usage_count": 0,
+          "backend_operation_performed": false,
+          "joined_existing_operation": false
+        },
+        "residency_status": 200,
+        "unload_status": 200,
+        "unload_result": {
+          "status": "unloaded",
+          "model_id": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+          "runtime": "local_external_adapter:vllm",
+          "reason": "Model unloaded. This released LewLM's bridge lease only; the external server owns model residency and LewLM did not free its memory (upstream residency: unknown).",
+          "runtime_instance_id": "b4ca905c-71da-4422-9c03-d32bcf34c340",
+          "operation_id": "4731bab0-db06-4ea3-bc68-06ac18b9db55",
+          "previous_state": "ready",
+          "current_state": null,
+          "active_usage_count": 0,
+          "backend_operation_performed": false,
+          "joined_existing_operation": false
+        },
+        "upstream_residency_reported": "unknown",
+        "note": "A LewLM unload releases the bridge lease only; upstream RAM is the engine's to manage and is reported as unknown."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.094
+    }
+  ]
+}

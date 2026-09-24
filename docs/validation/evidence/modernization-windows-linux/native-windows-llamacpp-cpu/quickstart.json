@@ -1,0 +1,55 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "host_python": "3.11.9",
+  "doctor_seconds": 1.57,
+  "doctor_active_profile_ids": [
+    "core_only",
+    "gguf_fallback_backend"
+  ],
+  "llamacpp_build": {
+    "gpu_offload_supported": false,
+    "accelerator_hints": [],
+    "version": null
+  },
+  "scan": {
+    "seconds": 1.41,
+    "exit": 0,
+    "tail": [
+      "scanned 1 root(s), found 1 model(s) (1 new, 0 updated, 0 unchanged, 0 removed)",
+      "- Gemma-4-E2B-hauhau_agg.Q8_K_P [gguf/text] %USERPROFILE%\\.lewlm\\models\\Gemma-4-E2B-Hauhau\\Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf"
+    ]
+  },
+  "serve_to_health_seconds": 1.32,
+  "health": {
+    "status": "ok"
+  },
+  "model_id": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+  "models_listed": 1,
+  "first_chat": {
+    "status": 200,
+    "wall_seconds_including_load": 1.96,
+    "text": "ok",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 16,
+      "completion_tokens": 1,
+      "total_tokens": 17,
+      "measured": true,
+      "cached_tokens": null
+    },
+    "runtime": null
+  },
+  "warm_chat_seconds": 0.1,
+  "warm_chat_status": 200,
+  "runtime_before_shutdown": {
+    "loaded_model_count": 1,
+    "active_request_count": 0
+  },
+  "shutdown": {
+    "signal": "CTRL_BREAK_EVENT",
+    "exit_code": 3,
+    "seconds": 0.57,
+    "log_has_shutdown_complete": true,
+    "port_released": true
+  }
+}

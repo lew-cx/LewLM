@@ -1,0 +1,291 @@
+{
+  "format": "lewlm-backend-acceptance-v1",
+  "captured_at": "2026-09-24T19:36:19Z",
+  "label": "LewLM native Windows 11 -> TabbyAPI 53da7919 / ExLlamaV3 1.5.0+cu128 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct EXL3 4.0bpw (converted here)",
+  "base_url": "http://127.0.0.1:18187",
+  "model": "qwen2-5-0-5b-instruct-exl3-4-0bpw-tabby-babaee53",
+  "endpoint_id": "tabby",
+  "lewlm_version": "0.4.2",
+  "host": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64",
+    "python": "3.11.9"
+  },
+  "summary": {
+    "passed": 10,
+    "failed": 0,
+    "inconclusive": 1,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "cases": [
+    {
+      "case": "discovery_identity",
+      "status": "passed",
+      "observations": {
+        "source_path": "external://tabby/Qwen2.5-0.5B-Instruct-exl3-4.0bpw",
+        "format_type": "unknown",
+        "external_endpoint_id": "tabby",
+        "external_upstream_model_id": "Qwen2.5-0.5B-Instruct-exl3-4.0bpw",
+        "execution_locality": "loopback_unverified",
+        "health_status": "ok",
+        "endpoint_snapshot": {
+          "endpoint_id": "tabby",
+          "profile": "exllamav3_tabby",
+          "inventory_state": "advertised",
+          "inventory_error": null,
+          "inventory_age_seconds": 0.688,
+          "inventory_ttl_seconds": 30.0,
+          "advertised_model_ids": [
+            "Qwen2.5-0.5B-Instruct-exl3-4.0bpw"
+          ],
+          "upstream_residency": "unknown",
+          "upstream_cancellation": "unknown"
+        }
+      },
+      "reason": null,
+      "elapsed_seconds": 0.079
+    },
+    {
+      "case": "chat_nonstreaming",
+      "status": "passed",
+      "observations": {
+        "content": "processing",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "measured": true,
+          "cached_tokens": null
+        },
+        "endpoint_id": "tabby",
+        "engine_profile": "exllamav3_tabby",
+        "execution_locality": "loopback_unverified",
+        "runtime_name": "local_external_adapter:tabby",
+        "execute_milliseconds": 18
+      },
+      "reason": null,
+      "elapsed_seconds": 0.031
+    },
+    {
+      "case": "chat_streaming",
+      "status": "passed",
+      "observations": {
+        "chunks": 35,
+        "content": "Sure, here are five numbers from one to five, each word only:\n\n1. One\n2. Two\n3. Three\n4. Four\n5. Five",
+        "terminal_chunks": 1,
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 38,
+          "completion_tokens": 35,
+          "total_tokens": 73,
+          "measured": true,
+          "cached_tokens": 24
+        },
+        "saw_done": true,
+        "time_to_first_content_ms": 31,
+        "total_ms": 187,
+        "malformed_chunks": 0
+      },
+      "reason": null,
+      "elapsed_seconds": 0.187
+    },
+    {
+      "case": "sampling",
+      "status": "passed",
+      "observations": {
+        "runtime": "local_external_adapter:tabby",
+        "requested": {
+          "top_p": 0.9,
+          "seed": 7,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "applied": {
+          "top_p": 0.9,
+          "stop": [
+            "\n\n"
+          ]
+        },
+        "unsupported": [
+          "seed"
+        ],
+        "deterministic": false
+      },
+      "reason": null,
+      "elapsed_seconds": 0.078
+    },
+    {
+      "case": "structured_output",
+      "status": "passed",
+      "observations": {
+        "advertised_decode_time_modes": [],
+        "enforcement": "decode_time",
+        "decoder_enforced": false,
+        "fallback_used": false,
+        "validation": {
+          "state": "valid",
+          "validator": "full_json_schema",
+          "message": "LewLM validated the parsed JSON against the requested JSON schema after generation.",
+          "issues": []
+        },
+        "content": "{\n \"city\": \"Paris\",\n \"population\": 20190000\n}",
+        "valid_json": true
+      },
+      "reason": null,
+      "elapsed_seconds": 0.125
+    },
+    {
+      "case": "tools",
+      "status": "inconclusive",
+      "observations": {
+        "tool_calls": [],
+        "content": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Lisbon\"}}\n</tool_call>",
+        "finish_reason": "stop"
+      },
+      "reason": "model answered in text; tool path not exercised",
+      "elapsed_seconds": 0.094
+    },
+    {
+      "case": "reasoning",
+      "status": "passed",
+      "observations": {
+        "content": "17 + 25 is equal to 42.",
+        "reasoning_field": {
+          "visibility": "hidden",
+          "available": false,
+          "content": null,
+          "summary": null
+        }
+      },
+      "reason": null,
+      "elapsed_seconds": 0.094
+    },
+    {
+      "case": "cancellation",
+      "status": "passed",
+      "observations": {
+        "cancel_state_after_first_chunk": "cancelling",
+        "cancel_state_final": "cancelling",
+        "chunks_before_stop": 4,
+        "stream_elapsed_ms": 62,
+        "follow_up_status": 200,
+        "upstream_stop_verified": false,
+        "note": "Middleware stop, transport close, and lease release observed; whether the engine aborted GPU work must be read from the engine's own logs."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.109
+    },
+    {
+      "case": "concurrency",
+      "status": "passed",
+      "observations": {
+        "cancelled_request": {
+          "status": 200,
+          "chunks": 5,
+          "content_chars": 18
+        },
+        "surviving_request": {
+          "status": 200,
+          "chunks": 129,
+          "content_chars": 704
+        },
+        "overlapped_at_lewlm": true,
+        "note": "Overlap is observed at LewLM's boundary; upstream concurrency must be read from the engine's own metrics."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.953
+    },
+    {
+      "case": "failure",
+      "status": "passed",
+      "observations": {
+        "missing_model_status": 404,
+        "missing_model_error": {
+          "code": "model_not_found",
+          "message": "Requested model was not found in the local registry.",
+          "details": {
+            "model_id": "missing-8aa0b9"
+          }
+        },
+        "health_after": "ok",
+        "not_exercised": [
+          "bad_key",
+          "timeout",
+          "overload",
+          "server_stop",
+          "truncated_stream"
+        ],
+        "manual_steps": "Stop or misconfigure the engine and repeat chat_nonstreaming; expect a 4xx/5xx JSON error, health still 200, no automatic replay."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.016
+    },
+    {
+      "case": "fallback",
+      "status": "not_exercised",
+      "observations": {
+        "registered_runtimes": [
+          "distributed_experimental",
+          "mlx_text",
+          "mlx_audio",
+          "mlx_vision",
+          "llamacpp",
+          "onnx_genai",
+          "frontier_experimental",
+          "local_external_adapter:tabby"
+        ],
+        "available_runtimes": [
+          "llamacpp",
+          "frontier_experimental",
+          "local_external_adapter:tabby"
+        ],
+        "manual_steps": "Disable or stop this endpoint, rescan, and confirm native/Ollama candidates still route; with external_fallback_policy=explicit_alias confirm the decision records fallback_from_model_id."
+      },
+      "reason": "requires stopping the engine",
+      "elapsed_seconds": 0.063
+    },
+    {
+      "case": "lifetime",
+      "status": "passed",
+      "observations": {
+        "warm_status": 200,
+        "warm_result": {
+          "status": "warmed",
+          "model_id": "qwen2-5-0-5b-instruct-exl3-4-0bpw-tabby-babaee53",
+          "runtime": "local_external_adapter:tabby",
+          "reason": "Model is loaded and its backend warm hook completed. Warm sent a one-token probe to the external server; residency and eviction remain the server's.",
+          "runtime_instance_id": "aa2327f9-7ed2-4112-8827-7895c6689d13",
+          "operation_id": "45e84bce-c287-480f-9774-986b6ef7cc33",
+          "previous_state": "ready",
+          "current_state": "ready",
+          "active_usage_count": 0,
+          "backend_operation_performed": false,
+          "joined_existing_operation": false
+        },
+        "residency_status": 200,
+        "unload_status": 200,
+        "unload_result": {
+          "status": "unloaded",
+          "model_id": "qwen2-5-0-5b-instruct-exl3-4-0bpw-tabby-babaee53",
+          "runtime": "local_external_adapter:tabby",
+          "reason": "Model unloaded. This released LewLM's bridge lease only; the external server owns model residency and LewLM did not free its memory (upstream residency: unknown).",
+          "runtime_instance_id": "aa2327f9-7ed2-4112-8827-7895c6689d13",
+          "operation_id": "178fc3c3-26bb-47d2-abee-352f8614bcc7",
+          "previous_state": "ready",
+          "current_state": null,
+          "active_usage_count": 0,
+          "backend_operation_performed": false,
+          "joined_existing_operation": false
+        },
+        "upstream_residency_reported": "unknown",
+        "note": "A LewLM unload releases the bridge lease only; upstream RAM is the engine's to manage and is reported as unknown."
+      },
+      "reason": null,
+      "elapsed_seconds": 0.109
+    }
+  ]
+}

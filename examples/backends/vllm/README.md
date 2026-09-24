@@ -1,10 +1,13 @@
 # vLLM behind LewLM (Linux + NVIDIA)
 
-Status: **deferred** in `examples/backends/compatibility.json`. Every pin
-below was verified against upstream at the pinned revisions on 2026-09-18,
-but no Linux/NVIDIA host was available to run it, so nothing here is labelled
-validated. The recipe is complete enough to run and prove; do that before
-promoting it.
+Status: **passed on Windows 11 + Docker Desktop (WSL2)** on 2026-09-24 —
+RTX 5090 Laptop (SM 12.0, driver 610.47), LewLM native on Windows, this
+compose file unchanged except for `VLLM_WSL2_ENABLE_PIN_MEMORY` (below): the
+common acceptance suite (11 passed, fallback exercised separately), upstream
+concurrency from vLLM's own gauge, kill mid-stream, alias fallback, restart,
+and disable. See the [Windows/Linux validation record](../../../docs/validation/modernization-windows-linux.md).
+Bare-metal Linux/NVIDIA remains **deferred** in
+`examples/backends/compatibility.json`: a WSL2 pass is its own lane.
 
 | Input | Pin |
 | --- | --- |
@@ -96,8 +99,15 @@ image digest above as the `installation`, and the evidence path;
 
 ## Not covered by this recipe
 
-- **WSL2 and ROCm** are separate lanes with their own connectivity/kernels
-  proof; a Linux pass says nothing about them.
+- **ROCm** is a separate lane with its own kernels proof.
+- **Windows / WSL2** (Docker Desktop) is covered: run LewLM natively on
+  Windows against `127.0.0.1:8000`. vLLM keeps pinned memory off under a
+  WSL2 kernel unless `VLLM_WSL2_ENABLE_PIN_MEMORY=1` (set in the compose
+  file; ignored elsewhere), and its default V2 model runner will not start
+  without it (`RuntimeError: UVA is not available`). Cold start 191 s
+  (compile + CUDA graphs), warm restart 25–27 s with the compile cache.
+- **Seeded requests** carry a fresh `cache_salt`, so vLLM evaluates the whole
+  prompt and the seed reproduces; with a prefix-cache hit it otherwise may not.
 - **`vllm_mlx`** (Apple Silicon fork) is a different profile with different
   evidence; do not reuse this recipe or its results for it.
 - **Multi-GPU / tensor parallel** — the recipe is single-GPU by design; TP

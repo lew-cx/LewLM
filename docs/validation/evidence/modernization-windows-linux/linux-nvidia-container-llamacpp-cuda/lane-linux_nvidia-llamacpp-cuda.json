@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T19:12:11Z",
+  "lane": "linux_nvidia",
+  "title": "Linux NVIDIA",
+  "recipe": "llamacpp-cuda",
+  "profile": null,
+  "host": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "nvidia": true,
+    "nvidia_detail": "NVIDIA GeForce RTX 5090 Laptop GPU, 610.47",
+    "wsl": true
+  },
+  "label": "lewlm:cuda (Dockerfile.cuda, CUDA 12.8.0, SM 120, GGML_NATIVE=OFF) in Docker Desktop WSL2, RTX 5090 Laptop, Gemma-4-E2B Q8_K_P, LEWLM_GPU_OFFLOAD_LAYERS=-1",
+  "required_proof": "vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache validation",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "linux-nvidia-container-llamacpp-cuda/acceptance.json",
+    "linux-nvidia-container-llamacpp-cuda/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

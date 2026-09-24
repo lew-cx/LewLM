@@ -1,0 +1,64 @@
+{
+  "format": "lewlm-quickstart-evidence-v1",
+  "host_python": "3.11.9",
+  "doctor_seconds": 1.08,
+  "doctor_active_profile_ids": [
+    "core_only",
+    "gguf_fallback_backend",
+    "external_accelerator_bridge_backend"
+  ],
+  "llamacpp_build": {
+    "gpu_offload_supported": false,
+    "accelerator_hints": [],
+    "version": null
+  },
+  "scan": {
+    "seconds": 0.89,
+    "exit": 0,
+    "tail": [
+      "scanned 2 root(s), found 1 model(s) (1 new, 0 updated, 0 unchanged, 0 removed)",
+      "- Qwen2.5-0.5B-Instruct-exl3-4.0bpw [unknown/text] external://tabby/Qwen2.5-0.5B-Instruct-exl3-4.0bpw",
+      "note: Endpoint `tabby` (exllamav3_tabby) advertised 1 model(s) at http://127.0.0.1:5000."
+    ]
+  },
+  "serve_to_health_seconds": 1.33,
+  "health": {
+    "status": "ok"
+  },
+  "model_id": "qwen2-5-0-5b-instruct-exl3-4-0bpw-tabby-babaee53",
+  "models_listed": 1,
+  "first_chat": {
+    "status": 200,
+    "wall_seconds_including_load": 0.11,
+    "text": "Ok.",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "measured": true,
+      "cached_tokens": null
+    },
+    "runtime": null
+  },
+  "warm_chat_seconds": 0.08,
+  "warm_chat_status": 200,
+  "hook": {
+    "command": "\"<scratch>\\venv-lcpp\\Scripts\\python.exe\" scripts/backend_lanes.py run --lane wsl2 --recipe exllamav3-tabby --base-url http://127.0.0.1:18187 --model qwen2-5-0-5b-instruct-exl3-4-0bpw-tabby-babaee53 --output-dir \"<scratch>\\ev\\tabby\\lane\" --label \"LewLM native Windows 11 -> TabbyAPI 53da7919 / ExLlamaV3 1.5.0+cu128 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct EXL3 4.0bpw (converted here)\"",
+    "exit": 0,
+    "seconds": 4.1,
+    "stdout_tail": "PASS           discovery_identity   \nPASS           chat_nonstreaming    \nPASS           chat_streaming       \nPASS           sampling             \nPASS           structured_output    \nINCONCLUSIVE   tools                model answered in text; tool path not exercised\nPASS           reasoning            \nPASS           cancellation         \nPASS           concurrency          \nPASS           failure              \nNOT EXERCISED  fallback             requires stopping the engine\nPASS           lifetime             \nwrote <scratch>\\ev\\tabby\\lane\\acceptance.json\nsummary: {\"passed\": 10, \"failed\": 0, \"inconclusive\": 1, \"not_exercised\": 1, \"skipped\": 0}\n{\n  \"format\": \"lewlm-bridge-prefix-benchmark-v1\",\n  \"captured_at\": \"2026-09-24T19:36:19Z\",\n  \"label\": null,\n  \"host\": {\n    \"system\": \"Windows\",\n    \"release\": \"10\",\n    \"machine\": \"AMD64\"\n  },\n  \"settings\": {\n    \"requests\": 12,\n    \"warmups\": 3,\n    \"concurrency\": 1,\n    \"prefix_tokens_approx\": 600,\n    \"prefix_chars\": 4550,\n    \"max_tokens\": 32,\n    \"lewlm_response_cache\": \"not applicable to chat\",\n    \"engine_prefix_cache_hits\": \"unknown (not exposed through the bridge)\"\n  },\n  \"via_lewlm\": {\n    \"cold_first_request\": {\n      \"status\": 200,\n      \"ttfc_ms\": 34.0,\n      \"total_ms\": 77.7,\n      \"chunks\": 11\n    },\n    \"warmups\": [\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 43.2,\n        \"total_ms\": 73.7,\n        \"chunks\": 11\n      },\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 51.1,\n        \"total_ms\": 92.8,\n        \"chunks\": 11\n      },\n      {\n        \"status\": 200,\n        \"ttfc_ms\": 50.9,\n        \"total_ms\": 88.7,\n        \"chunks\": 11\n      }\n    ],\n    \"measured_count\": 12,\n    \"succeeded\": 12,\n    \"ttfc_ms\": {\n      \"p50\": 43.7,\n      \"p95\": 53.7,\n      \"mean\": 48.4\n    },\n    \"total_ms\": {\n      \"p50\": 81.9,\n      \"p95\": 93.7,\n      \"mean\": 86.5\n    }\n  }\n}\nwrote <scratch>\\ev\\tabby\\lane\\prefix-benchmark-c1.json\n{\n  \"lane\": \"wsl2\",\n  \"recipe\": \"exllamav3-tabby\",\n  \"status\": \"passed\",\n  \"reason\": null,\n  \"next_command\": null,\n  \"record_path\": \"<scratch>\\\\ev\\\\tabby\\\\lane\\\\lane-wsl2-exllamav3-tabby.json\"\n}\n",
+    "stderr_tail": ""
+  },
+  "runtime_before_shutdown": {
+    "loaded_model_count": 1,
+    "active_request_count": 0
+  },
+  "shutdown": {
+    "signal": "CTRL_BREAK_EVENT",
+    "exit_code": 3,
+    "seconds": 0.19,
+    "log_has_shutdown_complete": true,
+    "port_released": true
+  }
+}

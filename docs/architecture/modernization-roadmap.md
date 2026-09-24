@@ -5,6 +5,8 @@ Research date: 2026-09-16. Repository baseline: `caae222`, package version `0.4.
 
 Post-implementation review: [2026-09-22 release review](../validation/modernization-review.md) records corrective fixes, independent portable regression results, installed-wheel acceptance, and remaining platform deferrals.
 
+Windows and Linux: [2026-09-24 validation record](../validation/modernization-windows-linux.md) runs the native Windows, Windows + WSL2, Linux CPU, and Linux NVIDIA (llama.cpp CUDA) lanes for real on an RTX 5090 host — all passed after the fixes it lists — and states what stays deferred (bare-metal Linux for vLLM/SGLang/TabbyAPI, native Windows CUDA).
+
 The objective is faster installation, startup, and interactive inference while keeping LewLM a small, easy-to-integrate middleware layer. Complete the existing external-server integration, add ExLlamaV3 through TabbyAPI, and improve the portable CPU/CUDA paths. Keep native MLX, llama.cpp, llama.cpp-server, and Ollama available.
 
 ## Execution rules

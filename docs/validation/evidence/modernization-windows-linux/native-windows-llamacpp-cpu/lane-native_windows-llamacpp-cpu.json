@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T17:46:52Z",
+  "lane": "native_windows",
+  "title": "Native Windows",
+  "recipe": "llamacpp-cpu",
+  "profile": null,
+  "host": {
+    "system": "Windows",
+    "machine": "AMD64",
+    "nvidia": true,
+    "nvidia_detail": "NVIDIA GeForce RTX 5090 Laptop GPU, 610.47",
+    "wsl": false
+  },
+  "label": "native Windows 11 + llama-cpp-python 0.3.35 CPU wheel + Gemma-4-E2B Q8_K_P",
+  "required_proof": "Core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation; ExLlamaV3 only if separately promoted",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "native-windows-llamacpp-cpu/acceptance.json",
+    "native-windows-llamacpp-cpu/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

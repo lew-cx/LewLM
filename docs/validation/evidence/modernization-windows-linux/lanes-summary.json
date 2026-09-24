@@ -1,0 +1,155 @@
+{
+  "format": "lewlm-backend-lanes-summary-v1",
+  "lanes": [
+    {
+      "lane": "any_os",
+      "title": "Any development OS",
+      "required_proof": "Fake-server translation, tools/JSON/SSE, cancellation, migration, routing, fallback, schema/client checks",
+      "deferral_rule": "No hardware-based exemption",
+      "entries": [
+        {
+          "recipe": null,
+          "status": "ci",
+          "source": "ci_matrix",
+          "detail": "fixture-only checks run in the CI matrix on Linux, macOS, and Windows"
+        }
+      ]
+    },
+    {
+      "lane": "linux_cpu",
+      "title": "Linux CPU",
+      "required_proof": "Lean install, portable GGUF generation, image boot, conversion image, cold/warm rebuild evidence",
+      "deferral_rule": "Defer if Linux/container runtime unavailable",
+      "entries": [
+        {
+          "recipe": "llamacpp-cpu",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-linux_cpu-llamacpp-cpu.json"
+        }
+      ]
+    },
+    {
+      "lane": "apple_silicon",
+      "title": "Apple Silicon macOS",
+      "required_proof": "oMLX suite and native MLX/llama.cpp/Ollama coexistence",
+      "deferral_rule": "Defer on non-Apple hardware",
+      "entries": [
+        {
+          "recipe": "omlx",
+          "status": "validated",
+          "source": "compatibility_manifest",
+          "detail": "Validated for text chat (non-streaming and streaming), sampling (top_p/seed/stop applied; seeded determinism observed), json_schema structured output forwarded natively and validated after generation, hidden reasoning, cancellation, two concurrent streams, error mapping, lifecycle lease semantics, engine stop/restart, and mid-stream engine loss.",
+          "evidence_path": "docs/validation/evidence/modernization-step-05/"
+        }
+      ]
+    },
+    {
+      "lane": "linux_nvidia",
+      "title": "Linux NVIDIA",
+      "required_proof": "vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache validation",
+      "deferral_rule": "Defer without supported NVIDIA hardware/driver",
+      "entries": [
+        {
+          "recipe": "vllm",
+          "status": "deferred",
+          "source": "compatibility_manifest",
+          "detail": "Linux/NVIDIA validation host unavailable on 2026-09-18. The recipe in examples/backends/vllm/ is complete and pinned (release v0.29.0 = commit 98dff2a8; image vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1, CUDA 13.0.2, torch 2.13.0, TORCH_CUDA_ARCH_LIST 7.5-12.0; every `vllm serve` argument checked against the commit; hermes tool parser per upstream's tool-calling doc for Qwen2.5), but nothing was executed. The BF16 model is a candidate, not yet validated by this engine."
+        },
+        {
+          "recipe": "sglang",
+          "status": "deferred",
+          "source": "compatibility_manifest",
+          "detail": "Linux/NVIDIA validation host unavailable on 2026-09-18. The recipe in examples/backends/sglang/ is complete and pinned (release v0.5.19 = commit 0bcd8223; image lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9, CUDA 13.0.3, torch 2.13.0, sglang-kernel 0.4.6.post1 prebuilt wheel; every launch_server argument checked against server_args.py at the commit; qwen25 tool parser and xgrammar grammar backend per upstream at that commit; torch.compile deliberately off), but nothing was executed. The BF16 model is a candidate, not yet validated by this engine."
+        },
+        {
+          "recipe": "exllamav3-tabby",
+          "status": "deferred",
+          "source": "compatibility_manifest",
+          "detail": "Linux/NVIDIA validation host unavailable on 2026-09-17. The recipe in examples/backends/exllamav3-tabby/ is complete and pinned (image ghcr.io/theroyallab/tabbyapi@sha256:10bfcf9d27d1b3a5c7ada786f814b9da43fadad35643362f2fe0816082893172, built from the pinned commit on CUDA 12.8.1; config keys verified against config_sample.yml at that commit), but nothing was executed. The BF16 model is a conversion input; no EXL3 artifact has been produced or hashed."
+        },
+        {
+          "recipe": "llamacpp-cuda",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-linux_nvidia-llamacpp-cuda.json"
+        }
+      ]
+    },
+    {
+      "lane": "native_windows",
+      "title": "Native Windows",
+      "required_proof": "Core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation; ExLlamaV3 only if separately promoted",
+      "deferral_rule": "Linux or WSL results do not satisfy this lane",
+      "entries": [
+        {
+          "recipe": "llamacpp-cpu",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-native_windows-llamacpp-cpu.json"
+        },
+        {
+          "recipe": "ollama",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-native_windows-ollama.json"
+        }
+      ]
+    },
+    {
+      "lane": "wsl2",
+      "title": "Windows + WSL2",
+      "required_proof": "Documented engine recipes and Windows-Chap-to-LewLM connectivity",
+      "deferral_rule": "A Linux pass alone does not prove WSL networking",
+      "entries": [
+        {
+          "recipe": "vllm",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-wsl2-vllm.json"
+        },
+        {
+          "recipe": "sglang",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-wsl2-sglang.json"
+        },
+        {
+          "recipe": "exllamav3-tabby",
+          "status": "passed",
+          "source": "lane_record",
+          "detail": null,
+          "record_path": "lane-wsl2-exllamav3-tabby.json"
+        }
+      ]
+    },
+    {
+      "lane": "chap_ui",
+      "title": "Chap UI, later",
+      "required_proof": "End-user checklist against the same public contracts",
+      "deferral_rule": "Mark UI acceptance pending, never silently complete",
+      "entries": [
+        {
+          "recipe": null,
+          "status": "pending",
+          "source": "manual_checklist",
+          "detail": "docs/guides/chap-validation.md"
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "ci": 1,
+    "passed": 7,
+    "validated": 1,
+    "deferred": 3,
+    "pending": 1
+  },
+  "note": "Only `validated`/`passed` entries are proof; `deferred` and `pending` remain visible on purpose."
+}

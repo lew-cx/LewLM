@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T18:31:28Z",
+  "lane": "linux_cpu",
+  "title": "Linux CPU",
+  "recipe": "llamacpp-cpu",
+  "profile": null,
+  "host": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "nvidia": false,
+    "nvidia_detail": "nvidia-smi: not found on PATH",
+    "wsl": true
+  },
+  "label": "Linux container (Docker Desktop WSL2 kernel) lewlm:cpu-full CPU-only llama.cpp + Gemma-4-E2B Q8_K_P",
+  "required_proof": "Lean install, portable GGUF generation, image boot, conversion image, cold/warm rebuild evidence",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "linux-cpu-container/acceptance.json",
+    "linux-cpu-container/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 11,
+    "failed": 0,
+    "inconclusive": 0,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

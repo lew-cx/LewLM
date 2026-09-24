@@ -133,6 +133,16 @@ merges lane records with `examples/backends/compatibility.json`: only
 `validated`/`passed` entries are proof; `deferred` and `pending` entries stay
 visible on purpose, and an idle-host deferral never hides a validated recipe.
 
+The Windows + WSL2 lane can be run from either side of the boundary: inside a
+WSL2 distribution, or from Windows while a WSL2 VM runs the engine (Docker
+Desktop's included; `detect` reads `wsl.exe -l -v`). The Windows side is where
+the recipes put LewLM and where Chap runs, so it is the side that observes the
+connectivity the lane is about. A Linux container on Docker Desktop reports
+Linux with a WSL2 kernel (`host.wsl: true` in its record): its Linux CPU and
+Linux NVIDIA records are real Linux-userspace runs, and the record says which
+kernel they ran on. The 2026-09-24 results are in the
+[Windows/Linux validation record](../validation/modernization-windows-linux.md).
+
 ## What these scripts are for
 
 They help capture:

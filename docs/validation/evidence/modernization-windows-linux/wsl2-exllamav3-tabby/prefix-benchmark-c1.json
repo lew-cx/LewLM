@@ -1,0 +1,134 @@
+{
+  "format": "lewlm-bridge-prefix-benchmark-v1",
+  "captured_at": "2026-09-24T19:36:19Z",
+  "label": null,
+  "host": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64"
+  },
+  "settings": {
+    "requests": 12,
+    "warmups": 3,
+    "concurrency": 1,
+    "prefix_tokens_approx": 600,
+    "prefix_chars": 4550,
+    "max_tokens": 32,
+    "lewlm_response_cache": "not applicable to chat",
+    "engine_prefix_cache_hits": "unknown (not exposed through the bridge)"
+  },
+  "via_lewlm": {
+    "cold_first_request": {
+      "status": 200,
+      "ttfc_ms": 34.0,
+      "total_ms": 77.7,
+      "chunks": 11
+    },
+    "warmups": [
+      {
+        "status": 200,
+        "ttfc_ms": 43.2,
+        "total_ms": 73.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 51.1,
+        "total_ms": 92.8,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 50.9,
+        "total_ms": 88.7,
+        "chunks": 11
+      }
+    ],
+    "measured_count": 12,
+    "succeeded": 12,
+    "ttfc_ms": {
+      "p50": 43.7,
+      "p95": 53.7,
+      "mean": 48.4
+    },
+    "total_ms": {
+      "p50": 81.9,
+      "p95": 93.7,
+      "mean": 86.5
+    },
+    "runs": [
+      {
+        "status": 200,
+        "ttfc_ms": 53.7,
+        "total_ms": 93.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 30.5,
+        "total_ms": 68.9,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 31.6,
+        "total_ms": 70.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 31.6,
+        "total_ms": 69.9,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 43.7,
+        "total_ms": 81.9,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 50.4,
+        "total_ms": 79.5,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 127.6,
+        "total_ms": 168.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 31.2,
+        "total_ms": 71.1,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 43.5,
+        "total_ms": 77.7,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 44.3,
+        "total_ms": 85.0,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 52.2,
+        "total_ms": 85.5,
+        "chunks": 11
+      },
+      {
+        "status": 200,
+        "ttfc_ms": 40.1,
+        "total_ms": 85.3,
+        "chunks": 11
+      }
+    ]
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "format": "lewlm-rollout-rollback-evidence-v1",
+  "steps": [
+    {
+      "step": "vllm_start",
+      "ready_seconds": 0.16
+    },
+    {
+      "step": "scan_enabled",
+      "exit": 0,
+      "tail": [
+        "- Gemma-4-E2B-hauhau_agg.Q8_K_P [gguf/text] %USERPROFILE%\\.lewlm\\models\\Gemma-4-E2B-Hauhau\\Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf",
+        "- qwen2.5-0.5b-instruct [unknown/text] external://vllm/qwen2.5-0.5b-instruct",
+        "note: Endpoint `vllm` (vllm_local) advertised 1 model(s) at http://127.0.0.1:8000."
+      ]
+    },
+    {
+      "step": "doctor_enabled",
+      "external_engines": {
+        "engines": [
+          {
+            "endpoint_id": "vllm",
+            "profile": "vllm_local",
+            "enabled": true,
+            "base_url": "http://127.0.0.1:8000/v1",
+            "credential_env": "VLLM_API_KEY",
+            "recipe": "examples/backends/vllm/",
+            "recipe_status": "deferred",
+            "registered_model_count": 1,
+            "reachable": true,
+            "advertised_model_count": 1,
+            "state": "ready",
+            "error": null,
+            "next_command": "lewlm serve   (then chat with the registered model id from `lewlm list-models`)"
+          }
+        ],
+        "recipes": [
+          {
+            "profile": "exllamav3_tabby",
+            "status": "deferred",
+            "recipe": "examples/backends/exllamav3-tabby/"
+          },
+          {
+            "profile": "omlx",
+            "status": "validated",
+            "recipe": "examples/backends/omlx/"
+          },
+          {
+            "profile": "sglang_local",
+            "status": "deferred",
+            "recipe": "examples/backends/sglang/"
+          },
+          {
+            "profile": "vllm_local",
+            "status": "deferred",
+            "recipe": "examples/backends/vllm/"
+          }
+        ],
+        "next_steps": [
+          "every configured engine is reachable and registered \u2014 `lewlm serve`"
+        ],
+        "rollback": "to disable an engine: set its entry's \"enabled\": false (or remove it) in LEWLM_EXTERNAL_ENDPOINTS and restart; other models, caches, and Ollama state are untouched and the disabled endpoint's advertised entries leave the registry at the next scan; see docs/operations/backends/rollout-and-rollback.md"
+      }
+    },
+    {
+      "step": "lewlm_serve",
+      "health_seconds": 1.15
+    },
+    {
+      "step": "chat_via_vllm",
+      "status": 200,
+      "seconds": 0.13,
+      "text": "ok",
+      "endpoint_id": "vllm",
+      "engine_profile": "vllm_local",
+      "fallback": null
+    },
+    {
+      "step": "upstream_concurrency",
+      "streams_completed": 2,
+      "vllm_num_requests_running_peak": 2.0
+    },
+    {
+      "step": "kill_mid_stream",
+      "content_frames": 20,
+      "total_frames": 21,
+      "ends_with_done": true,
+      "finish_reason": "error",
+      "error_code": "runtime_unavailable",
+      "partial_output": true,
+      "seconds": 0.53
+    },
+    {
+      "step": "engine_down",
+      "scan_notes": [
+        "Endpoint `vllm` could not be read (The configured external accelerator endpoint `http://127.0.0.1:8000/v1/models` refused the connection.); keeping 1 previously registered model(s) as stale."
+      ],
+      "health_status": "ok",
+      "engine_state": "stale",
+      "model_still_listed": true,
+      "chat_status": 200,
+      "seconds": 1.28,
+      "served_by": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667",
+      "runtime": null,
+      "fallback_from": "qwen2-5-0-5b-instruct-vllm-ff6cafa3",
+      "fallback_reason": "Requested model `qwen2-5-0-5b-instruct-vllm-ff6cafa3` on endpoint `vllm` had no ready runtime; substituted the operator-configured alias `gemma-4-e2b-hauhau-agg",
+      "error": null
+    },
+    {
+      "step": "engine_restart",
+      "ready_seconds": 25.2,
+      "engine_state": "advertised",
+      "chat_status": 200,
+      "endpoint_id": "vllm",
+      "fallback": null
+    },
+    {
+      "step": "disabled",
+      "scan_tail": [
+        "scanned 1 root(s), found 1 model(s) (0 new, 0 updated, 1 unchanged, 1 removed)",
+        "- Gemma-4-E2B-hauhau_agg.Q8_K_P [gguf/text] %USERPROFILE%\\.lewlm\\models\\Gemma-4-E2B-Hauhau\\Gemma-4-E2B-hauhau_agg.Q8_K_P.gguf"
+      ],
+      "vllm_listed": false,
+      "model_count": 1,
+      "vllm_chat_status": 404,
+      "vllm_chat_error": "model_not_found",
+      "fallback_chat_status": 200,
+      "fallback_text": "ok",
+      "data_dir_entries_before": 6,
+      "data_dir_entries_after": 6,
+      "doctor_external_engines": {
+        "engines": [
+          {
+            "endpoint_id": "vllm",
+            "profile": "vllm_local",
+            "enabled": false,
+            "base_url": "http://127.0.0.1:8000/v1",
+            "credential_env": "VLLM_API_KEY",
+            "recipe": "examples/backends/vllm/",
+            "recipe_status": "deferred",
+            "registered_model_count": 0,
+            "reachable": null,
+            "advertised_model_count": 0,
+            "state": "disabled",
+            "next_command": "set \"enabled\": true for endpoint `vllm` in LEWLM_EXTERNAL_ENDPOINTS and restart, or remove the entry to roll it back"
+          }
+        ],
+        "recipes": [
+          {
+            "profile": "exllamav3_tabby",
+            "status": "deferred",
+            "recipe": "examples/backends/exllamav3-tabby/"
+          },
+          {
+            "profile": "omlx",
+            "status": "validated",
+            "recipe": "examples/backends/omlx/"
+          },
+          {
+            "profile": "sglang_local",
+            "status": "deferred",
+            "recipe": "examples/backends/sglang/"
+          },
+          {
+            "profile": "vllm_local",
+            "status": "deferred",
+            "recipe": "examples/backends/vllm/"
+          }
+        ],
+        "next_steps": [
+          "endpoint `vllm` is disabled (rolled back): set \"enabled\": true for endpoint `vllm` in LEWLM_EXTERNAL_ENDPOINTS and restart, or remove the entry to roll it back"
+        ],
+        "rollback": "to disable an engine: set its entry's \"enabled\": false (or remove it) in LEWLM_EXTERNAL_ENDPOINTS and restart; other models, caches, and Ollama state are untouched and the disabled endpoint's advertised entries leave the registry at the next scan; see docs/operations/backends/rollout-and-rollback.md"
+      }
+    }
+  ],
+  "host": "Windows 11 Home 10.0.26200, Intel Core Ultra 9 285HX, RTX 5090 Laptop (SM 12.0, driver 610.47)",
+  "topology": "LewLM native Windows (Python 3.11.9) -> 127.0.0.1:8000 -> vLLM v0.29.0 in Docker Desktop 4.74 (WSL2 kernel 6.6.87.2)",
+  "fallback_alias": {
+    "qwen2-5-0-5b-instruct-vllm-ff6cafa3": "gemma-4-e2b-hauhau-agg-q8-k-p-a2f0eceed667"
+  }
+}

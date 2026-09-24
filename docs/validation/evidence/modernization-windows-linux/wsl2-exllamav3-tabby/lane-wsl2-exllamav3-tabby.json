@@ -1,0 +1,31 @@
+{
+  "format": "lewlm-backend-lane-v1",
+  "captured_at": "2026-09-24T19:36:16Z",
+  "lane": "wsl2",
+  "title": "Windows + WSL2",
+  "recipe": "exllamav3-tabby",
+  "profile": "exllamav3_tabby",
+  "host": {
+    "system": "Windows",
+    "machine": "AMD64",
+    "nvidia": true,
+    "nvidia_detail": "NVIDIA GeForce RTX 5090 Laptop GPU, 610.47",
+    "wsl": true
+  },
+  "label": "LewLM native Windows 11 -> TabbyAPI 53da7919 / ExLlamaV3 1.5.0+cu128 (digest-pinned) in Docker Desktop WSL2, RTX 5090 Laptop SM120, Qwen2.5-0.5B-Instruct EXL3 4.0bpw (converted here)",
+  "required_proof": "Documented engine recipes and Windows-Chap-to-LewLM connectivity",
+  "status": "passed",
+  "reason": null,
+  "evidence": [
+    "wsl2-exllamav3-tabby/acceptance.json",
+    "wsl2-exllamav3-tabby/prefix-benchmark-c1.json"
+  ],
+  "acceptance_summary": {
+    "passed": 10,
+    "failed": 0,
+    "inconclusive": 1,
+    "not_exercised": 1,
+    "skipped": 0
+  },
+  "next_command": null
+}

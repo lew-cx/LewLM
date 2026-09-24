@@ -1,0 +1,8 @@
+dockerfile=Dockerfile
+flavor=full
+builder=lewlm-measure reset=1
+revision=b816bbc0c1516d8b6fbc990586b16d253ff0e486 dirty=yes
+host=MINGW64_NT-10.0-26200 3.6.7-fb42d713.x86_64 x86_64
+docker=Docker version 29.4.3, build 055a478
+extra_args=
+captured=20260924T173420Z

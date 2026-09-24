@@ -1,10 +1,16 @@
 # SGLang behind LewLM (Linux + NVIDIA)
 
-Status: **deferred** in `examples/backends/compatibility.json`. Every pin
-below was verified against upstream at the pinned revisions on 2026-09-18,
-but no Linux/NVIDIA host was available to run it, so nothing here is labelled
-validated. The recipe is complete enough to run and prove; do that before
-promoting it.
+Status: **passed on Windows 11 + Docker Desktop (WSL2)** on 2026-09-24 —
+RTX 5090 Laptop (SM 12.0, driver 610.47), LewLM native on Windows: the common
+acceptance suite (11 passed) with up to 3 requests running upstream at once
+(`#running-req` in SGLang's log). Two findings are folded into this recipe and
+LewLM: the kernel cache is a named volume (a Windows bind mount refuses the
+JIT's rename and crash-loops the scheduler), and `seed` is reported
+**unsupported** — at this pin SGLang applies it only with
+`--enable-deterministic-inference`. See the
+[Windows/Linux validation record](../../../docs/validation/modernization-windows-linux.md).
+Bare-metal Linux/NVIDIA remains **deferred** in
+`examples/backends/compatibility.json`.
 
 | Input | Pin |
 | --- | --- |
@@ -65,9 +71,10 @@ What the compose file fixes, and why:
 - **Caches, separate.** `HF_HOME=/cache/huggingface` (weights) and
   `/root/.cache` (whatever the pinned stack writes: FlashInfer JIT kernels,
   and inductor artifacts only if torch.compile were ever enabled) are two
-  volumes. The recipe does not prescribe cache paths it has not observed:
-  list `/root/.cache` after the first real start and record the directories
-  and their sizes in the validation record.
+  volumes. `/root/.cache` is the named volume `sglang-kernels` by default
+  (observed: `sglang/jit/sm120f/…` on Blackwell); set
+  `SGLANG_KERNEL_CACHE_DIR` to a host path only on Linux, where the JIT's
+  staging rename works on a bind mount.
 
 ## 2. Wire LewLM and prove it
 
