@@ -356,3 +356,21 @@ def test_health_and_listing_never_send_a_generation_to_the_daemon(tmp_path: Path
     assert runtime.supports_manifest_capability(manifest, CapabilityName.EMBEDDINGS) is True
     assert runtime.probe_manifest_capability(manifest, CapabilityName.EMBEDDINGS) == (True, None)
     assert len(posts) == 1, "a second probe is answered from the observation"
+
+
+def test_ollama_seed_is_forwarded_but_never_reported_as_deterministic(tmp_path) -> None:
+    # Ollama applies the seed, yet an identical prompt served from its KV cache
+    # samples different text than the first evaluation (observed on 0.34.4).
+    from lewlm.config.endpoints import ExternalEndpoint
+    from lewlm.config.settings import LewLMSettings
+    from lewlm.core.contracts import GenerateMessage, GenerateRequest, SamplingControls
+    from lewlm.runtime.adapters import LocalOpenAICompatibleAdapterRuntime
+
+    endpoint = ExternalEndpoint(endpoint_id="ollama", profile="ollama_local", base_url="http://127.0.0.1:11434")
+    runtime = LocalOpenAICompatibleAdapterRuntime(settings=LewLMSettings(data_dir=tmp_path, external_endpoints=(endpoint,)), endpoint=endpoint)
+    request = GenerateRequest(model_id="m", messages=[GenerateMessage(role="user", content="hi")], max_tokens=8, temperature=0.9,
+                              sampling=SamplingControls(seed=7, top_p=0.9))
+    payload = runtime._chat_payload(remote_model_id="qwen2.5:0.5b", request=request, stream=False)
+    report = request.metadata["sampling_controls"]
+    assert payload["seed"] == 7 and report["applied"] == {"seed": 7, "top_p": 0.9}
+    assert report["deterministic"] is False

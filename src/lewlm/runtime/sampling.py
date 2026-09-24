@@ -71,6 +71,12 @@ _SGLANG_BRIDGE_PARAMETERS: dict[str, str] = {
 #: accepted by the OpenAI schema and dropped.
 _EXLLAMAV3_TABBY_PARAMETERS: dict[str, str] = dict(_SGLANG_BRIDGE_PARAMETERS)
 
+#: Families whose backend applies the seed but cannot promise reproducible
+#: output. Ollama's llama.cpp runner reuses the KV cache of an identical
+#: prompt and re-evaluates only its tail, which shifts the logits the seed
+#: samples from, and it offers no per-request way to skip that cache.
+_UNREPRODUCIBLE_SEED_FAMILIES = frozenset({"external_bridge_ollama"})
+
 SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "llamacpp": _LLAMACPP_PARAMETERS,
     "mlx_text": _MLX_TEXT_PARAMETERS,
@@ -79,6 +85,7 @@ SUPPORTED_PARAMETERS: dict[str, dict[str, str]] = {
     "external_bridge_extended": _EXTENDED_EXTERNAL_BRIDGE_PARAMETERS,
     "external_bridge_sglang": _SGLANG_BRIDGE_PARAMETERS,
     "external_bridge_tabby": _EXLLAMAV3_TABBY_PARAMETERS,
+    "external_bridge_ollama": _EXTERNAL_BRIDGE_PARAMETERS,
 }
 
 
@@ -119,8 +126,9 @@ def resolve_sampling_controls(
         report.applied[name] = value
 
     report.unsupported = sorted(unsupported)
-    # Determinism is only claimed when the seed genuinely reached the backend.
-    report.deterministic = "seed" in report.applied
+    # Determinism is only claimed when the seed genuinely reached the backend
+    # and the backend can actually reproduce a seeded reply.
+    report.deterministic = "seed" in report.applied and family not in _UNREPRODUCIBLE_SEED_FAMILIES
     return options, report
 
 

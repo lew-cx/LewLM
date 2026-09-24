@@ -1355,6 +1355,8 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 if self.endpoint.profile == "sglang_local"
                 else "external_bridge_tabby"
                 if self.endpoint.profile == "exllamav3_tabby"
+                else "external_bridge_ollama"
+                if self.endpoint.profile == "ollama_local"
                 else "external_bridge_extended"
                 if self.endpoint.profile in {"vllm_local", "vllm_mlx"}
                 else "external_bridge"
