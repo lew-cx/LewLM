@@ -65,3 +65,40 @@ def test_import_guard_never_lets_a_host_refusal_escape(failure) -> None:
     # The bug this guards: these escaped as unhandled errors and 500ed
     # /v1/health and /v1/runtime/stats.
     assert load_llama_cpp(failure).module is None
+
+
+def test_nvidia_runtime_wheels_are_put_on_the_windows_dll_search_path(monkeypatch, tmp_path) -> None:
+    import os
+    import sys
+
+    from lewlm.runtime.llamacpp import import_guard
+
+    # The layouts NVIDIA's pip wheels use: nvidia/<pkg>/bin and nvidia/cu13/bin/x86_64.
+    for folder in (tmp_path / "nvidia" / "cu13" / "bin" / "x86_64", tmp_path / "nvidia" / "cuda_runtime" / "bin"):
+        folder.mkdir(parents=True)
+        (folder / "cublas64_13.dll").write_bytes(b"")
+    added: list[str] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "add_dll_directory", added.append, raising=False)
+    monkeypatch.setenv("PATH", "C:\Windows")
+
+    directories = import_guard.register_nvidia_wheel_dll_directories([str(tmp_path), str(tmp_path / "missing")])
+
+    assert sorted(directories) == sorted([str(tmp_path / "nvidia" / "cu13" / "bin" / "x86_64"), str(tmp_path / "nvidia" / "cuda_runtime" / "bin")])
+    assert added == directories
+    assert all(folder in os.environ["PATH"].split(os.pathsep) for folder in directories)
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert import_guard.register_nvidia_wheel_dll_directories([str(tmp_path)]) == [], "Linux wheels resolve through rpath"
+
+
+def test_a_missing_windows_dependency_dll_names_the_cuda_runtime_fix(monkeypatch) -> None:
+    import sys
+
+    def missing_dependency(name: str):
+        raise FileNotFoundError("Could not find module 'llama.dll' (or one of its dependencies).")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    imported = load_llama_cpp(missing_dependency)
+    assert imported.installed is True
+    assert "nvidia-cublas" in imported.reason
