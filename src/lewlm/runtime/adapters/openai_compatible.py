@@ -57,7 +57,7 @@ from lewlm.core.contracts import (
 )
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
-from lewlm.runtime.adapters.http_transport import AsyncBridgeTransport
+from lewlm.runtime.adapters.http_transport import STREAM_OPENED, AsyncBridgeTransport
 from lewlm.runtime.sampling import attach_sampling_report, resolve_sampling_controls
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
 
@@ -435,6 +435,10 @@ def summarize_feature_preservation(
 
 
 class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
+    #: Streams begin with `RuntimeStreamEvent(opened=True)` once the engine
+    #: has accepted the request (see `STREAM_OPENED`).
+    announces_stream_open = True
+
     """Route compatible local requests to a loopback-only OpenAI-style local server."""
 
     name = "local_external_adapter"
@@ -1442,8 +1446,12 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
             "POST",
             "/v1/chat/completions",
             payload=payload,
+            announce_open=True,
         )) as stream:
             async for message in stream:
+                if message is STREAM_OPENED:
+                    yield RuntimeStreamEvent(opened=True)
+                    continue
                 data = message.data.strip()
                 if data == "[DONE]":
                     saw_done = True

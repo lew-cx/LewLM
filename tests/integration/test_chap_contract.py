@@ -595,3 +595,64 @@ def test_a_stream_to_a_down_engine_is_refused_like_the_sync_request(path: str) -
             assert response.status_code == 200
             frames = _sse_frames(response)
         assert frames[-1] == {"_done": True}
+
+
+class _SlowRefusal:
+    """Accepts each connection, then drops it unanswered after `delay` seconds.
+
+    Stands in for an engine whose failure takes longer to surface than the
+    old fixed header window, as a refused loopback connect does on Windows
+    (the stack retries the SYN for about two seconds).
+    """
+
+    def __init__(self, port: int, delay: float) -> None:
+        import socket
+        import threading
+
+        self._socket = socket.create_server(("127.0.0.1", port))
+        self._delay = delay
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        import threading
+
+        self._socket.settimeout(0.1)
+        while not self._stopped.is_set():
+            try:
+                connection, _ = self._socket.accept()
+            except OSError:
+                continue
+            threading.Timer(self._delay, connection.close).start()
+
+    def close(self) -> None:
+        self._stopped.set()
+        self._thread.join()
+        self._socket.close()
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/responses"])
+def test_a_stream_whose_engine_fails_slowly_is_still_refused_before_it_opens(path: str) -> None:
+    # G40 on Windows: the refusal arrived after the fixed 1 s window, so the
+    # stream committed 200 and failed in-band. Headers now wait for the engine
+    # to accept the request, not for a fixed time.
+    with FakeBackendFixture() as fixture:
+        port = fixture.engine._port
+        fixture.engine.stop()
+        slow = _SlowRefusal(port, delay=1.5)
+        try:
+            client = httpx.Client(base_url=fixture.base_url, timeout=30)
+            if path == "/v1/responses":
+                request = {"model": fixture.model_id, "input": "hi", "max_output_tokens": 16, "stream": True}
+            else:
+                request = {"model": fixture.model_id, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16, "stream": True}
+            started = time.monotonic()
+            with client.stream("POST", path, json=request) as response:
+                body = json.loads(response.read())
+            assert time.monotonic() - started >= 1.4, "the failure really did outlast the old window"
+            assert response.status_code == 503, body
+            assert body["error"]["code"] == "runtime_unavailable"
+        finally:
+            slow.close()
+            fixture.engine.start(port)

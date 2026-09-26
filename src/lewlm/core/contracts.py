@@ -1731,6 +1731,11 @@ class RuntimeStreamEvent(BaseModel):
     usage: dict[str, int] | None = None
     finish_reason: str | None = None
     error: RuntimeStreamError | None = None
+    #: The engine accepted the request: its response headers arrived. Carries
+    #: no output. Emitted once, first, by runtimes that set
+    #: `announces_stream_open`, so a caller can tell "connected, waiting for
+    #: the first token" from "still connecting".
+    opened: bool = False
 
 
 class EmbeddingRequest(BaseModel):

@@ -42,11 +42,15 @@ from lewlm.security.workspace import secure_workspace
 
 router = APIRouter(tags=["chat"])
 _STREAM_HEARTBEAT_SECONDS = 1.0
-# How long a stream's headers wait for its first item. A request refused before
-# any output (an unreachable engine) fails within this window and is answered
-# with the same HTTP error as the sync path; a slow first token gets headers
-# and keep-alives once it passes, as before.
+# How long a stream's headers wait for its first item when the runtime has no
+# connection phase to report. A request refused before any output fails within
+# this window and is answered with the same HTTP error as the sync path; a slow
+# first token gets headers and keep-alives once it passes, as before.
 _STREAM_OPEN_GRACE_SECONDS = 1.0
+# Upper bound on waiting for an engine to accept a stream (see `_open_stream`).
+# The connect itself is bounded by the endpoint's connect timeout; this only
+# stops a request queued behind admission from holding headers indefinitely.
+_STREAM_CONNECT_MAX_SECONDS = 30.0
 StreamItemT = TypeVar("StreamItemT")
 logger = logging.getLogger(__name__)
 
@@ -957,9 +961,16 @@ def _prompt_request_from_payload(
 
 
 async def _open_stream(stream_session, *, grace_seconds: float | None = None) -> None:
-    """Wait briefly for a stream's first item before its headers are committed.
+    """Hold a stream's headers until it is known to have started.
 
-    A failure in that window has delivered nothing, so it is raised here and
+    For an engine behind a connection (`upstream_opened` is set up), that is
+    the moment the engine accepts the request, its first item, or its
+    failure, whichever comes first, bounded by `_STREAM_CONNECT_MAX_SECONDS`.
+    A fixed window would race the connect: on Windows a refused loopback
+    connect takes about two seconds to surface. A runtime with no connection
+    phase gets the short `_STREAM_OPEN_GRACE_SECONDS` window instead.
+
+    A failure before that point has delivered nothing, so it is raised here and
     becomes the same HTTP error the sync path returns; the in-band error
     envelope is left for failures after the stream has started. Whatever
     arrives, or is still pending, is handed on through `stream_items` so no
@@ -968,7 +979,15 @@ async def _open_stream(stream_session, *, grace_seconds: float | None = None) ->
 
     source = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
     first: asyncio.Task = asyncio.create_task(anext(source.__aiter__()))
-    await asyncio.wait({first}, timeout=_STREAM_OPEN_GRACE_SECONDS if grace_seconds is None else grace_seconds)
+    opened = getattr(stream_session, "upstream_opened", None)
+    if opened is not None:
+        opened_wait = asyncio.create_task(opened.wait())
+        try:
+            await asyncio.wait({first, opened_wait}, timeout=_STREAM_CONNECT_MAX_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            opened_wait.cancel()
+    else:
+        await asyncio.wait({first}, timeout=_STREAM_OPEN_GRACE_SECONDS if grace_seconds is None else grace_seconds)
     if first.done() and not first.cancelled():
         error = first.exception()
         if error is not None and not isinstance(error, StopAsyncIteration):

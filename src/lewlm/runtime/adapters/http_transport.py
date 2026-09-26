@@ -42,6 +42,12 @@ class ServerSentEvent:
     event_id: str | None = None
 
 
+#: Yielded first by `stream_sse(announce_open=True)` once the engine's response
+#: headers arrived with a success status: the connection is established and
+#: the request accepted, before any event has been decoded.
+STREAM_OPENED = ServerSentEvent(data="", event="lewlm.stream_opened")
+
+
 class _SSEDecoder:
     """Incrementally decode arbitrary byte fragments into SSE events."""
 
@@ -221,6 +227,7 @@ class AsyncBridgeTransport:
         path: str,
         *,
         payload: Mapping[str, Any],
+        announce_open: bool = False,
     ) -> AsyncIterator[ServerSentEvent]:
         self._ensure_credentials()
         # A stream the engine answered and then dropped says nothing about
@@ -231,6 +238,8 @@ class AsyncBridgeTransport:
             async with self._client.stream(method, path, json=dict(payload), headers={"Accept": "text/event-stream"}) as response:
                 answered = True
                 self._raise_for_response(response, path=path)
+                if announce_open:
+                    yield STREAM_OPENED
                 decoder = _SSEDecoder()
                 async for chunk in response.aiter_bytes():
                     for event in decoder.feed(chunk):

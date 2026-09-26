@@ -162,6 +162,10 @@ class ChatStreamSession:
     usage_measured: bool = True
     finish_reason: str = "stop"
     native_tool_calls_streamed: bool = False
+    #: Set when the runtime reports the engine accepted the request, for a
+    #: runtime that announces it (`announces_stream_open`); `None` for one
+    #: that has no connection phase to report.
+    upstream_opened: asyncio.Event | None = None
 
 
 @dataclass(slots=True)
@@ -1941,6 +1945,8 @@ class ChatOrchestrator:
             queue=stream_queue,
             on_consumer_close=cancel_producer,
         )
+        if getattr(context.runtime, "announces_stream_open", False):
+            stream_session.upstream_opened = asyncio.Event()
 
         async def iterator() -> None:
             generate_started_at = time.perf_counter()
@@ -1953,6 +1959,10 @@ class ChatOrchestrator:
             citation_processor = CitationStreamProcessor(context.citation_context)
             try:
                 async for runtime_event in _runtime_stream_events(context.runtime, context.request):
+                    if runtime_event.opened:
+                        if stream_session.upstream_opened is not None:
+                            stream_session.upstream_opened.set()
+                        continue
                     if runtime_event.error is not None:
                         raise RuntimeUnavailableError(
                             runtime_event.error.message,
