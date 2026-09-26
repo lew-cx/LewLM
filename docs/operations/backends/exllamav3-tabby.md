@@ -14,11 +14,17 @@ commands — is in
 
 ## Status
 
-**Deferred.** No Linux/NVIDIA host was available when the recipe was written
-(2026-09-17); every pin was verified against upstream, nothing was executed.
+**Passed on Windows + WSL2; deferred on bare-metal Linux.** On 2026-09-24 the
+recipe ran in Docker Desktop on an RTX 5090 Laptop (SM 12.0), with LewLM native
+on Windows. It used an EXL3 4.0 bpw artifact converted with the image's own
+ExLlamaV3 1.5.0. The common acceptance suite passed 10 checks; tools were
+inconclusive because the 0.5B model answered in text. TabbyAPI has no `seed` at
+this pin, so LewLM reports it as unsupported. LewLM forwards `top_k`, `min_p`,
+and `repetition_penalty`, which TabbyAPI does implement. See the
+[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
 `examples/backends/compatibility.json` keeps `exllamav3_tabby` as `deferred`
-until the acceptance suite passes on real hardware. Do not read this profile's
-presence in `LEWLM_EXTERNAL_ENDPOINTS` as support.
+until the suite passes on a bare-metal Linux/NVIDIA host. Do not read this
+profile's presence in `LEWLM_EXTERNAL_ENDPOINTS` as support elsewhere.
 
 ## What LewLM does with this profile
 

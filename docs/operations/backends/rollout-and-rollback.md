@@ -10,14 +10,19 @@ Nothing here is required to use LewLM with its packaged runtimes or Ollama.
 | Backend | Recipe | Platform lane | Status in `examples/backends/compatibility.json` |
 | --- | --- | --- | --- |
 | oMLX | `examples/backends/omlx/` | Apple Silicon macOS | `validated` (oMLX `b45fb7e`, Qwen2.5-0.5B-Instruct-4bit, the step-05 host) |
-| vLLM | `examples/backends/vllm/` | Linux + NVIDIA | `deferred` until its lane passes |
-| SGLang | `examples/backends/sglang/` | Linux + NVIDIA | `deferred` until its lane passes |
-| ExLlamaV3 via TabbyAPI | `examples/backends/exllamav3-tabby/` | Linux + NVIDIA | `deferred` until its lane passes |
+| vLLM | `examples/backends/vllm/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
+| SGLang | `examples/backends/sglang/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
+| ExLlamaV3 via TabbyAPI | `examples/backends/exllamav3-tabby/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
+
+Ollama has no recipe here. It is a model source you run yourself; see
+[Models and routing](../../guides/models-and-routing.md#fronting-an-ollama-install-you-already-run).
+Its native Windows lane passed with Ollama running in Docker. The WSL2 results are in the
+[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
 
 Each recipe pins an exact release (commit, image digest or dependency lock,
 model revision and hashes), publishes its port to host loopback only, and
 tells you what to measure before promoting it. A `deferred` recipe is
-complete and pinned but has not been executed on its hardware; the
+complete and pinned but has not yet passed on its target lane; the
 `validated` one names the exact engine + model + host it passed on, and
 nothing broader. The engine runs where the recipe says; LewLM never installs,
 starts, updates, or stops it. Run `python scripts/engine_preflight.py --recipe

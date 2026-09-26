@@ -24,7 +24,7 @@ which of the two shapes it is running in and tailors its guidance accordingly.
 ## Base setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/lew-cx/LewLM.git
 cd LewLM
 ```
 
@@ -119,15 +119,15 @@ See the [Runtime and capability matrix](../reference/runtime-capability-matrix.m
 If you want another project to install a pinned LewLM version directly from Git:
 
 ```bash
-python -m pip install "lewlm @ git+https://github.com/<owner>/LewLM.git@<tag-or-commit>"
+python -m pip install "lewlm @ git+https://github.com/lew-cx/LewLM.git@<tag-or-commit>"
 ```
 
 Profile-oriented examples:
 
 ```bash
-python -m pip install "lewlm @ git+https://github.com/<owner>/LewLM.git@<tag-or-commit>"
-python -m pip install "lewlm[llamacpp] @ git+https://github.com/<owner>/LewLM.git@<tag-or-commit>"
-python -m pip install "lewlm[mlx,documents] @ git+https://github.com/<owner>/LewLM.git@<tag-or-commit>"
+python -m pip install "lewlm @ git+https://github.com/lew-cx/LewLM.git@<tag-or-commit>"
+python -m pip install "lewlm[llamacpp] @ git+https://github.com/lew-cx/LewLM.git@<tag-or-commit>"
+python -m pip install "lewlm[mlx,documents] @ git+https://github.com/lew-cx/LewLM.git@<tag-or-commit>"
 ```
 
 ## Confirm the active profile

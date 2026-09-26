@@ -15,11 +15,22 @@ environment, the preflight, and the proof commands — is in
 
 ## Status
 
-**Deferred.** No Linux/NVIDIA host was available when the recipe was written
-(2026-09-18); every pin was verified against upstream, nothing was executed.
+**Passed on Windows + WSL2; deferred on bare-metal Linux.** On 2026-09-24 the
+recipe ran in Docker Desktop on an RTX 5090 Laptop (SM 12.0), with LewLM native
+on Windows. It passed the common acceptance suite (11/11), with up to three
+requests running upstream at once. Two findings from that run are folded into
+the recipe and LewLM:
+
+- The kernel cache is now a named volume. A Windows bind mount refuses the
+  JIT's rename and crash-loops the scheduler.
+- `seed` is reported as unsupported. At this pin SGLang applies it only with
+  `--enable-deterministic-inference`.
+
+See the
+[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
 `examples/backends/compatibility.json` keeps `sglang_local` as `deferred`
-until the acceptance suite passes on real hardware. Do not read this profile's
-presence in `LEWLM_EXTERNAL_ENDPOINTS` as support.
+until the suite passes on a bare-metal Linux/NVIDIA host. Do not read this
+profile's presence in `LEWLM_EXTERNAL_ENDPOINTS` as support elsewhere.
 
 ## What LewLM does with this profile
 

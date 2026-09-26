@@ -8,11 +8,13 @@ LewLM is a middleware-first backend package designed to be usable in three ways:
 
 ## Before you install
 
-LewLM is optimized first for:
+LewLM runs on macOS, Windows, and Linux, with a different packaged path on each:
 
-- **Apple Silicon + MLX** for text, vision, and audio runtimes
-- **GGUF + llama.cpp** as the packaged cross-platform runtime path
-- **loopback external accelerators** as the bridge path when another local server owns low-level execution
+- **Apple Silicon macOS:** native **MLX** for text, vision, and audio. This is also where LewLM owns the most serving-performance layers.
+- **Linux and Windows:** **GGUF + llama.cpp**, promoted through the CPU or CUDA **Docker image**. Native Windows installs use the prebuilt CPU wheel.
+- **Any platform:** **loopback engines** (vLLM, SGLang, TabbyAPI, Ollama, oMLX) as opt-in bridges when another local server owns execution.
+
+Every platform lane has been run for real on a single host per lane. The [README's platform status](../../README.md#platform-status) lists what passed where, and what is still deferred (notably bare-metal Linux + NVIDIA for the GPU engines).
 
 The package code does **not** bundle model weights. By default LewLM stores state under `~/.lewlm` and scans `~/.lewlm/models` (`%USERPROFILE%\.lewlm` and `%USERPROFILE%\.lewlm\models` on Windows).
 

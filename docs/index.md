@@ -8,7 +8,10 @@ This documentation set is organized around the surfaces LewLM actually ships tod
 - **Guides** for day-to-day operator and application workflows
 - **Reference** for CLI, API, Python, configuration, runtime, and document details
 - **Architecture** for how the registry, router, runtimes, storage, and telemetry fit together
-- **Operations** for security and troubleshooting
+- **Operations** for Docker, engine recipes, security, and troubleshooting
+- **Validation** for the recorded evidence behind each platform claim
+
+LewLM runs on macOS (native MLX on Apple Silicon), Windows (native llama.cpp, or engines in Docker Desktop / WSL2), and Linux (the CPU and CUDA Docker images). Each lane has been run on real hardware; the [README's platform status](../README.md#platform-status) says which, and what remains deferred.
 
 ## What LewLM provides today
 
@@ -31,7 +34,10 @@ This documentation set is organized around the surfaces LewLM actually ships tod
 | CLI | [CLI reference](reference/cli.md) |
 | HTTP API | [HTTP API reference](reference/http-api.md) |
 | Python embedding | [Python API reference](reference/python-api.md) |
-| Host-app adoption | [Host-app integration](guides/host-app-integration.md) |
+| Host-app adoption | [Host-app integration](guides/host-app-integration.md), and [Chap](https://github.com/lew-cx/Chap) as a working reference app |
+| Containers | [Running LewLM in Docker](operations/docker.md) |
+| Engine recipes | [Rollout and rollback](operations/backends/rollout-and-rollback.md) |
+| Platform evidence | [Windows/Linux validation record](validation/modernization-windows-linux.md) |
 | Runtime behavior | [Runtime and capability matrix](reference/runtime-capability-matrix.md) |
 | Product scope | [Scope matrix](reference/scope-matrix.md) |
 | Documents | [Documents guide](guides/documents.md) |

@@ -112,7 +112,7 @@ their required proof, and their deferral rules are encoded in
 | Linux NVIDIA | vLLM, SGLang, ExLlamaV3/TabbyAPI suites; llama.cpp CUDA offload/build/cache | defer without supported NVIDIA hardware/driver |
 | Native Windows | core install, llama.cpp import/generation, Ollama bridge, shutdown/cancellation | Linux or WSL results do not satisfy it |
 | Windows + WSL2 | documented engine recipes and Windows-Chap-to-LewLM connectivity | a Linux pass alone does not prove WSL networking |
-| Chap UI | the end-user checklist in the Chap validation guide | pending until run, never silently complete |
+| Chap UI | the end-user checklist in the Chap validation guide, run by [Chap](https://github.com/lew-cx/Chap)'s `npm run ui:checklist` | pending until run against a tagged LewLM, never silently complete |
 
 ```bash
 python scripts/backend_lanes.py detect                                   # which lanes this host can run, and why not the others

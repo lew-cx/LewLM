@@ -15,11 +15,17 @@ environment, the preflight, and the proof commands — is in
 
 ## Status
 
-**Deferred.** No Linux/NVIDIA host was available when the recipe was written
-(2026-09-18); every pin was verified against upstream, nothing was executed.
-`examples/backends/compatibility.json` keeps `vllm_local` as `deferred` until
-the acceptance suite passes on real hardware. Do not read this profile's
-presence in `LEWLM_EXTERNAL_ENDPOINTS` as support.
+**Passed on Windows + WSL2; deferred on bare-metal Linux.** On 2026-09-24 the
+recipe ran unchanged, apart from `VLLM_WSL2_ENABLE_PIN_MEMORY=1`, which is now
+in the compose file. It ran in Docker Desktop on an RTX 5090 Laptop (SM 12.0),
+with LewLM native on Windows. It passed the common acceptance suite (11/11),
+the real-engine rollout and rollback sequence, and the Chap smoke in
+real-model mode (12/12). See the
+[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
+A WSL2 pass is its own lane. `examples/backends/compatibility.json` keeps
+`vllm_local` as `deferred` until the suite passes on a bare-metal Linux/NVIDIA
+host. Do not read this profile's presence in `LEWLM_EXTERNAL_ENDPOINTS` as
+support elsewhere.
 
 ## `vllm_local` is not `vllm_mlx`
 

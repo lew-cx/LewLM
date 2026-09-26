@@ -29,9 +29,35 @@ assert rag_client.runtime_info().runtime_instance_id == document_client.runtime_
 
 See [ADR-001](docs/architecture/adr-001-shared-runtime-residency.md), the [action plan](docs/architecture/shared-runtime-action-plan.md), and the [shared-client example](examples/shared_runtime_clients.py).
 
-LewLM is optimized first for **Apple Silicon + MLX**, with **llama.cpp/GGUF** as the **first-class non-Apple packaged runtime family** and **loopback-only external accelerators** as a bridge path.
+LewLM runs on **macOS, Windows, and Linux**. Each platform has its own packaged path, and each has been validated for real on actual hardware:
 
-**Status:** alpha / pre-release.
+- **Apple Silicon:** native **MLX** for text, vision, and audio. This is also where LewLM owns the most serving-performance layers.
+- **Every platform:** **llama.cpp/GGUF** is the first-class packaged runtime. On Linux and Windows it is promoted through a CPU or CUDA Docker image.
+- **Loopback-only engines** (vLLM, SGLang, TabbyAPI, Ollama, oMLX) run behind the same contract as opt-in bridges.
+
+**Status:** alpha / pre-release. See [Platform status](#platform-status) for what has been proven where, and what has not.
+
+## Platform status
+
+Each platform lane below was run end to end: LewLM's common acceptance suite, a repeated-prefix benchmark, and, where noted, the full test suite. The table lists what passed and the host it passed on. Nothing broader is claimed.
+
+| Platform | How LewLM runs there | Result | Record |
+| --- | --- | --- | --- |
+| macOS, Apple Silicon | native `.[mlx]` and `.[llamacpp]`; oMLX bridge recipe | MLX packaged path; oMLX recipe `validated` (M2 Max, 2026-09-17) | [step 05](docs/validation/modernization-step-05.md) |
+| Windows 11, native | `.[llamacpp_runtime]` from the prebuilt CPU wheel; Ollama as a bridge | llama.cpp lane 11/11; Ollama lane 11/11; full suite **1,201 passed, 0 failed**; graceful Ctrl+Break shutdown | [Windows/Linux](docs/validation/modernization-windows-linux.md) |
+| Windows + WSL2 | LewLM native on Windows; the GPU engine in Docker Desktop | vLLM 11/11 plus real-engine rollout/rollback and the Chap smoke (12/12 real-model checks); SGLang 11/11; TabbyAPI 10/10 (tools inconclusive on a 0.5B model) | [Windows/Linux](docs/validation/modernization-windows-linux.md) |
+| Linux, CPU | the `full` Docker image | lane 11/11; full suite on `python:3.11-slim` **1,202 passed, 0 failed**; HF→GGUF conversion inside the image | [Windows/Linux](docs/validation/modernization-windows-linux.md) |
+| Linux, NVIDIA | the CUDA image (`docker-compose.gpu.yml`) | llama.cpp CUDA lane 11/11 with full offload on an RTX 5090 (SM 12.0) | [Windows/Linux](docs/validation/modernization-windows-linux.md) |
+
+CI runs the portable suite and the Chap contract smoke on Ubuntu, Windows, and macOS on every push. It also builds the bridge, full, and CUDA images.
+
+What is **not** proven yet:
+
+- **Bare-metal Linux.** The Linux lanes ran in Linux userspace on Docker Desktop's WSL2 kernel, and each record says so (`host.wsl: true`). vLLM, SGLang, and TabbyAPI stay `deferred` for bare-metal Linux + NVIDIA in [`examples/backends/compatibility.json`](examples/backends/compatibility.json).
+- **Native Windows llama.cpp with CUDA.** The prebuilt Windows CUDA wheels need AVX-512, which most consumer Intel CPUs lack. `lewlm doctor` detects that mismatch. On Windows with an NVIDIA GPU, use the CUDA container.
+- **Engines running natively on Windows**, such as Ollama for Windows. The Ollama lane used Ollama in Docker.
+- **One host per lane.** Each Windows and Linux lane ran on a single laptop (Core Ultra 9 285HX, RTX 5090 Laptop). Other GPUs, drivers, and CPUs have not been exercised.
+- **Packaged vision and audio outside Apple Silicon.** On other platforms these go through the bridge (see [Parity acceptance contract](#parity-acceptance-contract)).
 
 ## What LewLM is today
 
@@ -94,7 +120,7 @@ plus `llama-quantize`, which `lewlm convert` shells out to and which the
 shapes it is running in and tailors its guidance accordingly.
 
 ```bash
-git clone https://github.com/Lewted/LewLM.git
+git clone https://github.com/lew-cx/LewLM.git
 cd LewLM
 ```
 
@@ -136,7 +162,13 @@ Common combinations:
 
 On **Linux** and **Windows**, start with `.[llamacpp]` when you want packaged local model execution. This is now LewLM's first-class non-Apple path for text workloads and semantic GGUF models. Embeddings stay packaged there for compatible GGUF models, and rerank stays honest by using LewLM's packaged embedding-similarity fallback when llama.cpp does not expose a native rerank API. If you already run a local OpenAI-compatible server, including an NVIDIA-oriented Linux/Windows service, the external accelerator bridge remains the intended path for that topology and the current bridge-only non-Apple audio parity path. LewLM does not bundle the server itself; bridge-backed semantic routes still require compatible local `/v1/embeddings` and `/v1/rerank` endpoints or equivalent extensions, and audio requires compatible local `/v1/audio/transcriptions` and `/v1/audio/speech` endpoints that LewLM probes separately.
 
-On Windows, `.[llamacpp]` now also installs CMake and Ninja helper packages, but `llama-cpp-python` may still need to build from source when a wheel is not published for your Python and architecture combination. In that case, install Microsoft C++ Build Tools first. If you do not want that local build step, use the external accelerator bridge with a loopback-only local server that already owns GGUF execution.
+On native Windows, PyPI ships `llama-cpp-python` only as source. A source build needs the Microsoft C++ Build Tools, and it fails on a default Windows install because of the 260-character path limit. Install the prebuilt CPU wheel instead. This is the command the Windows lane was validated with:
+
+```powershell
+python -m pip install -e ".[llamacpp_runtime]" --only-binary llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+Then check it with `python scripts/verify_llamacpp_build.py --expect cpu`. For NVIDIA GPUs on Windows, the CUDA container is the validated path. The [installation guide](docs/getting-started/installation.md) explains why the prebuilt CUDA wheels may not run on your CPU.
 
 The new `.[onnx_genai]` profile is LewLM's Windows-native ONNX/DirectML path for ONNX GenAI bundles. It can load and generate through compatible `onnxruntime-genai` Python packages, and — when this extra is installed — it makes HF-to-ONNX conversion executable through the official `onnxruntime-genai` model builder. Conversion precision follows the conversion policy (`max_quality` → fp16, otherwise int4) and the execution provider follows `LEWLM_ONNX_GENAI_CONVERSION_EXECUTION_PROVIDER` (`cpu` default, or `dml`/`cuda`). Use `lewlm convert <model-id> --target onnx_genai` to run it.
 
@@ -202,7 +234,7 @@ Use the quick path that matches the profile you installed:
 
    Use **Apple MLX** only on Apple Silicon macOS. On Linux, Windows, and non-MLX Mac hosts, use the **Cross-platform GGUF backend** instead. It is the first-class non-Apple path LewLM now productizes. `runtime probe --mode load` upgrades a model from routing-only evidence to a persisted load smoke test without generating text; use `--mode generate` when you want to verify output too.
 
-   On Windows, make sure the `.[llamacpp]` install completed successfully before expecting this step to run. If `llama-cpp-python` had to build from source and your host lacks Microsoft C++ Build Tools, packaged GGUF inference will stay unavailable until that compiler toolchain is installed.
+   On native Windows, install llama.cpp from the prebuilt CPU wheel shown under [Install](#install) before this step. If `lewlm doctor` reports that the native library does not load, it will say why (for example `missing_cpu_features`); switch to the Docker image.
 
 3. **Cross-platform external accelerator bridge**
 
@@ -262,7 +294,8 @@ A few other boundaries matter too:
 - **Optional modules stay optional.** Documents and local-tooling surfaces add real value, but they should not be mistaken for LewLM's always-on core identity.
 - **Frontier architecture reporting is partly planning and diagnostics.** LewLM can detect and annotate hybrid SSM/MoE traits, but some frontier reporting is still metadata-driven rather than proof of a custom execution core.
 - **Distributed serving is experimental.** The current distributed path is a proof-oriented pipeline surface, not a production tensor-parallel engine.
-- **Cross-platform productization stays selective.** LewLM now chooses GGUF via llama.cpp as its single first-class non-Apple runtime family. External accelerators remain a bridge rather than LewLM-owned packaged parity.
+- **Cross-platform productization stays selective.** LewLM uses GGUF via llama.cpp as its single first-class runtime family outside Apple Silicon. External accelerators remain bridges rather than LewLM-owned packaged parity. Each bridge engine is promoted per platform lane only after that lane passes on real hardware (see [Platform status](#platform-status)).
+- **Engine determinism is reported, not assumed.** Sampling support is reported per engine, from what the engine actually does. On llama.cpp, seeded requests are evaluated from an empty KV state. On vLLM, seeded requests get a fresh prefix-cache salt. SGLang and TabbyAPI report `seed` as unsupported at their pinned versions. Ollama forwards the seed but reports `deterministic: false`.
 - **LewLM is not a GUI, vector database, workflow engine, or universal multi-backend serving engine.** It is meant to sit under other applications.
 
 ## What LewLM is best at right now
@@ -270,17 +303,30 @@ A few other boundaries matter too:
 LewLM is strongest today when you want:
 
 1. a **local-first middleware backend** instead of a GUI app
-2. **one interface** over MLX, llama.cpp, and loopback accelerator bridges
+2. **one interface** over MLX, llama.cpp, and loopback engines (vLLM, SGLang, TabbyAPI, Ollama, oMLX), on macOS, Windows, and Linux
 3. **honest capability reporting** with explicit fallback reasons
 4. **simple local startup** that can grow into benchmarking, serving profiles, multimodal routing, and document workflows
+
+## Chap: a real app built on LewLM
+
+[**Chap**](https://github.com/lew-cx/Chap) is a chat and operations GUI built entirely on LewLM's public HTTP contract. It uses one base URL and no engine names, SDKs, or engine-specific stream parsers. It is the best place to see a real client in practice:
+
+- about 700 hand-written lines of TypeScript integration code in [`packages/lewlm/src/`](https://github.com/lew-cx/Chap/tree/main/packages/lewlm/src), covering SSE streaming for both chat surfaces, cancellation, identity headers, one error type, and the `/v1/events` subscription
+- everything else it knows about LewLM (routes, schemas, event types, error codes) generated from LewLM's published contract, with a check that fails when the contract drifts
+- a browser-driven run of LewLM's [UI checklist](docs/guides/chap-validation.md) against the fake backend and a real engine
+- a record of the contract gaps it found against LewLM and how each was closed
+
+In this repository, `python -m lewlm.testing.fake_backend` gives you a working LewLM with no model to build a UI against. `examples/chap_backend_smoke.py` proves the backend half of that contract over HTTP.
 
 ## Docs and examples
 
 - [Documentation index](docs/index.md)
 - [Getting started](docs/getting-started/index.md)
+- [Running LewLM in Docker](docs/operations/docker.md) — the promoted path on Linux and Windows, CPU and CUDA
 - [Host-app integration](docs/guides/host-app-integration.md)
-- [Chap validation](docs/guides/chap-validation.md) — build a chat UI against `python -m lewlm.testing.fake_backend` with no model, prove the contract with `examples/chap_backend_smoke.py`
+- [Chap validation](docs/guides/chap-validation.md) — the contract a chat UI builds against, the backend proof, and the UI checklist
 - [Rollout and rollback](docs/operations/backends/rollout-and-rollback.md) — opt-in engine recipes (oMLX, vLLM, SGLang, TabbyAPI), `lewlm doctor` guidance, one-entry rollback
+- [Windows/Linux validation record](docs/validation/modernization-windows-linux.md) — every lane, the defects found and fixed, and what remains deferred
 - [Chat and responses](docs/guides/chat-and-responses.md)
 - [Documents guide](docs/guides/documents.md)
 - [CLI reference](docs/reference/cli.md)

@@ -10,7 +10,7 @@ Start with three public entry points:
 
 ## The chat-UI contract in one place
 
-A chat host app (Chap) needs one base URL and these routes, and nothing
+A chat host app such as [Chap](https://github.com/lew-cx/Chap) needs one base URL and these routes, and nothing
 engine-specific: `GET /v1/health`, `GET /v1/models`,
 `GET /v1/models/{id}/capabilities`, `GET /v1/runtime`, `POST /v1/chat/completions`
 (or `POST /v1/responses`), `POST /v1/requests/{x-request-id}/cancel`, and
@@ -30,7 +30,11 @@ infer one from another: `health.status` (this service), `health.engines[]` and
 `runtime.startup.engines[]` (each engine's cached inventory state, no probe),
 `runtime.startup.warm_models[]` (process-local residency). The
 [Chap validation guide](chap-validation.md) has the full field map and the UI
-checklist.
+checklist. For a working client rather than a specification, read Chap's
+source. Its whole LewLM integration (streaming, cancellation, identity
+headers, errors, and events) is about 700 hand-written lines of TypeScript in
+[`packages/lewlm/src/`](https://github.com/lew-cx/Chap/tree/main/packages/lewlm/src),
+over types generated from this repository's integration bundle.
 
 ## Shared server versus embedded mode
 
