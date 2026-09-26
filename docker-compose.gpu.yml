@@ -1,0 +1,36 @@
+# NVIDIA GPU override for docker-compose.yml. It swaps the `lewlm` service onto
+# Dockerfile.cuda and reserves the GPU; ports, volumes and the rest of the
+# service come from the base file unchanged.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Or set COMPOSE_FILE in `.env` (see `.env.example`) so plain `docker compose`
+# commands pick it up. Requires the NVIDIA Container Toolkit on the host.
+
+services:
+  lewlm:
+    build:
+      dockerfile: Dockerfile.cuda
+      args:
+        # CUDA 12.6 has no sm_120 support and the Dockerfile's default arch list
+        # stops at Ada, so a Blackwell / RTX 50-series host must override the
+        # base images, the torch index, and the architecture list. The build
+        # validates the requested SMs against the toolkit before compiling.
+        # See `.env.example`.
+        CUDA_DEVEL_IMAGE: "${LEWLM_DOCKER_CUDA_DEVEL_IMAGE:-12.6.2-devel-ubuntu24.04}"
+        CUDA_RUNTIME_IMAGE: "${LEWLM_DOCKER_CUDA_RUNTIME_IMAGE:-12.6.2-runtime-ubuntu24.04}"
+        CUDA_ARCHITECTURES: "${LEWLM_DOCKER_CUDA_ARCHITECTURES:-75;80;86;89}"
+        TORCH_INDEX_URL: "${LEWLM_DOCKER_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
+    image: lewlm:cuda
+    environment:
+      # The image already defaults this to -1 (offload every layer). Lower it
+      # here if a model exceeds your VRAM; without any value, llama.cpp is
+      # asked for zero offloaded layers and the CUDA build runs CPU-only.
+      LEWLM_GPU_OFFLOAD_LAYERS: "${LEWLM_GPU_OFFLOAD_LAYERS:--1}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

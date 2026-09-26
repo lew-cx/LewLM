@@ -302,9 +302,14 @@ ENV LEWLM_HOST=0.0.0.0 \
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Reuses the existing `lewlm` readiness surface as a liveness probe.
+# Liveness through the existing `lewlm` readiness surface, plus a network check:
+# the curl runs inside the container and reaches 127.0.0.1 even when the
+# container was never attached to a network (e.g. its published host port was
+# already taken), so on its own it would report healthy for a server nothing
+# outside can reach. /proc/net/dev must list an interface other than `lo`.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8080/v1/health || exit 1
+    CMD awk -F: 'NR > 2 && $1 !~ /^ *lo$/ { found = 1 } END { exit !found }' /proc/net/dev \
+        && curl -fsS http://127.0.0.1:8080/v1/health || exit 1
 
 ENTRYPOINT ["lewlm"]
 CMD ["serve"]

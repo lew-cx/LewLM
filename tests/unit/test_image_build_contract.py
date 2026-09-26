@@ -107,12 +107,13 @@ def test_cuda_image_validates_architectures_and_proves_offload() -> None:
 
 def test_compose_and_ci_use_the_flavor_contract() -> None:
     compose = _text(REPO_ROOT / "docker-compose.yml")
+    gpu = _text(REPO_ROOT / "docker-compose.gpu.yml")
     ci = _text(REPO_ROOT / ".github" / "workflows" / "ci.yml")
     env_example = _text(REPO_ROOT / ".env.example")
 
-    assert compose.count('IMAGE_FLAVOR: "${LEWLM_DOCKER_IMAGE_FLAVOR:-full}"') == 2
+    assert compose.count('IMAGE_FLAVOR: "${LEWLM_DOCKER_IMAGE_FLAVOR:-full}"') == 1
     assert "BUILD_JOBS" in compose and "DEPENDENCY_INPUT" in compose
-    assert "TORCH_INDEX_URL" in compose
+    assert "TORCH_INDEX_URL" in gpu
     assert "LEWLM_DOCKER_IMAGE_FLAVOR" in env_example
     # Fast CI boots the bridge flavor without conversion tools; the full image
     # has its own gate that runs the rebuild measurement.
@@ -120,6 +121,33 @@ def test_compose_and_ci_use_the_flavor_contract() -> None:
     assert "--build-arg CONVERSION_TOOLS=disabled" in ci
     assert "measure_rebuild.sh --flavor full" in ci
     assert "storage_access" in ci
+
+
+def test_compose_has_one_lewlm_service_and_gpu_is_an_override() -> None:
+    compose = _text(REPO_ROOT / "docker-compose.yml")
+    gpu = _text(REPO_ROOT / "docker-compose.gpu.yml")
+    def services(text: str) -> list[str]:
+        block = text.split("\nservices:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+        return re.findall(r"^  ([\w-]+):\n", block, re.M)
+
+    # A second LewLM service would publish the same host port and share the
+    # same SQLite volume; the loser starts with no network at all.
+    assert services(compose) == ["lewlm"]
+    assert "profiles:" not in compose
+    assert services(gpu) == ["lewlm"], "the GPU file must override the base service, not add one"
+    assert "dockerfile: Dockerfile.cuda" in gpu and "image: lewlm:cuda" in gpu
+    assert "driver: nvidia" in gpu
+    for owned_by_base in ("ports:", "volumes:", "context:"):
+        assert owned_by_base not in gpu, f"{owned_by_base} belongs to the base file"
+
+
+@pytest.mark.parametrize("path", DOCKERFILES, ids=lambda p: p.name)
+def test_healthcheck_fails_without_a_network(path: Path) -> None:
+    healthcheck = _text(path).split("\nHEALTHCHECK ", 1)[1].split("\n\n", 1)[0]
+
+    # The curl alone reaches 127.0.0.1 from a container with only `lo`.
+    assert "/proc/net/dev" in healthcheck and "/^ *lo$/" in healthcheck
+    assert healthcheck.index("/proc/net/dev") < healthcheck.index("curl -fsS http://127.0.0.1:8080/v1/health")
 
 
 def test_dockerignore_keeps_wheel_inputs_and_drops_the_rest() -> None:

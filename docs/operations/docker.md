@@ -84,8 +84,26 @@ Or with Compose:
 
 ```bash
 docker compose up --build                       # CPU
-docker compose --profile gpu up --build lewlm-cuda   # NVIDIA
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA
 ```
+
+There is one `lewlm` service; `docker-compose.gpu.yml` swaps it onto the
+CUDA image rather than adding a second service, so the CPU and GPU images
+never run side by side and contend for the host port and the SQLite
+registry in `lewlm-data`. To make plain `docker compose` commands use the
+GPU image, set `COMPOSE_FILE` in `.env` (see `.env.example`).
+
+Upgrading from the old `gpu` profile: its `lewlm-cuda` container keeps
+running and holding the port after the service is gone. Remove it once:
+
+```bash
+docker compose up -d --remove-orphans     # add -f ... -f docker-compose.gpu.yml for the GPU image
+```
+
+None of the external engines (Ollama, vLLM, SGLang, TabbyAPI) is part of
+this compose project or needed to run LewLM. Their recipes under
+`examples/backends/` are opt-in: an image is only pulled when you run that
+recipe's own compose file.
 
 Compose reads a `.env` file beside `docker-compose.yml`. Copy `.env.example`
 and set at least `LEWLM_DOCKER_MODELS_DIR` to the model directory you already have;
@@ -133,7 +151,7 @@ on the host.
 ```bash
 docker build -f Dockerfile.cuda -t lewlm:cuda .
 docker run -d --gpus all -p 8080:8080 -v "$HOME/.lewlm:/data" lewlm:cuda
-# or:  docker compose --profile gpu up --build lewlm-cuda
+# or:  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
 The default `CUDA_ARCHITECTURES=75;80;86;89` is the broad **compatibility
@@ -344,7 +362,10 @@ converting them in place.
   NO …` with the reason when a bind mount is not, so a bad mount is visible
   before the first request fails. `/v1/health` exposes the same field.
 - A `HEALTHCHECK` polls `/v1/health`, so `docker ps` reports container health
-  directly.
+  directly. It also requires a network interface other than loopback: a
+  container that was never attached to its network (for example because its
+  published host port was already taken) reports `unhealthy` instead of
+  passing a loopback-only probe.
 - Building the conversion tools compiles llama.cpp a second time (only the
   `llama-quantize` target, roughly 20-30 seconds cold, near-instant with a warm
   `ccache`). Pass `--build-arg CONVERSION_TOOLS=disabled` to skip it.

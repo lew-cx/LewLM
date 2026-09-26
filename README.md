@@ -149,7 +149,7 @@ On Linux and Windows the image is where LewLM's packaged runtime family actually
 ```bash
 cp .env.example .env                          # set LEWLM_DOCKER_MODELS_DIR to your model tree
 docker compose up --build                     # CPU
-docker compose --profile gpu up --build lewlm-cuda   # NVIDIA
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build   # NVIDIA
 curl -s http://127.0.0.1:8080/v1/health       # confirm readiness
 ```
 
