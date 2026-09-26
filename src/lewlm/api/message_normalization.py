@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from lewlm.api.schemas.chat import (
     InputImagePart,
     InputTextPart,
     MessageContentPart,
+    MessageToolCall,
     ResponseInputMessage,
 )
 from lewlm.core.bootstrap import LewLMServices
@@ -34,12 +36,15 @@ async def normalize_chat_messages(
     file_access_roots: tuple[Path, ...] | None = None,
 ) -> list[GenerateMessage]:
     return [
-        await _normalize_message(
-            role=message.role,
-            content=message.content,
-            services=services,
-            uploaded_files=uploaded_files,
-            file_access_roots=file_access_roots,
+        _with_tool_links(
+            await _normalize_message(
+                role=message.role,
+                content=message.content,
+                services=services,
+                uploaded_files=uploaded_files,
+                file_access_roots=file_access_roots,
+            ),
+            message,
         )
         for message in messages
     ]
@@ -55,27 +60,55 @@ async def normalize_response_input(
     if isinstance(input_value, str):
         return [GenerateMessage(role="user", content=input_value)]
     return [
-        await _normalize_message(
-            role=item.role,
-            content=item.content,
-            services=services,
-            uploaded_files=uploaded_files,
-            file_access_roots=file_access_roots,
+        _with_tool_links(
+            await _normalize_message(
+                role=item.role,
+                content=item.content,
+                services=services,
+                uploaded_files=uploaded_files,
+                file_access_roots=file_access_roots,
+            ),
+            item,
         )
         for item in input_value
     ]
 
 
+def _with_tool_links(normalized: GenerateMessage, message: ChatMessage | ResponseInputMessage) -> GenerateMessage:
+    """Carry the call/result links a caller sent onto the runtime message."""
+
+    if message.tool_call_id is None and not message.tool_calls:
+        return normalized
+    return normalized.model_copy(
+        update={
+            "tool_call_id": message.tool_call_id,
+            "tool_calls": [_tool_call_payload(call) for call in message.tool_calls] if message.tool_calls else None,
+        },
+    )
+
+
+def _tool_call_payload(call: MessageToolCall) -> dict:
+    arguments = call.function.arguments
+    return {
+        "id": call.id,
+        "type": "function",
+        "function": {
+            "name": call.function.name,
+            "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":")),
+        },
+    }
+
+
 async def _normalize_message(
     *,
     role: str,
-    content: str | list[MessageContentPart],
+    content: str | list[MessageContentPart] | None,
     services: LewLMServices,
     uploaded_files: Mapping[str, Path] | None = None,
     file_access_roots: tuple[Path, ...] | None = None,
 ) -> GenerateMessage:
-    if isinstance(content, str):
-        return GenerateMessage(role=role, content=content)
+    if content is None or isinstance(content, str):
+        return GenerateMessage(role=role, content=content or "")
 
     segments: list[str] = []
     attachments: list[GenerateAttachment] = []

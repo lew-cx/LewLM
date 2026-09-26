@@ -12,6 +12,9 @@ the parser can depend on it without a cycle, and neither can drift.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 #: Keys that identify a tool-call candidate.
 TOOL_CALL_SINGLE_KEY = "tool_call"
 TOOL_CALL_BATCH_KEY = "tool_calls"
@@ -59,3 +62,25 @@ def tool_call_invocation_instructions() -> str:
             "If no tool applies, answer normally and do not emit a tool-call object.",
         ],
     )
+
+
+def render_prior_tool_calls(calls: list[dict[str, Any]]) -> str:
+    """Write calls an earlier assistant turn made in the shape the model was taught to emit.
+
+    `calls` are OpenAI `message.tool_calls[]` entries. A chat template with no
+    tool-call token would otherwise drop a turn that only called tools, so the
+    calls are rendered as the text the parser accepts, ids included, which is
+    what lets the `tool` message answering one refer to it.
+    """
+
+    rendered: list[dict[str, Any]] = []
+    for call in calls:
+        function = call.get("function") or {}
+        arguments: Any = function.get("arguments", "{}")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                pass
+        rendered.append({"id": call.get("id"), TOOL_CALL_NAME_KEY: function.get("name"), ARGUMENT_KEYS[0]: arguments})
+    return json.dumps({TOOL_CALL_BATCH_KEY: rendered}, separators=(",", ":"))

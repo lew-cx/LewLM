@@ -72,6 +72,8 @@ Features:
 - prompt overrides, tools, and MCP-style tool metadata
 - prompt trace output, on the response body and on a stream's terminal chunk alike
 - message `role` is a closed set — `system`, `developer`, `user`, `assistant`, `tool` — so an unrecognized role is rejected rather than serialized into the prompt as an unknown tag
+- tool continuations: `tool_calls` on an `assistant` message (OpenAI shape; `content` may then be `null`) and `tool_call_id` on a `tool` message, so each result names the call it answers
+- a streamed request whose engine refuses it before any output is answered with the same HTTP error as the sync request (e.g. `503 runtime_unavailable`), not an opened stream carrying an in-band error
 
 ### Multimodal
 
@@ -285,7 +287,7 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/health.install_profiles.backend_inventory[]` (installed backend module versions; inventory evidence only, never a capability claim)
 - `/v1/health.install_profiles.backend_feature_probes[]` (import-cheap API-presence probes per backend: speculation, KV cache controls, grammar enforcement, multimodal surfaces; presence is inventory evidence only)
 - `/v1/health.install_profiles.llamacpp_build` (feature-detected llama.cpp build flavor: GPU offload support, heuristic accelerator hints, and backend system info; inventory evidence only)
-- `/v1/models.capability_availability[]` (per-model `servable`, `chat_ready`, `ready_capabilities`, `blocked_capabilities`; pick a usable model without one request per model)
+- `/v1/models.capability_availability[]` (per-model `servable`, `chat_ready`, `ready_capabilities`, `blocked_capabilities`; pick a usable model without one request per model). For an endpoint-bound model whose engine is down, `reason` names the endpoint, its state and error, and `fallback_model_id` names the explicit fallback alias that would answer a chat for it
 - `/v1/models.chat_ready_count` and `/v1/models.servable_count`
 - `/v1/documents/ingest.sources[]` (upload documents as bytes with a caller-owned `source_id`, `expected_sha256`, and bounded `metadata`; no shared filesystem mount required, and `path` is `null` on every uploaded source)
 - `/v1/documents/ingest.source_results[]` (one outcome per requested source: `status`, stable `error_code`, `retryable`, `chunk_count`, `content_sha256`, `provider_reference`, and per-source `components[]`), plus `ingested_count`, `failed_count`, and `partial`
@@ -319,6 +321,7 @@ For host applications, the main machine-readable readiness fields are:
 - `/v1/models/{model_id}/capabilities.capability_evidence[]`
 - `/v1/models/{model_id}/capabilities.measured_capabilities[]`
 - `/v1/models/{model_id}/capabilities.structured_output` (whether a `response_format` will be enforced at decode time or fall back to `prompt_guided`, per contract mode, before you spend a generation finding out)
+- `/v1/models/{model_id}/capabilities.tool_calling` (`support`: `native`, `prompt_guided`, or `none`; `parallel`: whether one reply can carry several calls, `null` when the engine decides)
 - `/v1/lewlm/capabilities.capability_evidence[]`
 - `/v1/lewlm/capabilities.runtime_providers[]`
 - `/v1/lewlm/models/{model_id}/artifacts.capability_evidence[]`

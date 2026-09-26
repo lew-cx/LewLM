@@ -193,6 +193,21 @@ def test_a_narrow_browser_origin_gets_cors_without_a_wildcard(stream: bool) -> N
         assert "*" not in preflight.headers.get("access-control-allow-origin", "")
 
 
+
+def test_a_browser_can_resume_events_with_last_event_id_across_cors() -> None:
+    # G39: an EventSource reconnect sends Last-Event-ID, which is not a
+    # CORS-safelisted header, so its preflight must allow it.
+    allowed = "http://localhost:5173"
+    with FakeBackendFixture(cors_allow_origins=(allowed,)) as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        preflight = client.options(
+            "/v1/events",
+            headers={"Origin": allowed, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "last-event-id"},
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == allowed
+        assert "last-event-id" in preflight.headers["access-control-allow-headers"].lower()
+
 # --- a truncated reply is distinguishable on both surfaces (G32) --------------
 
 
@@ -277,6 +292,44 @@ def test_a_native_tool_call_is_a_tool_calls_finish_on_the_responses_surface() ->
         ).json()
         assert body["finish_reason"] == "tool_calls", body
 
+
+
+_WEATHER_TOOL = {
+    "name": "get_weather", "description": "Current weather.",
+    "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+}
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/responses"])
+def test_a_streamed_native_tool_call_is_parsed_on_the_terminal_chunk(path: str) -> None:
+    # G34: the engine streams `delta.tool_calls` fragments. They are still
+    # forwarded as deltas, and the terminal chunk carries LewLM's validated
+    # verdict, as the sync body does, so a client never reassembles them.
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        request = {"model": fixture.model_id, "tools": [_WEATHER_TOOL], "stream": True}
+        if path == "/v1/responses":
+            request |= {"input": "Weather in Lisbon?", "max_output_tokens": 64}
+        else:
+            request |= {"messages": [{"role": "user", "content": "Weather in Lisbon?"}], "max_tokens": 64}
+        with client.stream("POST", path, json=request) as response:
+            assert response.status_code == 200
+            frames = _sse_frames(response)
+
+    terminal = frames[-2]
+    assert frames[-1] == {"_done": True}
+    if path == "/v1/responses":
+        assert any(frame.get("tool_call_delta") for frame in frames[:-2])
+        assert terminal["finish_reason"] == "tool_calls"
+    else:
+        assert any(frame["choices"][0]["delta"].get("tool_calls") for frame in frames[:-2])
+        assert terminal["choices"][0]["finish_reason"] == "tool_calls"
+    verdict = terminal["tool_calls"]
+    assert verdict is not None, terminal
+    assert verdict["status"] == "parsed" and verdict["issues"] == []
+    (call,) = verdict["tool_calls"]
+    assert call["name"] == "get_weather" and call["arguments"] == {"city": "Lisbon"}
+    assert call["call_id"] == "call_fixture_1"
 
 # --- the event stream resumes exactly after a drop (G13) ----------------------
 
@@ -411,3 +464,134 @@ def test_nonstreaming_content_and_native_tools_are_both_preserved(monkeypatch, t
             else:
                 assert body["tool_calls"]["tool_calls"] == []
                 assert body["tool_calls"]["issues"][0]["code"] == issue
+
+
+
+def test_capabilities_say_a_bridge_model_calls_tools_natively() -> None:
+    # G35: the capability that gates a tools control, predicted by the runtime
+    # that forwards the declared tools to the engine.
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        support = client.get(f"/v1/models/{fixture.model_id}/capabilities").json()["tool_calling"]
+    assert support["support"] == "native"
+    assert support["parallel"] is None
+    assert support["runtime_name"] and support["reason"]
+
+# --- a tool result names the call it answers (G36) ----------------------------
+
+
+def test_a_continuation_links_each_tool_result_to_its_call() -> None:
+    engine = FakeOpenAIEngine()
+    with FakeBackendFixture(engine=engine) as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        first = client.post("/v1/chat/completions", json={
+            "model": fixture.model_id, "tools": [_WEATHER_TOOL],
+            "messages": [{"role": "user", "content": "Weather in Lisbon and Porto?"}],
+        }).json()
+        (call,) = first["tool_calls"]["tool_calls"]
+        # Two calls to one tool: only the ids tell their results apart.
+        calls = [
+            {"id": call["call_id"], "type": "function", "function": {"name": call["name"], "arguments": call["arguments"]}},
+            {"id": "call_porto", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Porto"}'}},
+        ]
+        continuation = client.post("/v1/chat/completions", json={
+            "model": fixture.model_id, "tools": [_WEATHER_TOOL],
+            "messages": [
+                {"role": "user", "content": "Weather in Lisbon and Porto?"},
+                {"role": "assistant", "content": None, "tool_calls": calls},
+                {"role": "tool", "tool_call_id": call["call_id"], "content": "21 C"},
+                {"role": "tool", "tool_call_id": "call_porto", "content": "18 C"},
+            ],
+        })
+        assert continuation.status_code == 200, continuation.text
+        assert continuation.json()["choices"][0]["message"]["content"].startswith("The tool reported")
+
+    forwarded = engine.requests[-1]["messages"]
+    assistant = next(message for message in forwarded if message["role"] == "assistant")
+    assert assistant["content"] is None
+    assert [item["id"] for item in assistant["tool_calls"]] == [call["call_id"], "call_porto"]
+    assert assistant["tool_calls"][0]["function"]["arguments"] == '{"city":"Lisbon"}'
+    tools = [message for message in forwarded if message["role"] == "tool"]
+    assert [(message["tool_call_id"], message["content"][0]["text"]) for message in tools] == [(call["call_id"], "21 C"), ("call_porto", "18 C")]
+
+
+@pytest.mark.parametrize("message", [
+    {"role": "user", "content": "hi", "tool_call_id": "call_1"},
+    {"role": "tool", "content": "x", "tool_calls": [{"id": "call_1", "function": {"name": "f"}}]},
+    {"role": "assistant", "content": None},
+])
+def test_tool_links_are_refused_on_the_wrong_role(message: dict) -> None:
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        response = client.post("/v1/chat/completions", json={"model": fixture.model_id, "messages": [message]})
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "invalid_request"
+
+
+# --- a refused request changes the engine's reported state (G37) -------------
+
+
+def _engine_state(client: httpx.Client, fixture: FakeBackendFixture) -> tuple[str, str | None]:
+    engine = next(item for item in client.get("/v1/health").json()["engines"] if item["endpoint_id"] == fixture.endpoint_id)
+    return engine["state"], engine["inventory_error"]
+
+
+def _picker_entry(client: httpx.Client, model_id: str) -> dict:
+    return next(entry for entry in client.get("/v1/models").json()["capability_availability"] if entry["model_id"] == model_id)
+
+
+def _picker_engine_state(client: httpx.Client, fixture: FakeBackendFixture) -> str:
+    return _picker_entry(client, fixture.model_id)["engine_state"]
+
+
+def test_a_refused_request_marks_the_engine_down_at_once_and_a_read_restores_it(monkeypatch) -> None:
+    from lewlm.runtime.adapters import openai_compatible
+
+    monkeypatch.setattr(openai_compatible, "_DISCOVERY_FAILURE_RETRY_SECONDS", 0.2)
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        chat = {"model": fixture.model_id, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+        assert client.post("/v1/chat/completions", json=chat).status_code == 200
+        assert _engine_state(client, fixture) == ("advertised", None)
+
+        with fixture.engine_stopped():
+            # No scan and no TTL expiry: the refusal itself is the evidence.
+            refused = client.post("/v1/chat/completions", json=chat)
+            assert refused.status_code == 503, refused.text
+            state, error = _engine_state(client, fixture)
+            assert state == "stale" and error
+            assert _picker_engine_state(client, fixture) == "stale"
+
+        time.sleep(0.3)
+        assert client.post("/v1/chat/completions", json=chat).status_code == 200
+        assert _engine_state(client, fixture) == ("advertised", None)
+
+
+# --- a stream to a down engine is refused before it opens (G40) ---------------
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/responses"])
+def test_a_stream_to_a_down_engine_is_refused_like_the_sync_request(path: str) -> None:
+    with FakeBackendFixture() as fixture:
+        client = httpx.Client(base_url=fixture.base_url, timeout=30)
+        if path == "/v1/responses":
+            request = {"model": fixture.model_id, "input": "hi", "max_output_tokens": 16, "stream": True}
+        else:
+            request = {"model": fixture.model_id, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16, "stream": True}
+        assert client.post(path, json={**request, "stream": False}).status_code == 200
+        with fixture.engine_stopped():
+            # The first request to find the engine gone is the stream itself,
+            # so nothing upstream of it has marked the endpoint down yet.
+            with client.stream("POST", path, json=request) as response:
+                body = json.loads(response.read())
+            assert response.status_code == 503, body
+            assert response.headers["content-type"].startswith("application/json")
+            assert body["error"]["code"] == "runtime_unavailable"
+            assert body["error"]["details"]["endpoint_id"] == fixture.endpoint_id
+        # A healthy stream still opens and completes.
+        time.sleep(0.1)
+        client.post("/v1/models/scan", json={})
+        with client.stream("POST", path, json=request) as response:
+            assert response.status_code == 200
+            frames = _sse_frames(response)
+        assert frames[-1] == {"_done": True}

@@ -499,6 +499,16 @@ def test_capabilities_report_what_a_response_format_will_actually_get(client) ->
         assert (mode in support["decode_time_modes"]) == support[mode]["decoder_enforced"]
 
 
+
+def test_capabilities_report_how_a_packaged_model_calls_tools(client) -> None:
+    # G35: a packaged runtime has no tool channel; LewLM teaches the call in
+    # the prompt and parses it back, batch included.
+    model_id = _gguf_model_id(client)
+    support = client.get(f"/v1/models/{model_id}/capabilities").json()["tool_calling"]
+    assert support["support"] == "prompt_guided"
+    assert support["parallel"] is True
+    assert support["runtime_name"] and support["reason"]
+
 # --- the event stream can be narrowed at the server (G13) ---------------------
 
 

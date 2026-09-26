@@ -27,6 +27,7 @@ from lewlm.core.contracts import (
     ModelManifest,
     ModelModality,
     ModelStructuredOutputSupport,
+    ModelToolCallingSupport,
     RequestModality,
     RoutingDecision,
     RoutingModalityPath,
@@ -525,6 +526,7 @@ class ModelRouter:
             ),
             capabilities=capabilities,
             structured_output=self._structured_output_support(chat_runtime, blocked_reason=blocked_reason),
+            tool_calling=self._tool_calling_support(chat_runtime, blocked_reason=blocked_reason),
             measured_capabilities=measured_capabilities,
             performance_core_evidence=self._performance_core_evidence_for_model(
                 manifest=manifest,
@@ -539,6 +541,33 @@ class ModelRouter:
                     runtime_probe_records=self._runtime_probe_records_for_evidence(report.model_id),
                 ),
             },
+        )
+
+    def _tool_calling_support(
+        self,
+        runtime: RuntimeContract | None,
+        *,
+        blocked_reason: str | None,
+    ) -> ModelToolCallingSupport:
+        """Ask the chat runtime how declared tools would reach the model.
+
+        The runtime answers from the same decision it makes at generation time,
+        so the prediction and the request cannot disagree.
+        """
+
+        if runtime is None:
+            return ModelToolCallingSupport(
+                support="none",
+                reason=blocked_reason or "No runtime on this host can serve chat for this model, so no tool can be called.",
+            )
+        predict = getattr(runtime, "tool_calling_support", None)
+        if callable(predict):
+            return predict()
+        return ModelToolCallingSupport(
+            runtime_name=runtime.name,
+            support="prompt_guided",
+            parallel=True,
+            reason=f"`{runtime.name}` has no native tool channel: LewLM describes the declared tools in the prompt and parses the call from the reply.",
         )
 
     def _structured_output_support(
@@ -766,6 +795,42 @@ class ModelRouter:
                 ),
                 **binding,
             )
+        ready, blocked = self._ready_and_blocked_capabilities(manifest, advertised)
+        if not advertised:
+            reason = "This model does not advertise any servable capability."
+        elif ready and blocked:
+            reason = (
+                f"{len(ready)} of {len(advertised)} advertised capabilities have a compatible runtime on this host."
+            )
+        elif ready:
+            reason = "Every advertised capability has a compatible runtime on this host."
+        else:
+            reason = "No compatible runtime is available for this model on this host."
+        chat_ready = CapabilityName.CHAT in ready
+        fallback_model_id = None
+        if not chat_ready and CapabilityName.CHAT in advertised:
+            engine_down = self._engine_down_reason(manifest)
+            if engine_down is not None:
+                reason = f"{engine_down} {reason}" if ready else engine_down
+            fallback_model_id = self._chat_ready_fallback_alias(manifest)
+            if fallback_model_id is not None:
+                reason = f"{reason} Chat requests are answered by the fallback alias `{fallback_model_id}`."
+        return ModelCapabilityAvailability(
+            model_id=manifest.model_id,
+            servable=bool(ready),
+            chat_ready=chat_ready,
+            ready_capabilities=ready,
+            blocked_capabilities=blocked,
+            reason=reason,
+            fallback_model_id=fallback_model_id,
+            **binding,
+        )
+
+    def _ready_and_blocked_capabilities(
+        self,
+        manifest: ModelManifest,
+        advertised: tuple[CapabilityName, ...] | list[CapabilityName],
+    ) -> tuple[list[CapabilityName], list[CapabilityName]]:
         ready: list[CapabilityName] = []
         blocked: list[CapabilityName] = []
         for capability in advertised:
@@ -780,25 +845,39 @@ class ModelRouter:
                 request_modality=request_modality,
             )
             (ready if runtimes else blocked).append(capability)
-        if not advertised:
-            reason = "This model does not advertise any servable capability."
-        elif ready and blocked:
-            reason = (
-                f"{len(ready)} of {len(advertised)} advertised capabilities have a compatible runtime on this host."
-            )
-        elif ready:
-            reason = "Every advertised capability has a compatible runtime on this host."
-        else:
-            reason = "No compatible runtime is available for this model on this host."
-        return ModelCapabilityAvailability(
-            model_id=manifest.model_id,
-            servable=bool(ready),
-            chat_ready=CapabilityName.CHAT in ready,
-            ready_capabilities=ready,
-            blocked_capabilities=blocked,
-            reason=reason,
-            **binding,
-        )
+        return ready, blocked
+
+    def _engine_down_reason(self, manifest: ModelManifest) -> str | None:
+        """Name the endpoint behind an endpoint-bound model, and why it is down, from cached state."""
+
+        details = self._endpoint_error_details(manifest)
+        if not self._endpoint_is_down(details):
+            return None
+        snapshot = details.get("endpoint")
+        if not isinstance(snapshot, dict):
+            return None
+        endpoint_id = details["endpoint_id"]
+        if snapshot.get("enabled") is False:
+            return f"Engine `{endpoint_id}` is disabled."
+        error = snapshot.get("inventory_error")
+        return f"Engine `{endpoint_id}` is {snapshot.get('inventory_state')}" + (f": {error}" if error else ".")
+
+    def _chat_ready_fallback_alias(self, manifest: ModelManifest) -> str | None:
+        """The alias `_explicit_fallback` would substitute for a chat request, if it can serve one."""
+
+        if self.settings.external_fallback_policy != "explicit_alias" or not is_uri_source(manifest.source_path):
+            return None
+        alias = self.settings.external_fallback_aliases.get(manifest.model_id)
+        if alias is None:
+            return None
+        try:
+            alias_manifest = self.model_registry.get_manifest(alias)
+        except (RoutingError, ModelNotFoundError):
+            return None
+        if alias_manifest.conversion_status != ConversionStatus.RUNNABLE:
+            return None
+        ready, _ = self._ready_and_blocked_capabilities(alias_manifest, [CapabilityName.CHAT])
+        return alias_manifest.model_id if ready else None
 
     def _model_execution_binding(self, manifest: ModelManifest) -> dict[str, str | None]:
         """Endpoint/profile/locality/engine state for the inventory, from cached state only."""

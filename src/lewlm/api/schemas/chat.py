@@ -71,9 +71,56 @@ MessageContentPart = Annotated[
 MessageRole = Literal["system", "developer", "user", "assistant", "tool"]
 
 
-class ChatMessage(BaseModel):
+class MessageToolCallFunction(BaseModel):
+    name: str = Field(min_length=1)
+    arguments: str | dict[str, Any] = Field(
+        default="{}",
+        description="The call's arguments: a JSON object, or its JSON text as OpenAI sends it.",
+    )
+
+
+class MessageToolCall(BaseModel):
+    """A call an earlier assistant turn made, as OpenAI's `message.tool_calls[]` spells it.
+
+    `id` is the `call_id` LewLM reported for the call; the `tool` message that
+    answers it names the same value as `tool_call_id`.
+    """
+
+    id: str = Field(min_length=1)
+    type: Literal["function"] = "function"
+    function: MessageToolCallFunction
+
+
+class _ToolLinkedMessage(BaseModel):
+    """Role, content, and the optional links between a tool call and its result."""
+
     role: MessageRole = "user"
-    content: str | list[MessageContentPart]
+    content: str | list[MessageContentPart] | None = None
+    tool_call_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="On a `tool` message: the `id` of the call this result answers.",
+    )
+    tool_calls: list[MessageToolCall] | None = Field(
+        default=None,
+        description="On an `assistant` message: the calls that turn made, so a later `tool` message can name one.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_tool_links(self) -> "_ToolLinkedMessage":
+        if self.tool_call_id is not None and self.role != "tool":
+            raise ValueError("`tool_call_id` is only valid on a `tool` message.")
+        if self.tool_calls is not None and self.role != "assistant":
+            raise ValueError("`tool_calls` is only valid on an `assistant` message.")
+        if self.content is None:
+            if not self.tool_calls:
+                raise ValueError("`content` is required unless an `assistant` message carries `tool_calls`.")
+            self.content = ""
+        return self
+
+
+class ChatMessage(_ToolLinkedMessage):
+    pass
 
 
 class CompletionUsage(BaseModel):
@@ -237,9 +284,8 @@ class ChatCompletionChunk(BaseModel):
     serving_profile: ServingProfileApplication | None = None
 
 
-class ResponseInputMessage(BaseModel):
-    role: MessageRole = "user"
-    content: str | list[MessageContentPart]
+class ResponseInputMessage(_ToolLinkedMessage):
+    pass
 
 
 class ResponseCreateRequest(BaseModel):

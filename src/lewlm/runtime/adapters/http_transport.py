@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import codecs
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 import json
@@ -137,9 +137,14 @@ class AsyncBridgeTransport:
         runtime_name: str,
         max_connections: int = 32,
         max_keepalive_connections: int = 16,
+        on_unreachable: Callable[[str], None] | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.runtime_name = runtime_name
+        # Told when a request finds the endpoint unreachable (refused, reset,
+        # or closed without a response; not a timeout, which a slow engine
+        # also produces), so the owner's view of the engine changes at once.
+        self._on_unreachable = on_unreachable
         self._secret_values: tuple[str, ...] = ()
         self._missing_api_key_env: str | None = None
         self._client = httpx.AsyncClient(
@@ -218,8 +223,13 @@ class AsyncBridgeTransport:
         payload: Mapping[str, Any],
     ) -> AsyncIterator[ServerSentEvent]:
         self._ensure_credentials()
+        # A stream the engine answered and then dropped says nothing about
+        # whether the engine is still reachable; only a failure before it
+        # answered does.
+        answered = False
         try:
             async with self._client.stream(method, path, json=dict(payload), headers={"Accept": "text/event-stream"}) as response:
+                answered = True
                 self._raise_for_response(response, path=path)
                 decoder = _SSEDecoder()
                 async for chunk in response.aiter_bytes():
@@ -237,6 +247,7 @@ class AsyncBridgeTransport:
                 reason=str(exc),
             ) from exc
         except httpx.ConnectError as exc:
+            self._unreachable(str(exc))
             raise self._error(
                 "Could not connect to the configured external accelerator endpoint.",
                 path=path,
@@ -244,6 +255,8 @@ class AsyncBridgeTransport:
                 reason=str(exc),
             ) from exc
         except httpx.HTTPError as exc:
+            if isinstance(exc, httpx.TransportError) and not answered:
+                self._unreachable(str(exc))
             raise self._error(
                 "External accelerator stream failed.",
                 path=path,
@@ -283,6 +296,7 @@ class AsyncBridgeTransport:
                 reason=str(exc),
             ) from exc
         except httpx.ConnectError as exc:
+            self._unreachable(str(exc))
             raise self._error(
                 "Could not connect to the configured external accelerator endpoint.",
                 path=path,
@@ -290,12 +304,18 @@ class AsyncBridgeTransport:
                 reason=str(exc),
             ) from exc
         except httpx.HTTPError as exc:
+            if isinstance(exc, httpx.TransportError):
+                self._unreachable(str(exc))
             raise self._error(
                 "External accelerator request failed.",
                 path=path,
                 error_kind="unavailable",
                 reason=str(exc),
             ) from exc
+
+    def _unreachable(self, reason: str) -> None:
+        if self._on_unreachable is not None:
+            self._on_unreachable(reason or "The endpoint closed the connection without a response.")
 
     def _raise_for_response(self, response: httpx.Response, *, path: str) -> None:
         status = response.status_code

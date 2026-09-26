@@ -241,6 +241,19 @@ The accepted shapes — advertised to the model and enforced by the parser from 
 
 Results arrive on `tool_calls` with `status` of `no_tool_calls`, `parsed`, `partial`, or `failed`, plus an explicit `issues[]` entry for anything rejected. LewLM never silently repairs model output, so `partial` is reported as `partial` rather than flattened into success. `tool_calls` is `null` when the request declared no tools, so ordinary JSON output never produces spurious issues.
 
+A streamed reply reports the same verdict on its terminal chunk. When the engine emits native calls, the fragments are also streamed as `delta.tool_calls[]` (chat) or `tool_call_delta` (responses) for live rendering, but the terminal `tool_calls` is what to act on: LewLM has assembled and validated them already.
+
+`GET /v1/models/{model_id}/capabilities.tool_calling` says how declared tools will reach the model before you send any: `support` is `native` (forwarded to the engine), `prompt_guided` (taught in the prompt and parsed back), or `none` (no chat runtime for this model on this host), and `parallel` says whether one reply can carry several calls (`null` when the engine decides).
+
+To continue after running a tool, send the assistant turn back with the calls it made and one `tool` message per result, linked by id:
+
+```json
+{"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": {"city": "Lisbon"}}}]}
+{"role": "tool", "tool_call_id": "call_1", "content": "21 C and clear"}
+```
+
+`id` is the `call_id` LewLM reported; `arguments` may be an object or its JSON text. Engines that take these fields receive them as-is; packaged runtimes see the calls written back in the shape above, so the model can tell two calls to one tool apart. `tool_call_id` is refused on any role but `tool`, and `tool_calls` on any but `assistant`.
+
 ## Failure shape across HTTP and typed helpers
 
 When a local-server request fails, LewLM keeps one machine-readable error shape:

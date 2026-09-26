@@ -32,8 +32,11 @@ Capable runtimes can emit structured stream events containing content,
 reasoning, tool-call fragments, usage, and a finish reason. Existing string
 stream runtimes are adapted automatically. The chat endpoint exposes native
 tool fragments on `choices[].delta.tool_calls`; the responses endpoint exposes
-them as `tool_call_delta`. LewLM emits those fragments once and retains the
-assembled call internally for its existing validation path. Usage and prompt
+them as `tool_call_delta`. LewLM emits those fragments once, for clients that
+render a call live, and also assembles them and validates the result against
+the declared tools with the same parser the sync path uses; the verdict is
+`tool_calls` on the terminal chunk, so a client never has to reassemble or
+validate fragments itself. Usage and prompt
 trace remain terminal metadata. Reasoning continues to follow the configured
 visibility policy.
 

@@ -1166,13 +1166,13 @@ def _request_image_paths(request: GenerateRequest) -> tuple[list[str], str, str,
 def _messages_to_prompt(messages: list[Any]) -> str:
     rendered = []
     for message in messages:
-        rendered.append(f"{message.role}: {message.content}")
+        rendered.append(f"{message.role}: {message.template_text()}")
     rendered.append("assistant:")
     return "\n".join(rendered)
 
 
 def _chat_template_messages(messages: list[Any]) -> list[dict[str, str]]:
-    return [{"role": message.role, "content": message.content} for message in messages]
+    return [message.template_payload() for message in messages]
 
 
 def _resolve_mlx_vlm_chat_template(module: Any) -> Any | None:

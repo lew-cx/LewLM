@@ -1308,7 +1308,7 @@ class MLXTextRuntime(ManagedTextRuntime):
                     "model": model,
                     "tokenizer": tokenizer,
                     "prompt": prompt_value,
-                    "messages": [{"role": message.role, "content": message.content} for message in request.messages],
+                    "messages": [message.template_payload() for message in request.messages],
                     "max_tokens": request.max_tokens,
                     "verbose": False,
                     "prompt_cache": prefix_cache_payload,
@@ -2671,7 +2671,7 @@ class MLXTextRuntime(ManagedTextRuntime):
                 "model": model,
                 "tokenizer": tokenizer,
                 "prompt": prompt,
-                "messages": [{"role": message.role, "content": message.content} for message in request.messages],
+                "messages": [message.template_payload() for message in request.messages],
                 "max_tokens": request.max_tokens,
                 "verbose": False,
                 **generation_options,
@@ -3488,13 +3488,13 @@ def _is_numeric_sequence(value: Any) -> bool:
 def _messages_to_prompt(messages: list[Any], tokenizer: Any | None) -> str:
     if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
         return tokenizer.apply_chat_template(
-            [{"role": message.role, "content": message.content} for message in messages],
+            [message.template_payload() for message in messages],
             tokenize=False,
             add_generation_prompt=True,
         )
     rendered = []
     for message in messages:
-        rendered.append(f"{message.role}: {message.content}")
+        rendered.append(f"{message.role}: {message.template_text()}")
     rendered.append("assistant:")
     return "\n".join(rendered)
 

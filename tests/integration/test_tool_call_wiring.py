@@ -214,3 +214,29 @@ def test_tool_contract_is_absent_when_no_tools_are_declared(app_with_fake_runtim
         prompt = _compiled_system_text(app_with_fake_runtime, system_prompt="Be brief.")
 
     assert "To call a tool" not in prompt
+
+
+def test_a_prior_call_and_its_result_reach_a_local_template(app_with_fake_runtime) -> None:
+    # G36: no local template has a tool-call token, so the assistant turn that
+    # only called a tool is rendered in the taught shape, id included, and the
+    # result names that id, rather than the turn vanishing as empty text.
+    with TestClient(app_with_fake_runtime) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": _gguf_model_id(client),
+                "tools": [_WEATHER_TOOL],
+                "include_prompt_trace": True,
+                "messages": [
+                    {"role": "user", "content": "Weather in Halifax?"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "call_hfx", "type": "function", "function": {"name": "get_weather", "arguments": {"city": "Halifax"}}},
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_hfx", "content": "4 C and raining"},
+                ],
+            },
+        )
+    assert response.status_code == 200, response.text
+    prompt = response.json()["prompt_trace"]["serialized_model_prompt"]
+    assert '{"tool_calls":[{"id":"call_hfx","name":"get_weather","arguments":{"city":"Halifax"}}]}' in prompt
+    assert "Tool result for call call_hfx:\n4 C and raining" in prompt

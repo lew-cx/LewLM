@@ -133,22 +133,30 @@ def _template_role(role: str) -> str:
 def _template_content(message: GenerateMessage) -> str:
     content = message.content.strip()
     prefix = _ROLE_PREFIXES.get(message.role)
+    if prefix and message.role == "tool" and message.tool_call_id:
+        prefix = f"Tool result for call {message.tool_call_id}:"
     if prefix and content:
         return f"{prefix}\n{content}"
     return content
 
 
+def _needs_template_rewrite(message: GenerateMessage) -> bool:
+    return message.role in _ROLE_ALIASES or bool(message.role == "assistant" and message.tool_calls)
+
+
 def _template_messages(messages: list[GenerateMessage]) -> list[GenerateMessage]:
     """Rewrite messages onto the roles the templates can actually serialize."""
 
-    if not any(message.role in _ROLE_ALIASES for message in messages):
+    if not any(_needs_template_rewrite(message) for message in messages):
         return messages
-    return [
-        message.model_copy(update={"role": _template_role(message.role), "content": _template_content(message)})
-        if message.role in _ROLE_ALIASES
-        else message
-        for message in messages
-    ]
+    rewritten: list[GenerateMessage] = []
+    for message in messages:
+        if message.role in _ROLE_ALIASES:
+            message = message.model_copy(update={"role": _template_role(message.role), "content": _template_content(message)})
+        elif message.role == "assistant" and message.tool_calls:
+            message = message.model_copy(update={"content": message.template_text()})
+        rewritten.append(message)
+    return rewritten
 
 
 def _render_generic_prompt(messages: list[GenerateMessage]) -> str:

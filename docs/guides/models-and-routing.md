@@ -167,7 +167,11 @@ export LEWLM_EXTERNAL_FALLBACK_ALIASES='{"qwen2-5-0-5b-instruct-gpu-3f9a1c2b":"q
 
 The alias must be a registered, runnable model that satisfies the same request; the substitution is
 decided before anything is sent upstream and is recorded in the routing decision
-(`fallback_from_model_id`, `fallback_reason`). A stream that fails after it has started is reported
+(`fallback_from_model_id`, `fallback_reason`). While the engine is down, the model's
+`capability_availability` entry stays `chat_ready: false`, names the endpoint and its state in `reason`,
+and publishes the alias as `fallback_model_id`, so a picker can offer the model anyway. A request
+that finds the engine refusing marks it `stale` at once; the next successful inventory read restores
+`advertised`. A stream that fails after it has started is reported
 as a failure — LewLM does not replay it against another engine.
 
 Testing this without an engine: `tests/unit/test_external_inventory.py` runs two fake loopback

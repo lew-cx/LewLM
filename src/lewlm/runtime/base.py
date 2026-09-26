@@ -28,6 +28,7 @@ from lewlm.core.contracts import (
     ModelFormat,
     ModelManifest,
     ModelModality,
+    ModelToolCallingSupport,
     manifest_supports_audio_capability,
     RerankRequest,
     RerankResponse,
@@ -487,6 +488,24 @@ class ManagedTextRuntime(ManagedRuntime):
 
         async for delta in self._stream_generate(request):
             yield RuntimeStreamEvent(content=delta)
+
+    def tool_calling_support(self) -> ModelToolCallingSupport:
+        """How a request's declared tools reach the model on this runtime.
+
+        A packaged runtime has no tool channel of its own: the prompt compiler
+        describes the tools, and LewLM's parser, which accepts a batch, reads
+        the call back from the reply.
+        """
+
+        return ModelToolCallingSupport(
+            runtime_name=self.name,
+            support="prompt_guided",
+            parallel=True,
+            reason=(
+                f"`{self.name}` has no native tool channel: LewLM describes the declared tools in the prompt "
+                "and parses the call from the reply, validating it against the tool's input_schema."
+            ),
+        )
 
     def structured_output_runtime_status(
         self,

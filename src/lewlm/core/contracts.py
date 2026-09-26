@@ -10,6 +10,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
+from lewlm.tool_call_contract import render_prior_tool_calls
 
 from lewlm.core.citations import GeneratedCitationReference
 
@@ -329,6 +330,11 @@ class ModelCapabilityAvailability(BaseModel):
     #: `packaged` for a LewLM-run model; for a bridge, the endpoint's cached
     #: inventory state (`advertised`, `stale`, `failed`, `unknown`) — no probe.
     engine_state: str | None = None
+    #: Set when this model cannot serve chat right now and a chat request for
+    #: it would be answered by the operator's alias
+    #: (`external_fallback_policy=explicit_alias`), which is chat-ready. The
+    #: response then carries `metadata.routing.fallback_from_model_id`.
+    fallback_model_id: str | None = None
 
 
 class ModelInventory(BaseModel):
@@ -1481,6 +1487,35 @@ class ModelStructuredOutputSupport(BaseModel):
     reason: str
 
 
+class ModelToolCallingSupport(BaseModel):
+    """What a request that declares `tools` will get, before spending a generation.
+
+    Predicted by the chat runtime that would serve the request, the same one
+    that decides at generation time whether declared tools are forwarded to the
+    engine or taught in the prompt. Either way LewLM validates each call
+    against the declared tool's `input_schema` and reports the verdict as
+    `tool_calls`.
+    """
+
+    runtime_name: str | None = None
+    support: Literal["native", "prompt_guided", "none"] = Field(
+        description=(
+            "`native`: declared tools are forwarded to the engine, which emits structured calls "
+            "(streamed as `delta.tool_calls`). `prompt_guided`: the tools are described in the prompt "
+            "and LewLM parses the call from the reply text. `none`: no runtime on this host can serve "
+            "chat for this model."
+        ),
+    )
+    parallel: bool | None = Field(
+        default=None,
+        description=(
+            "Whether one reply can carry several calls. `null` when the engine decides and LewLM "
+            "has not observed it."
+        ),
+    )
+    reason: str
+
+
 class ModelCapabilityReport(BaseModel):
     """Per-model capability summary for the current host platform."""
 
@@ -1498,6 +1533,7 @@ class ModelCapabilityReport(BaseModel):
     target_platforms: list[ModelTargetPlatformReport] = Field(default_factory=list)
     capabilities: list[ModelCapabilityStatus] = Field(default_factory=list)
     structured_output: ModelStructuredOutputSupport | None = None
+    tool_calling: ModelToolCallingSupport | None = None
     capability_evidence: list[CapabilityEvidence] = Field(default_factory=list)
     measured_capabilities: list[MeasuredCapabilitySummary] = Field(default_factory=list)
     standards_acceptance_contract: StandardsAcceptanceContract = Field(
@@ -1531,6 +1567,33 @@ class GenerateMessage(BaseModel):
     role: str
     content: str
     attachments: list[GenerateAttachment] = Field(default_factory=list)
+    #: On a `tool` message, the id of the call it answers.
+    tool_call_id: str | None = None
+    #: On an `assistant` message, the calls it made, in OpenAI's shape with
+    #: `function.arguments` as JSON text.
+    tool_calls: list[dict[str, Any]] | None = None
+
+    def template_text(self) -> str:
+        """The content a chat template renders, with any calls this turn made appended."""
+
+        if not self.tool_calls:
+            return self.content
+        rendered = render_prior_tool_calls(self.tool_calls)
+        content = self.content.strip()
+        return f"{content}\n{rendered}" if content else rendered
+
+    def template_payload(self) -> dict[str, Any]:
+        """This message as a model's own chat template takes it.
+
+        Packaged runtimes teach tool calling in the prompt, so a prior call is
+        rendered into the text rather than passed as `tool_calls` a template
+        may not know; `tool_call_id` rides along for templates that use it.
+        """
+
+        payload: dict[str, Any] = {"role": self.role, "content": self.template_text()}
+        if self.tool_call_id:
+            payload["tool_call_id"] = self.tool_call_id
+        return payload
 
 
 class SpeculationMode(str, Enum):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 import logging
 from pathlib import Path
 from typing import TypeVar
@@ -42,6 +42,11 @@ from lewlm.security.workspace import secure_workspace
 
 router = APIRouter(tags=["chat"])
 _STREAM_HEARTBEAT_SECONDS = 1.0
+# How long a stream's headers wait for its first item. A request refused before
+# any output (an unreachable engine) fails within this window and is answered
+# with the same HTTP error as the sync path; a slow first token gets headers
+# and keep-alives once it passes, as before.
+_STREAM_OPEN_GRACE_SECONDS = 1.0
 StreamItemT = TypeVar("StreamItemT")
 logger = logging.getLogger(__name__)
 
@@ -232,6 +237,7 @@ async def create_chat_completion(
                 ),
                 prompt_request=prompt_request,
             )
+            await _open_stream(stream_session)
             return StreamingResponse(
                 _chat_completion_stream(
                     stream_session,
@@ -405,6 +411,7 @@ async def create_response(
                 ),
                 prompt_request=prompt_request,
             )
+            await _open_stream(stream_session)
             return StreamingResponse(
                 _response_stream(
                     stream_session,
@@ -650,7 +657,7 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
             usage=_stream_usage(stream_session),
             metadata=stream_session.metadata,
             structured_output=stream_session.structured_output,
-            tool_calls=None if getattr(stream_session, "native_tool_calls_streamed", False) else stream_session.tool_calls,
+            tool_calls=stream_session.tool_calls,
             prompt_trace=_stream_prompt_trace(stream_session),
             serving_profile=stream_session.serving_profile if not sent_serving_profile else None,
         )
@@ -746,7 +753,7 @@ async def _response_stream(stream_session, *, on_close=None, on_complete=None) -
             usage=_stream_usage(stream_session),
             metadata=stream_session.metadata,
             structured_output=stream_session.structured_output,
-            tool_calls=None if getattr(stream_session, "native_tool_calls_streamed", False) else stream_session.tool_calls,
+            tool_calls=stream_session.tool_calls,
             prompt_trace=_stream_prompt_trace(stream_session),
             serving_profile=stream_session.serving_profile if not sent_serving_profile else None,
         )
@@ -947,6 +954,60 @@ def _prompt_request_from_payload(
     if prompt_request.include_trace or prompt_request.has_requested_overrides():
         return prompt_request
     return None
+
+
+async def _open_stream(stream_session, *, grace_seconds: float | None = None) -> None:
+    """Wait briefly for a stream's first item before its headers are committed.
+
+    A failure in that window has delivered nothing, so it is raised here and
+    becomes the same HTTP error the sync path returns; the in-band error
+    envelope is left for failures after the stream has started. Whatever
+    arrives, or is still pending, is handed on through `stream_items` so no
+    item is lost or awaited twice.
+    """
+
+    source = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
+    first: asyncio.Task = asyncio.create_task(anext(source.__aiter__()))
+    await asyncio.wait({first}, timeout=_STREAM_OPEN_GRACE_SECONDS if grace_seconds is None else grace_seconds)
+    if first.done() and not first.cancelled():
+        error = first.exception()
+        if error is not None and not isinstance(error, StopAsyncIteration):
+            await _close_abandoned_stream(source, completed=False, request_id=stream_session.request_id)
+            raise error
+    stream_session.stream_items = _OpenedStream(first, source)
+
+
+class _OpenedStream:
+    """The source `_open_stream` started reading, resumed from the item it waited for.
+
+    A class rather than a generator so `aclose` stops the source even when the
+    client goes away before the first item is taken.
+    """
+
+    def __init__(self, first: asyncio.Task, source) -> None:
+        self._first: asyncio.Task | None = first
+        self._source = source
+        self._iterator = source.__aiter__()
+
+    def __aiter__(self) -> "_OpenedStream":
+        return self
+
+    async def __anext__(self):
+        if self._first is not None:
+            first, self._first = self._first, None
+            return await first
+        return await anext(self._iterator)
+
+    async def aclose(self) -> None:
+        if self._first is not None:
+            first, self._first = self._first, None
+            if not first.done():
+                first.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await first
+        closer = getattr(self._source, "aclose", None)
+        if closer is not None:
+            await closer()
 
 
 async def _stream_with_heartbeat(

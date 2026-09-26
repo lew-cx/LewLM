@@ -289,7 +289,7 @@ LewLM serves no CORS headers by default: it is local-first, and a permissive def
 | `LEWLM_CORS_ALLOW_ORIGINS` | `()` | Explicit origin allowlist, e.g. `["http://localhost:5173"]` for a browser-hosted Chap. Never a wildcard with credentials; `x-request-id` and `x-lewlm-correlation-id` are exposed to the browser by default. |
 | `LEWLM_CORS_ALLOW_CREDENTIALS` | `false` | Cannot be combined with a `*` origin; startup refuses that pairing. |
 | `LEWLM_CORS_ALLOW_METHODS` | `GET, POST, PATCH, DELETE, OPTIONS` | Permitted methods. |
-| `LEWLM_CORS_ALLOW_HEADERS` | LewLM request headers | Includes `x-api-key`, `x-lewlm-*`, and `x-request-id`. |
+| `LEWLM_CORS_ALLOW_HEADERS` | LewLM request headers | Includes `x-api-key`, `x-lewlm-*`, `x-request-id`, and `last-event-id` (so a browser can resume `/v1/events`). |
 | `LEWLM_CORS_EXPOSE_HEADERS` | `x-request-id, x-lewlm-correlation-id` | Headers a browser caller can read. |
 | `LEWLM_CORS_MAX_AGE_SECONDS` | `600` | Preflight cache duration. |
 

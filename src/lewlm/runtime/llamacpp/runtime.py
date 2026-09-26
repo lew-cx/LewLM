@@ -265,7 +265,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
         sampling_options = self._sampling_options(request, client)
         with _fresh_evaluation_when_seeded(client, sampling_options):
             response = client.create_chat_completion(
-                messages=[{"role": message.role, "content": message.content} for message in request.messages],
+                messages=[message.template_payload() for message in request.messages],
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 stream=False,
@@ -308,7 +308,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
         sampling_options = self._sampling_options(request, client)
         with _fresh_evaluation_when_seeded(client, sampling_options):
             chunks = client.create_chat_completion(
-                messages=[{"role": message.role, "content": message.content} for message in request.messages],
+                messages=[message.template_payload() for message in request.messages],
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 stream=True,
@@ -1142,7 +1142,7 @@ class LlamaCppRuntime(ManagedTextRuntime):
         return copy.deepcopy(report) if isinstance(report, dict) else {}
 
     def _tokenize_request_messages(self, request: GenerateRequest) -> list[int]:
-        prompt = "\n".join(f"{message.role}: {message.content}" for message in request.messages)
+        prompt = "\n".join(f"{message.role}: {message.template_text()}" for message in request.messages)
         return self._tokenize(prompt)
 
     def _record_prefill_request(self, *, model_id: str, prompt_token_count: int) -> None:

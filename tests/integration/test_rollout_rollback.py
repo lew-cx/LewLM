@@ -201,3 +201,39 @@ def test_legacy_singular_settings_still_work_and_migrate_to_one_endpoint(tmp_pat
             )
     finally:
         engine.stop()
+
+
+@pytest.mark.parametrize("with_alias", [True, False])
+def test_availability_names_the_down_engine_and_the_alias_that_answers(engines, tmp_path: Path, with_alias: bool) -> None:
+    """G38: a picker that obeys `chat_ready` can still offer a model the alias serves."""
+
+    from fastapi.testclient import TestClient
+
+    primary, fallback = engines
+    data_dir = tmp_path / "lewlm"
+    services, _ = _serve(_settings(data_dir, primary, fallback, primary_enabled=True, aliases=None))
+    manifests = {m.metadata["external_endpoint_id"]: m for m in services.model_registry.list_manifests()}
+    primary_model, fallback_model = manifests["primary"].model_id, manifests["fallback"].model_id
+    _, app = _serve(_settings(data_dir, primary, fallback, primary_enabled=True, aliases={primary_model: fallback_model} if with_alias else None))
+    with TestClient(app) as client:
+        def entry(model_id: str) -> dict:
+            return next(item for item in client.get("/v1/models").json()["capability_availability"] if item["model_id"] == model_id)
+
+        assert entry(primary_model)["chat_ready"] is True and entry(primary_model)["fallback_model_id"] is None
+        primary.stop()
+        try:
+            client.post("/v1/models/scan", json={})
+            down = entry(primary_model)
+            assert down["chat_ready"] is False
+            assert down["engine_state"] in {"stale", "failed"}
+            assert "Engine `primary` is" in down["reason"]
+            if with_alias:
+                assert down["fallback_model_id"] == fallback_model
+                assert f"answered by the fallback alias `{fallback_model}`" in down["reason"]
+                served = client.post("/v1/chat/completions", json={"model": primary_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).json()
+                assert served["metadata"]["routing"]["fallback_from_model_id"] == primary_model
+            else:
+                assert down["fallback_model_id"] is None
+            assert entry(fallback_model)["fallback_model_id"] is None
+        finally:
+            primary.start(primary._port)

@@ -42,6 +42,7 @@ from lewlm.core.contracts import (
     ModelFormat,
     ModelManifest,
     ModelModality,
+    ModelToolCallingSupport,
     PerformanceFeatureOwnership,
     RerankRequest,
     RerankResponse,
@@ -494,7 +495,14 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
         self._force_refresh = False
         self._model_capability_support_cache: dict[tuple[str, CapabilityName], bool] = {}
         self._model_capability_reason_cache: dict[tuple[str, CapabilityName], str | None] = {}
-        self._transport = AsyncBridgeTransport(endpoint=self.endpoint, runtime_name=self.name)
+        self._transport = AsyncBridgeTransport(
+            endpoint=self.endpoint,
+            runtime_name=self.name,
+            # A refused request is the freshest evidence there is: health and
+            # availability report the endpoint down at once instead of waiting
+            # for the inventory TTL, and the next successful read restores it.
+            on_unreachable=self._record_discovery_failure,
+        )
 
     async def aclose(self) -> None:
         """Close the reusable bridge connection pool."""
@@ -715,6 +723,20 @@ class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
                 ),
             )
         return snapshot
+
+    def tool_calling_support(self) -> ModelToolCallingSupport:
+        # `_chat_payload` forwards declared tools as OpenAI `tools` on every
+        # profile and strips the prompt's tool scaffolding when it does.
+        return ModelToolCallingSupport(
+            runtime_name=self.name,
+            support="native",
+            parallel=None,
+            reason=(
+                f"`{self.name}` forwards the declared tools to the `{self.endpoint.profile}` server, which emits "
+                "structured calls; LewLM validates each against the tool's input_schema. Whether one reply can "
+                "carry several calls is the server's choice."
+            ),
+        )
 
     def structured_output_runtime_status(
         self,
@@ -2066,10 +2088,20 @@ def _message_payload(message: Any) -> dict[str, Any]:
             if getattr(attachment, "attachment_type", None) != "image":
                 continue
             parts.extend(_image_message_parts(attachment))
-    return {
+    payload: dict[str, Any] = {
         "role": getattr(message, "role", "user"),
         "content": parts if parts else getattr(message, "content", ""),
     }
+    tool_call_id = getattr(message, "tool_call_id", None)
+    if tool_call_id:
+        payload["tool_call_id"] = tool_call_id
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        payload["tool_calls"] = tool_calls
+        if not parts:
+            # OpenAI's shape for a turn that only called tools.
+            payload["content"] = None
+    return payload
 
 
 def _bridge_tools(value: Any) -> list[dict[str, Any]]:

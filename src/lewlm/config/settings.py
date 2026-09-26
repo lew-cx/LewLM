@@ -80,6 +80,8 @@ class LewLMSettings(BaseSettings):
         "x-lewlm-authorized-actions",
         "x-lewlm-correlation-id",
         "x-request-id",
+        # An EventSource resuming /v1/events sends the cursor it last saw.
+        "last-event-id",
     )
     cors_expose_headers: tuple[str, ...] = ("x-request-id", "x-lewlm-correlation-id")
     cors_max_age_seconds: int = 600
