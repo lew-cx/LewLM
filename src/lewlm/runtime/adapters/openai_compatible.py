@@ -435,11 +435,11 @@ def summarize_feature_preservation(
 
 
 class LocalOpenAICompatibleAdapterRuntime(ManagedTextRuntime):
+    """Route compatible local requests to a loopback-only OpenAI-style local server."""
+
     #: Streams begin with `RuntimeStreamEvent(opened=True)` once the engine
     #: has accepted the request (see `STREAM_OPENED`).
     announces_stream_open = True
-
-    """Route compatible local requests to a loopback-only OpenAI-style local server."""
 
     name = "local_external_adapter"
     affinity = RuntimeAffinity.EXTERNAL_ACCELERATOR

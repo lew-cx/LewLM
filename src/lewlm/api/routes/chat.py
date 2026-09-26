@@ -980,14 +980,23 @@ async def _open_stream(stream_session, *, grace_seconds: float | None = None) ->
     source = stream_session.stream_items or _stream_items_from_content(stream_session.stream)
     first: asyncio.Task = asyncio.create_task(anext(source.__aiter__()))
     opened = getattr(stream_session, "upstream_opened", None)
-    if opened is not None:
-        opened_wait = asyncio.create_task(opened.wait())
-        try:
-            await asyncio.wait({first, opened_wait}, timeout=_STREAM_CONNECT_MAX_SECONDS, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            opened_wait.cancel()
-    else:
-        await asyncio.wait({first}, timeout=_STREAM_OPEN_GRACE_SECONDS if grace_seconds is None else grace_seconds)
+    try:
+        if opened is not None:
+            opened_wait = asyncio.create_task(opened.wait())
+            try:
+                await asyncio.wait({first, opened_wait}, timeout=_STREAM_CONNECT_MAX_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                opened_wait.cancel()
+        else:
+            await asyncio.wait({first}, timeout=_STREAM_OPEN_GRACE_SECONDS if grace_seconds is None else grace_seconds)
+    except asyncio.CancelledError:
+        # The handler went away while waiting (a disconnect or shutdown):
+        # nothing will take over `first` or the source, so stop them here.
+        first.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await first
+        await _close_abandoned_stream(source, completed=False, request_id=stream_session.request_id)
+        raise
     if first.done() and not first.cancelled():
         error = first.exception()
         if error is not None and not isinstance(error, StopAsyncIteration):

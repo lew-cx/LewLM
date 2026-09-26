@@ -284,8 +284,11 @@ class AsyncBridgeTransport:
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         self._ensure_credentials()
+        # As in `stream_sse`: only a failure before the engine answered says
+        # the engine is unreachable, not one while its body was being read.
+        answered = False
         try:
-            response = await self._client.request(
+            request = self._client.build_request(
                 method,
                 path,
                 json=dict(payload) if payload is not None else None,
@@ -293,6 +296,12 @@ class AsyncBridgeTransport:
                 data=data,
                 headers=headers,
             )
+            response = await self._client.send(request, stream=True)
+            answered = True
+            try:
+                await response.aread()
+            finally:
+                await response.aclose()
             self._raise_for_response(response, path=path)
             return response
         except RuntimeUnavailableError:
@@ -313,7 +322,7 @@ class AsyncBridgeTransport:
                 reason=str(exc),
             ) from exc
         except httpx.HTTPError as exc:
-            if isinstance(exc, httpx.TransportError):
+            if isinstance(exc, httpx.TransportError) and not answered:
                 self._unreachable(str(exc))
             raise self._error(
                 "External accelerator request failed.",

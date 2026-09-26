@@ -106,6 +106,41 @@ def test_cancelled_stream_does_not_poison_the_next_stream() -> None:
     asyncio.run(run())
 
 
+class _BrokenBody(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'{"partial": '
+        raise httpx.ReadError("connection reset mid-body")
+
+
+@pytest.mark.parametrize(
+    ("answers", "marks_unreachable"),
+    [(False, True), (True, False)],
+    ids=["dropped-before-answer", "dropped-mid-body"],
+)
+def test_nonstreaming_request_marks_unreachable_only_before_the_engine_answers(answers: bool, marks_unreachable: bool) -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if not answers:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            return httpx.Response(200, headers={"content-type": "application/json"}, stream=_BrokenBody())
+
+        reasons: list[str] = []
+        transport = AsyncBridgeTransport(endpoint=_endpoint(), runtime_name="test-runtime", on_unreachable=reasons.append)
+        await transport._client.aclose()
+        transport._client = httpx.AsyncClient(
+            base_url="http://127.0.0.1:18080",
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        )
+        with pytest.raises(RuntimeUnavailableError):
+            await transport.request_json("POST", "/v1/chat/completions", payload={})
+        assert bool(reasons) is marks_unreachable
+        await transport.aclose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("status", "kind"),
     [(401, "authentication"), (400, "invalid_request"), (404, "model_not_found"), (429, "rate_limited"), (503, "unavailable")],
