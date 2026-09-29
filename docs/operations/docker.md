@@ -287,7 +287,7 @@ scripts/docker/measure_rebuild.sh --flavor serving -- --build-arg CONVERSION_TOO
 scripts/docker/measure_rebuild.sh --dockerfile Dockerfile.cuda --flavor full -- --build-arg CUDA_ARCHITECTURES=89
 ```
 
-Output lands in `docs/validation/evidence/rebuild-<stamp>/` (`summary.tsv`,
+Output lands in the gitignored `docs/validation/evidence/rebuild-<stamp>/` (`summary.tsv`,
 `context.txt`, and one log per build). CI runs this for the `full` CPU flavor
 on every push and uploads the logs; there is no wall-clock assertion, only the
 compile-step count. To confirm `BUILD_JOBS` is honored, build once with
@@ -384,4 +384,4 @@ converting them in place.
 - Validated end to end on Windows 11 + Docker Desktop 4.74 (WSL2 kernel 6.6.87)
   with an RTX 5090 Laptop GPU on 2026-09-24: the CPU `bridge`, `serving`, and
   `full` images, the rebuild contract, and the CUDA image for SM 120 with full
-  offload. See the [Windows/Linux validation record](../validation/modernization-windows-linux.md).
+  offload.

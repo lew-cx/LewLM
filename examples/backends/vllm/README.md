@@ -5,7 +5,7 @@ RTX 5090 Laptop (SM 12.0, driver 610.47), LewLM native on Windows, this
 compose file unchanged except for `VLLM_WSL2_ENABLE_PIN_MEMORY` (below): the
 common acceptance suite (11 passed, fallback exercised separately), upstream
 concurrency from vLLM's own gauge, kill mid-stream, alias fallback, restart,
-and disable. See the [Windows/Linux validation record](../../../docs/validation/modernization-windows-linux.md).
+and disable.
 Bare-metal Linux/NVIDIA remains **deferred** in
 `examples/backends/compatibility.json`: a WSL2 pass is its own lane.
 
@@ -14,7 +14,7 @@ Bare-metal Linux/NVIDIA remains **deferred** in
 | vLLM | release `v0.29.0` = commit `98dff2a81d747d1dba01a47f939f48c3526d4206`; image `vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1` (Docker Hub manifest list for `v0.29.0`; amd64 image `sha256:082ca6f0…`; config labels `ai.vllm.build.commit` = the commit, `VLLM_IMAGE_TAG=vllm/vllm-openai:v0.29.0`) |
 | Inside the image | CUDA `13.0.2`, Python 3.12, `torch==2.13.0` (`requirements/cuda.txt` at the commit), `TORCH_CUDA_ARCH_LIST=7.5 8.0 8.6 8.9 9.0 10.0 12.0`, `VLLM_ENABLE_CUDA_COMPATIBILITY=0` |
 | Host requirements | NVIDIA driver **R580 or newer** (CUDA 13 run normally), NVIDIA Container Toolkit, one GPU with compute capability in the list above and ≥ 4 GiB free. R535/R570 hosts can only use this image through `VLLM_ENABLE_CUDA_COMPATIBILITY=1`, which upstream limits to select professional/datacenter GPUs; that mode is *not* part of this recipe |
-| Model | `Qwen/Qwen2.5-0.5B-Instruct` BF16 @ `7ae557604adf67be50417f59c2c2f167def9a775` (Apache-2.0; step-00 pin, `model.safetensors` sha256 in the manifest), served as `qwen2.5-0.5b-instruct` |
+| Model | `Qwen/Qwen2.5-0.5B-Instruct` BF16 @ `7ae557604adf67be50417f59c2c2f167def9a775` (Apache-2.0; pinned revision, `model.safetensors` sha256 in the manifest), served as `qwen2.5-0.5b-instruct` |
 | Tool parser | `hermes` — vLLM's `docs/features/tool_calling.md` at the commit names it for `Qwen/Qwen2.5-*` (the chat template is Hermes-style) |
 | LewLM profile | `vllm_local`, endpoint id `vllm`. **Not** `vllm_mlx`, which is the Apple Silicon fork's profile |
 
@@ -82,7 +82,7 @@ python scripts/bridge_prefix_benchmark.py --lewlm-url http://127.0.0.1:8080 \
     --direct-api-key-env VLLM_API_KEY --requests 12 --concurrency 2 --output prefix-c2.json
 ```
 
-Also record, exactly as the step-07 exit criteria ask:
+Also record:
 
 | Measurement | How |
 | --- | --- |

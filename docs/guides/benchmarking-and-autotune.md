@@ -80,7 +80,7 @@ For the portable performance-core features, benchmark results and runtime stats 
 
 ## Performance-core prove-out
 
-Milestone 81 proof lives in the release-artifact flow rather than a separate hidden checklist. `scripts/generate_release_manifest.py` now captures:
+Performance-core proof lives in the release-artifact flow rather than a separate hidden checklist. `scripts/generate_release_manifest.py` captures:
 
 - raw `benchmark_artifacts`
 - persisted `serving_profiles`
@@ -99,7 +99,7 @@ Milestone 81 proof lives in the release-artifact flow rather than a separate hid
 
 Use that summary when you need to answer "what does LewLM truly own on this host today?" without overclaiming parity across every backend.
 
-Milestone 103 now chooses **GGUF via llama.cpp** as LewLM's first-class non-Apple path. On that path, benchmark-backed defaults come from serving-profile/autotune artifacts plus runtime-local evidence LewLM can package and report directly.
+LewLM uses **GGUF via llama.cpp** as LewLM's first-class non-Apple path. On that path, benchmark-backed defaults come from serving-profile/autotune artifacts plus runtime-local evidence LewLM can package and report directly.
 
 `--compare-external-adapter` artifacts still matter, but they now stay in the bridge-evidence bucket: LewLM uses them for fallback honesty and preservation reporting instead of promoting the external adapter over a first-class packaged runtime.
 

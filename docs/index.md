@@ -9,9 +9,8 @@ This documentation set is organized around the surfaces LewLM actually ships tod
 - **Reference** for CLI, API, Python, configuration, runtime, and document details
 - **Architecture** for how the registry, router, runtimes, storage, and telemetry fit together
 - **Operations** for Docker, engine recipes, security, and troubleshooting
-- **Validation** for the recorded evidence behind each platform claim
 
-LewLM runs on macOS (native MLX on Apple Silicon), Windows (native llama.cpp, or engines in Docker Desktop / WSL2), and Linux (the CPU and CUDA Docker images). Each lane has been run on real hardware; the [README's platform status](../README.md#platform-status) says which, and what remains deferred.
+LewLM runs on macOS (native MLX on Apple Silicon), Windows (native llama.cpp, or engines in Docker Desktop / WSL2), and Linux (the CPU and CUDA Docker images). Each lane has been run on real hardware; the [README's platform support table](../README.md#platform-support) says which, and what remains deferred.
 
 ## What LewLM provides today
 
@@ -37,15 +36,13 @@ LewLM runs on macOS (native MLX on Apple Silicon), Windows (native llama.cpp, or
 | Host-app adoption | [Host-app integration](guides/host-app-integration.md), and [Chap](https://github.com/lew-cx/Chap) as a working reference app |
 | Containers | [Running LewLM in Docker](operations/docker.md) |
 | Engine recipes | [Rollout and rollback](operations/backends/rollout-and-rollback.md) |
-| Platform evidence | [Windows/Linux validation record](validation/modernization-windows-linux.md) |
+| Engine support status | [`examples/backends/compatibility.json`](https://github.com/lew-cx/LewLM/blob/main/examples/backends/compatibility.json) |
 | Runtime behavior | [Runtime and capability matrix](reference/runtime-capability-matrix.md) |
 | Product scope | [Scope matrix](reference/scope-matrix.md) |
 | Documents | [Documents guide](guides/documents.md) |
 | Security posture | [Security](security.md) |
 
 ## Suggested reading order
-
-For planned runtime integrations and build improvements, see the [agent-followable modernization roadmap](architecture/modernization-roadmap.md).
 
 1. Start with [Getting started](getting-started/index.md).
 2. Read [Models and routing](guides/models-and-routing.md), [Chat and responses](guides/chat-and-responses.md), and [Host-app integration](guides/host-app-integration.md).

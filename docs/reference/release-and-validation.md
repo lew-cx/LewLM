@@ -26,8 +26,8 @@ The release manifest now includes:
 - `dependency_audit.compatibility_gates` for the 2026 dependency baseline states
 - `frontier_acceptance` for frontier-family proof coverage
 - `optimization_defaults` for benchmark-backed default adoption state
-- `performance_core_acceptance` for Milestone 81-style serving-core proof coverage across batching, prefix reuse, tiered KV, speculation, constrained decoding, and measured default adoption
-- `standards_refresh_acceptance` for the completed Milestones 121-132 matrix plus the operator summary of current, bridge-backed, optional, experimental, unsupported, and unverified states
+- `performance_core_acceptance` for serving-core proof coverage across batching, prefix reuse, tiered KV, speculation, constrained decoding, and measured default adoption
+- `standards_refresh_acceptance` for the 2026 standards-refresh matrix plus the operator summary of current, bridge-backed, optional, experimental, unsupported, and unverified states
 
 ## Bundle capture
 
@@ -61,7 +61,7 @@ This workspace capture wraps the existing CLI and release scripts into one evide
 - `release-bundle/` outputs from `capture_release_bundle.py` plus an explicit `validate-release-candidate.json`
 - `host-validation-evidence.json`, a machine-readable index with command summaries, exit codes, and artifact locations
 
-When you already have a local LewLM API running on loopback, add `--api-base-url http://127.0.0.1:8000` to capture `/v1/health`, `/v1/runtime/stats`, and any extra `/v1/` probes listed in `--http-probe-manifest`. This is the intended Milestone 118 workflow for real-host chat, streaming, semantic, vision, audio, and document evidence without checking local artifacts into the repository.
+When you already have a local LewLM API running on loopback, add `--api-base-url http://127.0.0.1:8000` to capture `/v1/health`, `/v1/runtime/stats`, and any extra `/v1/` probes listed in `--http-probe-manifest`. This is the intended workflow for real-host chat, streaming, semantic, vision, audio, and document evidence without checking local artifacts into the repository.
 
 Example probe manifest:
 
@@ -96,13 +96,13 @@ python scripts/validate_release_candidate.py out \
   > out/release-candidate-validation.json
 ```
 
-Release candidate validation now also checks `standards_refresh_milestones_completed`, which requires each enforced target to carry the completed 2026 standards-refresh summary from the release manifest. Missing standards proof remains explicit even when the host, dependency, frontier, or performance-core checks pass.
+Release candidate validation also checks `standards_refresh_milestones_completed`, which requires each enforced target to carry the completed 2026 standards-refresh summary from the release manifest. Missing standards proof remains explicit even when the host, dependency, frontier, or performance-core checks pass.
 
 ## Hardware acceptance lanes
 
 Engine recipes are promoted per platform lane, never in general. The lanes,
 their required proof, and their deferral rules are encoded in
-`scripts/backend_lanes.py` and mirror the roadmap:
+`scripts/backend_lanes.py`:
 
 | Lane | Required proof | Deferral rule |
 | --- | --- | --- |
@@ -140,8 +140,7 @@ the recipes put LewLM and where Chap runs, so it is the side that observes the
 connectivity the lane is about. A Linux container on Docker Desktop reports
 Linux with a WSL2 kernel (`host.wsl: true` in its record): its Linux CPU and
 Linux NVIDIA records are real Linux-userspace runs, and the record says which
-kernel they ran on. The 2026-09-24 results are in the
-[Windows/Linux validation record](../validation/modernization-windows-linux.md).
+kernel they ran on.
 
 ## What these scripts are for
 

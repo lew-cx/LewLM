@@ -20,8 +20,7 @@ on Windows. It used an EXL3 4.0 bpw artifact converted with the image's own
 ExLlamaV3 1.5.0. The common acceptance suite passed 10 checks; tools were
 inconclusive because the 0.5B model answered in text. TabbyAPI has no `seed` at
 this pin, so LewLM reports it as unsupported. LewLM forwards `top_k`, `min_p`,
-and `repetition_penalty`, which TabbyAPI does implement. See the
-[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
+and `repetition_penalty`, which TabbyAPI does implement.
 `examples/backends/compatibility.json` keeps `exllamav3_tabby` as `deferred`
 until the suite passes on a bare-metal Linux/NVIDIA host. Do not read this
 profile's presence in `LEWLM_EXTERNAL_ENDPOINTS` as support elsewhere.

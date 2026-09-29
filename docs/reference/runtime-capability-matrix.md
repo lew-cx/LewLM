@@ -7,13 +7,13 @@ LewLM's parity contract is about a stable **local-first middleware backend** sur
 LewLM keeps two separate axes in the 2026 standards contract:
 
 - support-path labels explain how a request reaches execution on the current host or target host
-- acceptance states explain who owns or validates a named Milestone 120 vocabulary term
+- acceptance states explain who owns or validates a named standards vocabulary term
 
 ### 2026 acceptance states
 
 | State | Meaning | Machine-readable contract |
 | --- | --- | --- |
-| `lewlm_owned` | LewLM directly implements, controls, and validates the behavior on that path | `standards_acceptance_contract.acceptance_states[].state`; later milestones can also surface it through `performance_features[].ownership_modes[]` or `runtime_support_strategy.paths[].performance_core_evidence[].mode` |
+| `lewlm_owned` | LewLM directly implements, controls, and validates the behavior on that path | `standards_acceptance_contract.acceptance_states[].state`; it can also surface through `performance_features[].ownership_modes[]` or `runtime_support_strategy.paths[].performance_core_evidence[].mode` |
 | `backend_native` | the backend owns the behavior and LewLM only detects, preserves, or reports it honestly | `standards_acceptance_contract.acceptance_states[].state`; stronger per-path evidence can appear under runtime support strategy or performance-core evidence |
 | `partial` | only part of the intended behavior is preserved, observable, or exposed through LewLM | `standards_acceptance_contract.acceptance_states[].state`; adapter-preservation details can also surface through `performance_features[].ownership_modes[]` |
 | `fallback` | LewLM keeps the public request contract but downgrades to a narrower or translated execution path | `standards_acceptance_contract.acceptance_states[].state`; runtime-specific fallback detail still lives in `fallback_used`, `fallback_reason`, `readiness_state`, or performance-core evidence `mode = "fallback"` |
@@ -80,7 +80,7 @@ A vision or audio source is not refused as a class on the GGUF path. llama.cpp e
 
 ## 2026 standards vocabulary
 
-The Milestone 120 vocabulary ships in `standards_acceptance_contract.vocabulary[].name` on `GET /v1/health.install_profiles`, `GET /v1/runtime/stats`, and `GET /v1/models/{model_id}/capabilities`. These names are normative reporting keys, not automatic support claims.
+The standards vocabulary ships in `standards_acceptance_contract.vocabulary[].name` on `GET /v1/health.install_profiles`, `GET /v1/runtime/stats`, and `GET /v1/models/{model_id}/capabilities`. These names are normative reporting keys, not automatic support claims.
 
 - `memory and context`: `kv_offload`, `kv_quantization`, `hybrid_memory`, `pd_disaggregation`, `distributed_kv_transfer`
 - `structured output and reasoning`: `strict_tool_parser`, `reasoning_tags`, `parallel_tool_calls`, `streaming_tool_calls`, `responses_api_events`
@@ -89,9 +89,9 @@ The Milestone 120 vocabulary ships in `standards_acceptance_contract.vocabulary[
 - `multimodal, document, and semantic`: `multimodal_omni`, `document_ocr_transformer`, `long_context_embedding`
 - `agent interoperability`: `local_agent_sandbox`
 
-Later milestones should attach per-term states through `runtime_support_strategy`, `performance_core_evidence`, `measured_capabilities`, target-platform verification data, install-profile guidance, and bridge probes without inventing new term names.
+Per-term states attach through `runtime_support_strategy`, `performance_core_evidence`, `measured_capabilities`, target-platform verification data, install-profile guidance, and bridge probes without inventing new term names.
 
-The release prove-out now lifts the same matrix into `release-manifest.json.standards_refresh_acceptance` so `validate_release_candidate.py` can verify Milestones 121-132 from one artifact bundle without flattening unsupported or unverified states into success claims.
+The release prove-out lifts the same matrix into `release-manifest.json.standards_refresh_acceptance` so `validate_release_candidate.py` can verify the standards refresh from one artifact bundle without flattening unsupported or unverified states into success claims.
 
 ## Capability names
 
@@ -219,7 +219,7 @@ Examples of runtime and cache features exposed through runtime/cache stats:
 
 For `continuous_batching`, runtime stats also publish aggregate ownership through `ownership_modes`, `chat_streaming_ownership_mode`, `lewlm_owned_runtime_count`, `backend_native_runtime_count`, and `partial_runtime_count`. On the primary MLX text path, LewLM owns the persistent per-model scheduler while MLX `BatchGenerator` remains the decode primitive underneath; non-MLX or adapter-backed paths can now report backend-native or partial preservation without pretending LewLM owns the same core.
 
-Milestone 103 now selects **GGUF via llama.cpp** as the single first-class non-Apple path. That choice is evidence-backed because LewLM can package the runtime, attach benchmark-backed serving defaults to it directly, and report runtime-local control boundaries honestly without turning every external server family into an equal product promise.
+LewLM selects **GGUF via llama.cpp** as the single first-class non-Apple path. That choice is evidence-backed because LewLM can package the runtime, attach benchmark-backed serving defaults to it directly, and report runtime-local control boundaries honestly without turning every external server family into an equal product promise.
 
 For that path, `runtime_support_strategy.paths[].performance_core_evidence` is the behavior-level source of truth:
 
@@ -233,7 +233,7 @@ For that path, `runtime_support_strategy.paths[].performance_core_evidence` is t
 - `llamacpp` is the main packaged cross-platform runtime path today and the first-class non-Apple runtime family.
 - Non-Apple `audio_transcription` and `audio_speech` are currently bridge-backed through `external_accelerator`, not packaged through `llamacpp`, and LewLM keeps that bridge-only audio boundary explicit.
 - An audio model claims only the side it serves. Discovery records `audio_roles` on the manifest, so a transcription bundle does not advertise `audio_speech` and a request for the wrong surface is refused rather than failing inside the backend. A bundle discovery cannot classify carries no roles and keeps claiming both.
-- `external_accelerator` remains loopback-only and adapter-backed in this milestone.
+- `external_accelerator` remains loopback-only and adapter-backed.
 - `external_accelerator` is a bridge to another local server, not proof that LewLM owns or bundles that server.
 - `external_accelerator` only claims vision, audio, embeddings, or rerank when the configured local server satisfies the matching compatibility probe.
 - `external_accelerator` does not currently claim MLX-owned encoder caching, MLX-level multimodal telemetry parity, or adapter-contract speculation controls.

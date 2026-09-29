@@ -5,8 +5,7 @@ RTX 5090 Laptop (SM 12.0, driver 610.47), LewLM native on Windows, the EXL3
 artifact below: the common acceptance suite (10 passed; tools inconclusive
 because the 0.5B model answered in text). TabbyAPI has no `seed` at this pin,
 so LewLM reports it unsupported and forwards `top_k`/`min_p`/
-`repetition_penalty`, which it does implement. See the
-[Windows/Linux validation record](../../../docs/validation/modernization-windows-linux.md).
+`repetition_penalty`, which it does implement.
 Bare-metal Linux/NVIDIA remains **deferred** in
 `examples/backends/compatibility.json`.
 

@@ -27,3 +27,8 @@ models/
 conversions/
 # Engine recipe volumes created by docker compose (weights, compile caches).
 examples/backends/*/cache/
+# Local development records: milestone plans, validation logs, and evidence
+# captured while building LewLM. Scripts may still write evidence here.
+docs/validation/
+docs/architecture/modernization-roadmap.md
+docs/architecture/shared-runtime-action-plan.md

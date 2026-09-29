@@ -7,8 +7,7 @@ acceptance suite (11 passed) with up to 3 requests running upstream at once
 LewLM: the kernel cache is a named volume (a Windows bind mount refuses the
 JIT's rename and crash-loops the scheduler), and `seed` is reported
 **unsupported** — at this pin SGLang applies it only with
-`--enable-deterministic-inference`. See the
-[Windows/Linux validation record](../../../docs/validation/modernization-windows-linux.md).
+`--enable-deterministic-inference`.
 Bare-metal Linux/NVIDIA remains **deferred** in
 `examples/backends/compatibility.json`.
 
@@ -17,7 +16,7 @@ Bare-metal Linux/NVIDIA remains **deferred** in
 | SGLang | release `v0.5.19` = commit `0bcd822377da7b5718e674eaf9c870d349424dd1`; image `lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9` (Docker Hub tag `v0.5.19-cu130`, same digest as `v0.5.19`; amd64 image `sha256:37bbbd34…`; config labels `ai.sglang.build.commit` = the commit, `SGLANG_IMAGE_TAG=lmsysorg/sglang:v0.5.19`) |
 | Inside the image | CUDA `13.0.3`, cuDNN 9.14, `torch==2.13.0`, `sglang-kernel==0.4.6.post1` (prebuilt `cp310-abi3` wheel from PyPI for CUDA 13 — `docker/Dockerfile` at the commit), entrypoint `/opt/nvidia/nvidia_entrypoint.sh` |
 | Host requirements | NVIDIA driver **R580 or newer** (CUDA 13), NVIDIA Container Toolkit, one GPU with ≥ 4 GiB free. SGLang does not publish a compiled-architecture list for its kernel wheel at this pin, so the preflight *skips* that check; kernel support is confirmed on first start, not assumed. A `-cu129` image variant exists for CUDA 12 hosts but is a different digest and is not this recipe |
-| Model | `Qwen/Qwen2.5-0.5B-Instruct` BF16 @ `7ae557604adf67be50417f59c2c2f167def9a775` (Apache-2.0; step-00 pin, `model.safetensors` sha256 in the manifest), served as `qwen2.5-0.5b-instruct` |
+| Model | `Qwen/Qwen2.5-0.5B-Instruct` BF16 @ `7ae557604adf67be50417f59c2c2f167def9a775` (Apache-2.0; pinned revision, `model.safetensors` sha256 in the manifest), served as `qwen2.5-0.5b-instruct` |
 | Tool parser | `qwen25` — SGLang's `docs/docs/advanced_features/tool_parser.mdx` at the commit names it for Qwen2.5; it is in `FunctionCallParser.ToolCallParserEnum` at the commit |
 | Grammar backend | `xgrammar` — one of `GRAMMAR_BACKEND_CHOICES` at the commit (`xgrammar`, `outlines`, `llguidance`, `none`) |
 | LewLM profile | `sglang_local`, endpoint id `sglang` |
@@ -56,8 +55,8 @@ What the compose file fixes, and why:
   `--mem-fraction-static 0.30` (share of VRAM for weights + KV pool; the
   heuristic default takes most of the card), `--max-running-requests 4`.
   `--chunked-prefill-size` and the CUDA-graph batch sizes are left at
-  SGLang's defaults: the roadmap tunes them only from measured profiles
-  (step 09). `--enable-torch-compile` is not set; upstream's own
+  SGLang's defaults: LewLM tunes them only from measured serving
+  profiles. `--enable-torch-compile` is not set; upstream's own
   server-arguments page at this commit marks it out of maintenance.
 - **Key on the command line.** SGLang reads the inference key only from
   `--api-key` at this commit, so it is visible in `ps` inside the container
@@ -92,7 +91,7 @@ python scripts/bridge_prefix_benchmark.py --lewlm-url http://127.0.0.1:8080 \
     --direct-api-key-env SGLANG_API_KEY --requests 12 --concurrency 2 --output prefix-c2.json
 ```
 
-Also record, exactly as the step-08 exit criteria ask:
+Also record:
 
 | Measurement | How |
 | --- | --- |

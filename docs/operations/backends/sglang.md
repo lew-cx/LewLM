@@ -26,8 +26,6 @@ the recipe and LewLM:
 - `seed` is reported as unsupported. At this pin SGLang applies it only with
   `--enable-deterministic-inference`.
 
-See the
-[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
 `examples/backends/compatibility.json` keeps `sglang_local` as `deferred`
 until the suite passes on a bare-metal Linux/NVIDIA host. Do not read this
 profile's presence in `LEWLM_EXTERNAL_ENDPOINTS` as support elsewhere.

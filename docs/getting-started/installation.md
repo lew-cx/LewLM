@@ -92,7 +92,7 @@ Operator guidance by host:
 
 LewLM keeps install-profile guidance machine-readable so host apps and release validation can distinguish packaged, bridge-backed, fallback, unsupported, benchmark-backed, and host-probed states without inferring them from prose.
 
-`install_profiles.standards_acceptance_contract` now adds the Milestone 120 acceptance-state legend (`lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, `unverified`) plus the reserved 2026 vocabulary keys. Terms such as `kv_offload`, `responses_api_events`, `transformers_v5_ready`, and `local_agent_sandbox` live there now so later milestones can report them without inventing new field names.
+`install_profiles.standards_acceptance_contract` carries the acceptance-state legend (`lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, `unverified`) plus the reserved 2026 vocabulary keys. Terms such as `kv_offload`, `responses_api_events`, `transformers_v5_ready`, and `local_agent_sandbox` live there so every path reports them under the same field names.
 
 | State | Meaning in install-profile and runtime docs | Machine-readable signal |
 | --- | --- | --- |

@@ -55,9 +55,9 @@ For runtime-strategy reporting, LewLM now keeps the first-class non-Apple path b
 
 ## Standards acceptance contract
 
-Milestone 120 adds a shared `standards_acceptance_contract` to install-profile guidance, runtime stats, and per-model capability reports. That contract is a vocabulary registry, not a blanket feature-claim table.
+LewLM adds a shared `standards_acceptance_contract` to install-profile guidance, runtime stats, and per-model capability reports. That contract is a vocabulary registry, not a blanket feature-claim table.
 
-It fixes one common state legend for later milestones: `lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, and `unverified`.
+It fixes one common state legend: `lewlm_owned`, `backend_native`, `partial`, `fallback`, `unsupported`, and `unverified`.
 
 It also reserves the 2026 reporting keys that later runtime, bridge, and validation work must reuse:
 
@@ -68,7 +68,7 @@ It also reserves the 2026 reporting keys that later runtime, bridge, and validat
 - `multimodal, document, and semantic`: `multimodal_omni`, `document_ocr_transformer`, `long_context_embedding`
 - `agent interoperability`: `local_agent_sandbox`
 
-Support-path labels such as `packaged` and `bridge` stay separate from these acceptance states. Later milestones should keep using runtime-specific fields like `runtime_support_strategy`, `performance_core_evidence`, `measured_capabilities`, and `verification_method` when they attach stronger per-path claims.
+Support-path labels such as `packaged` and `bridge` stay separate from these acceptance states. Stronger per-path claims use runtime-specific fields like `runtime_support_strategy`, `performance_core_evidence`, `measured_capabilities`, and `verification_method` instead.
 
 ## Experimental layers
 

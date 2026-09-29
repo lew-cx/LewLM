@@ -117,7 +117,7 @@ def test_summary_keeps_deferred_hardware_visible_and_prefers_lane_records(tmp_pa
     assert nvidia["exllamav3-tabby"]["status"] == "deferred"
     assert nvidia["llamacpp-cuda"]["status"] == "deferred" and nvidia["llamacpp-cuda"]["source"] == "none"
     apple = by_lane["apple_silicon"]["entries"][0]
-    assert apple["recipe"] == "omlx" and apple["status"] == "validated" and apple["evidence_path"].startswith("docs/validation/evidence/")
+    assert apple["recipe"] == "omlx" and apple["status"] == "validated" and apple["evidence_path"].startswith("examples/backends/omlx/evidence/")
 
     # An idle-host deferral never hides validated evidence; a real failed run does override it.
     (tmp_path / "lane-apple_silicon-omlx.json").write_text(json.dumps({

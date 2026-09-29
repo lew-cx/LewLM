@@ -1,6 +1,6 @@
 # oMLX behind LewLM (Apple Silicon)
 
-Validated configuration (modernization step 05, 2026-09-17):
+Validated configuration (2026-09-17):
 
 | Input | Value |
 | --- | --- |
@@ -10,7 +10,7 @@ Validated configuration (modernization step 05, 2026-09-17):
 | Host | Apple M2 Max, 96 GiB unified memory, macOS Darwin 25.2.0 (oMLX requires macOS 15+) |
 | Model | `mlx-community/Qwen2.5-0.5B-Instruct-4bit` @ `a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3`, hashes in [`compatibility.json`](../compatibility.json) |
 | LewLM model id produced | `qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48` (`external://omlx/Qwen2.5-0.5B-Instruct-4bit`) |
-| Evidence | [`docs/validation/evidence/modernization-step-05/`](../../../docs/validation/evidence/modernization-step-05/) |
+| Evidence | [`evidence/`](evidence/) |
 
 What passed: text chat and streaming, sampling (`top_p`/`seed`/`stop` applied, seeded
 determinism observed), `json_schema` structured output forwarded natively and validated after
@@ -91,7 +91,7 @@ OMLX_API_KEY=... python scripts/bridge_prefix_benchmark.py --lewlm-url http://12
     --direct-api-key-env OMLX_API_KEY --requests 12 --output prefix.json
 ```
 
-The acceptance harness runs the roadmap's common suite over LewLM's public
+The acceptance harness runs LewLM's common acceptance suite over LewLM's public
 API and records `passed` / `failed` / `inconclusive` / `not_exercised` per
 case. To exercise the engine-control lanes by hand: stop oMLX, `lewlm scan`
 (the model stays, marked stale), send a chat (a 503 naming `endpoint_id`

@@ -14,7 +14,7 @@ LewLM runs on macOS, Windows, and Linux, with a different packaged path on each:
 - **Linux and Windows:** **GGUF + llama.cpp**, promoted through the CPU or CUDA **Docker image**. Native Windows installs use the prebuilt CPU wheel.
 - **Any platform:** **loopback engines** (vLLM, SGLang, TabbyAPI, Ollama, oMLX) as opt-in bridges when another local server owns execution.
 
-Every platform lane has been run for real on a single host per lane. The [README's platform status](../../README.md#platform-status) lists what passed where, and what is still deferred (notably bare-metal Linux + NVIDIA for the GPU engines).
+Every platform lane has been run for real on a single host per lane. The [README's platform support table](../../README.md#platform-support) lists what passed where, and what is still deferred (notably bare-metal Linux + NVIDIA for the GPU engines).
 
 The package code does **not** bundle model weights. By default LewLM stores state under `~/.lewlm` and scans `~/.lewlm/models` (`%USERPROFILE%\.lewlm` and `%USERPROFILE%\.lewlm\models` on Windows).
 

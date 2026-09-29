@@ -9,15 +9,14 @@ Nothing here is required to use LewLM with its packaged runtimes or Ollama.
 
 | Backend | Recipe | Platform lane | Status in `examples/backends/compatibility.json` |
 | --- | --- | --- | --- |
-| oMLX | `examples/backends/omlx/` | Apple Silicon macOS | `validated` (oMLX `b45fb7e`, Qwen2.5-0.5B-Instruct-4bit, the step-05 host) |
+| oMLX | `examples/backends/omlx/` | Apple Silicon macOS | `validated` (oMLX `b45fb7e`, Qwen2.5-0.5B-Instruct-4bit, M2 Max) |
 | vLLM | `examples/backends/vllm/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
 | SGLang | `examples/backends/sglang/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
 | ExLlamaV3 via TabbyAPI | `examples/backends/exllamav3-tabby/` | Linux + NVIDIA | `deferred` for bare-metal Linux; the Windows + WSL2 lane passed (2026-09-24) |
 
 Ollama has no recipe here. It is a model source you run yourself; see
 [Models and routing](../../guides/models-and-routing.md#fronting-an-ollama-install-you-already-run).
-Its native Windows lane passed with Ollama running in Docker. The WSL2 results are in the
-[Windows/Linux validation record](../../validation/modernization-windows-linux.md).
+Its native Windows lane passed with Ollama running in Docker.
 
 Each recipe pins an exact release (commit, image digest or dependency lock,
 model revision and hashes), publishes its port to host loopback only, and
@@ -66,7 +65,7 @@ before any request. `disabled` means you rolled it back.
 
 ## 4. Migrating from the single-server settings
 
-The pre-modernization form still works and is resolved to one endpoint named
+The single-server form still works and is resolved to one endpoint named
 `legacy-default` with the old runtime name, so nothing changes until you
 migrate:
 
@@ -132,11 +131,3 @@ An engine that stops while its endpoint stays enabled is not a rollback:
   request routes normally (to the alias, if configured).
 - When the engine returns, `lewlm scan` (or the automatic retry a few seconds
   later) puts it back in service.
-
-## Rolling back the modernization itself
-
-Every step is one commit and additive: new settings default to the old
-behaviour, new response fields default to `null`/absent, stored profiles are
-not migrated, old model ids and routes are unchanged. Reverting a step
-commit restores the previous state; the only user-visible changes a client
-can notice are listed in each step's validation record under "Rollback".

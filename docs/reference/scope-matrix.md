@@ -1,6 +1,6 @@
 # Scope matrix
 
-LewLM now keeps an explicit scope matrix in the codebase so the project can distinguish **core**, **performance core**, **optional modules**, **experimental surfaces**, and **out-of-scope ideas** without relying on roadmap memory alone.
+LewLM keeps an explicit scope matrix in the codebase so the project can distinguish **core**, **performance core**, **optional modules**, **experimental surfaces**, and **out-of-scope ideas** in one place.
 
 ## Scope labels
 

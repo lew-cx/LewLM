@@ -20,7 +20,7 @@ This page records what was validated and how to read the results.
 | Python / host | 3.11.15 on Apple M2 Max, macOS Darwin 25.2.0 |
 | Model | `mlx-community/Qwen2.5-0.5B-Instruct-4bit` @ `a5339a4` |
 | Status in `examples/backends/compatibility.json` | `validated` for this exact configuration |
-| Evidence | `docs/validation/evidence/modernization-step-05/` (`acceptance.json`, `prefix-benchmark-c1.json`, `prefix-benchmark-c2.json`, `engine-control.json`) |
+| Evidence | [`examples/backends/omlx/evidence/`](https://github.com/lew-cx/LewLM/tree/main/examples/backends/omlx/evidence) (`acceptance.json`, `prefix-benchmark-c1.json`, `prefix-benchmark-c2.json`, `engine-control.json`) |
 
 Passed: chat, streaming, sampling with observed seeded determinism, native
 `json_schema` structured output with post-generation validation, hidden
@@ -41,7 +41,7 @@ chat):
 | 1 | 141.4 / 142.2 ms | 136.6 / 137.3 ms | +4.8 / +4.9 ms |
 | 2 | 267.2 / 267.4 ms | 267.7 / 272.6 ms | −0.5 / −5.2 ms (noise) |
 
-The roadmap's middleware target is `max(20 ms, 10 % of direct p95)`; both
+LewLM's middleware overhead target is `max(20 ms, 10 % of direct p95)`; both
 runs are inside it. oMLX's prefix cache shows up as a cold-first-request
 difference (164 ms vs ~141 ms warm via LewLM); LewLM reports no hit counter
 because the bridge cannot observe one.

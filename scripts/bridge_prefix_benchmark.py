@@ -18,7 +18,7 @@ Usage:
         --model qwen2-5-0-5b-instruct-4bit-omlx-6fed8f48 \
         --direct-url http://127.0.0.1:8000/v1 --direct-model Qwen2.5-0.5B-Instruct-4bit \
         --direct-api-key-env OMLX_API_KEY --requests 10 --warmups 3 --prefix-tokens 600 \
-        --output docs/validation/evidence/<step>/prefix-benchmark.json
+        --output docs/validation/evidence/<run>/prefix-benchmark.json
 
 This is an observation harness, not the roadmap's full benchmark protocol
 (30+ requests at several concurrencies); use --requests/--concurrency to
