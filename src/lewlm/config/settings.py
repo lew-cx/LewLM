@@ -145,6 +145,13 @@ class LewLMSettings(BaseSettings):
     # multi-gigabyte allocation before a single prompt arrives. Set to `None` to
     # serve whatever each model advertises.
     llamacpp_max_context_tokens: int | None = 16_384
+    # Whether each loaded GGUF client gets llama-cpp-python's `LlamaRAMCache`.
+    # With one attached, llama-cpp-python saves the whole context state after
+    # every completion. That is cheap for most models but costs seconds per
+    # request for sliding-window (ISWA) models such as Gemma 4 on a GPU, and the
+    # live KV cache already reuses a matching prompt prefix without it. `auto`
+    # attaches it except for sliding-window models; `on` and `off` force it.
+    llamacpp_ram_prefix_cache: Literal["auto", "on", "off"] = "auto"
     # How large an estimated request LewLM will route to a model whose context
     # length it never recorded. The estimate is prompt plus `max_tokens`, so this
     # is the point past which an unmeasured model stops being a safe guess.
@@ -568,6 +575,7 @@ class LewLMSettings(BaseSettings):
             "onnx_genai_conversion_execution_provider": self.onnx_genai_conversion_execution_provider,
             "runtime_policy": self.runtime_policy,
             "llamacpp_max_context_tokens": self.llamacpp_max_context_tokens,
+            "llamacpp_ram_prefix_cache": self.llamacpp_ram_prefix_cache,
             "unknown_context_token_limit": self.unknown_context_token_limit,
             "kv_cache_page_size": self.kv_cache_page_size,
             "kv_cache_max_pages": self.kv_cache_max_pages,

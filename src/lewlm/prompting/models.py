@@ -107,7 +107,14 @@ class PromptCompilationTrace(BaseModel):
     requested_model_id: str | None = None
     resolved_model_id: str | None = None
     model_prompt_template: PromptModelTemplateSelection | None = None
-    serialized_model_prompt: str | None = None
+    serialized_model_prompt: str | None = Field(
+        default=None,
+        description=(
+            "LewLM's reference rendering of the compiled messages with `model_prompt_template`. "
+            "Runtimes that apply the model's own chat template (llama.cpp and MLX render the "
+            "template embedded in the model) decode a prompt that can differ from this text."
+        ),
+    )
     message_count: int
     message_roles: list[str] = Field(default_factory=list)
     attachment_plan: list[PromptAttachmentPlanEntry] = Field(default_factory=list)

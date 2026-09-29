@@ -11,7 +11,9 @@ from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 import platform
+import re
 import shutil
+import threading
 from typing import Any
 
 from lewlm.config.settings import LewLMSettings
@@ -21,6 +23,7 @@ from lewlm.core.contracts import (
     EmbeddingRequest,
     EmbeddingResponse,
     EmbeddingVector,
+    GenerateMessage,
     GenerateRequest,
     GenerateResponse,
     ModelFormat,
@@ -35,9 +38,11 @@ from lewlm.core.contracts import (
     runtime_performance_feature_report,
 )
 from lewlm.core.errors import ConfigurationError
+from lewlm.core.errors import ContextLengthExceededError
 from lewlm.core.errors import InvalidRequestError
 from lewlm.core.errors import RuntimeUnavailableError
 from lewlm.runtime.base import ManagedTextRuntime
+from lewlm.runtime.cancellation import CancellationToken, current_cancellation_token
 from lewlm.runtime.introspection import invoke_with_signature, resolve_backend_callable
 from lewlm.runtime.llamacpp import grammar as grammar_support
 from lewlm.runtime.llamacpp.import_guard import load_llama_cpp
@@ -115,6 +120,10 @@ class LlamaCppRuntime(ManagedTextRuntime):
         self._prefill_batch_count = 0
         self._model_performance_controls: dict[str, dict[str, dict[str, Any]]] = {}
         self._model_load_reports: dict[str, dict[str, Any]] = {}
+        # A llama.cpp context decodes one sequence at a time, so requests for
+        # one model take turns; the lock is what lets a decode leave the event loop.
+        self._client_locks: dict[str, asyncio.Lock] = {}
+        self._chat_formatters: dict[str, Any] = {}
 
     def supports_manifest(self, manifest: ModelManifest) -> bool:
         if not super().supports_manifest(manifest):
@@ -210,6 +219,9 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 },
             ) from exc
         prefix_cache_surface = self._prefix_cache_surface(llama_cpp=llama_cpp, client=client)
+        prefix_cache_declined = self._ram_prefix_cache_declined_reason(client)
+        if prefix_cache_surface.get("supported") and prefix_cache_declined is not None:
+            prefix_cache_surface = {"supported": False, "attachment_method": None, "reason": prefix_cache_declined}
         prefix_cache = self._build_prefix_cache_wrapper(
             llama_cpp=llama_cpp,
             prefix_cache_supported=bool(prefix_cache_surface.get("supported")),
@@ -236,6 +248,8 @@ class LlamaCppRuntime(ManagedTextRuntime):
 
     async def _unload_model(self, model_id: str) -> None:
         self._clients.pop(model_id, None)
+        self._client_locks.pop(model_id, None)
+        self._chat_formatters.pop(model_id, None)
         self._prompt_lookup_enabled_model_ids.discard(model_id)
         self._model_performance_controls.pop(model_id, None)
         self._model_load_reports.pop(model_id, None)
@@ -256,22 +270,17 @@ class LlamaCppRuntime(ManagedTextRuntime):
     async def _generate(self, request: GenerateRequest) -> GenerateResponse:
         self._validate_speculation_request(request)
         client = self._clients[request.model_id]
-        prompt_tokens = self._tokenize_request_messages(request)
-        self._set_speculation_execution_metadata(request)
-        request.metadata["performance_controls"] = self._request_performance_controls(model_id=request.model_id)
-        request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
-        prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
-        structured_output_options = self._structured_output_options(request=request, client=client)
-        sampling_options = self._sampling_options(request, client)
-        with _fresh_evaluation_when_seeded(client, sampling_options):
-            response = client.create_chat_completion(
-                messages=[message.template_payload() for message in request.messages],
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                stream=False,
-                **sampling_options,
-                **structured_output_options,
+        cancellation_token = current_cancellation_token()
+        async with self._client_lock(request.model_id):
+            _raise_if_cancelled(cancellation_token)
+            response, prompt_tokens, prefix_cache_before = await self._generate_exclusive(
+                request,
+                client=client,
+                cancellation_token=cancellation_token,
             )
+            # A cancel ends the decode by forcing end-of-generation, which
+            # llama.cpp reports as an ordinary `stop`; answer it as a cancel.
+            _raise_if_cancelled(cancellation_token)
         self._record_prefix_cache_request(
             request=request,
             client=client,
@@ -299,27 +308,32 @@ class LlamaCppRuntime(ManagedTextRuntime):
     async def _stream_generate(self, request: GenerateRequest) -> AsyncIterator[str]:
         self._validate_speculation_request(request)
         client = self._clients[request.model_id]
-        prompt_tokens = self._tokenize_request_messages(request)
-        self._set_speculation_execution_metadata(request)
-        request.metadata["performance_controls"] = self._request_performance_controls(model_id=request.model_id)
-        request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
-        prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
-        structured_output_options = self._structured_output_options(request=request, client=client)
-        sampling_options = self._sampling_options(request, client)
-        with _fresh_evaluation_when_seeded(client, sampling_options):
-            chunks = client.create_chat_completion(
-                messages=[message.template_payload() for message in request.messages],
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                stream=True,
-                **sampling_options,
-                **structured_output_options,
-            )
-            for chunk in chunks:
-                content = _llama_stream_chunk_text(chunk)
-                if content:
-                    yield content
-                await asyncio.sleep(0)
+        async with self._client_lock(request.model_id):
+            prompt_tokens = self._tokenize_request_messages(request)
+            self._set_speculation_execution_metadata(request)
+            request.metadata["performance_controls"] = self._request_performance_controls(model_id=request.model_id)
+            request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
+            prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
+            structured_output_options = self._structured_output_options(request=request, client=client)
+            sampling_options = self._sampling_options(request, client)
+            with _fresh_evaluation_when_seeded(client, sampling_options):
+                chunks = client.create_chat_completion(
+                    messages=_template_messages(request, client),
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    stream=True,
+                    **sampling_options,
+                    **structured_output_options,
+                )
+                try:
+                    for chunk in chunks:
+                        content = _llama_stream_chunk_text(chunk)
+                        if content:
+                            yield content
+                        await asyncio.sleep(0)
+                except ValueError as exc:
+                    _raise_if_context_overflow(exc, request)
+                    raise
         self._record_prefix_cache_request(
             request=request,
             client=client,
@@ -329,6 +343,134 @@ class LlamaCppRuntime(ManagedTextRuntime):
         self._record_prefill_request(model_id=request.model_id, prompt_token_count=len(prompt_tokens))
         if self._prompt_lookup_active_for_request(request):
             self._prompt_lookup_request_count += 1
+
+    async def _generate_exclusive(
+        self,
+        request: GenerateRequest,
+        *,
+        client: Any,
+        cancellation_token: CancellationToken | None,
+    ) -> tuple[dict[str, Any], list[int], dict[str, int]]:
+        """Run one non-streaming decode on a worker thread; the caller holds the model's lock.
+
+        The decode is a single blocking llama.cpp call. On the event loop it
+        would stall every other request for its whole length, a cancel for this
+        one included, so it runs on a thread and stops through a stopping
+        logits processor that watches the request's cancellation handle.
+        """
+
+        prompt_tokens = self._tokenize_request_messages(request)
+        self._set_speculation_execution_metadata(request)
+        request.metadata["performance_controls"] = self._request_performance_controls(model_id=request.model_id)
+        request.metadata["runtime_load"] = self._request_runtime_load_report(model_id=request.model_id)
+        prefix_cache_before = self._prefix_cache_snapshot_for_client(client)
+        structured_output_options = self._structured_output_options(request=request, client=client)
+        sampling_options = self._sampling_options(request, client)
+        abandoned = threading.Event()
+        completion_options = {
+            "messages": _template_messages(request, client),
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "stream": False,
+            **sampling_options,
+            **structured_output_options,
+            **self._cancellation_stop_options(client, cancellation_token, abandoned),
+        }
+        with _fresh_evaluation_when_seeded(client, sampling_options):
+            decode = asyncio.ensure_future(asyncio.to_thread(client.create_chat_completion, **completion_options))
+            try:
+                response = await asyncio.shield(decode)
+            except ValueError as exc:
+                _raise_if_context_overflow(exc, request)
+                raise
+            except asyncio.CancelledError:
+                # The caller went away. Stop the decode and wait it out, so the
+                # lock is never released while the context is still in use.
+                abandoned.set()
+                await _wait_through_cancellation(decode)
+                raise
+        return response, prompt_tokens, prefix_cache_before
+
+    def _cancellation_stop_options(
+        self,
+        client: Any,
+        cancellation_token: CancellationToken | None,
+        abandoned: threading.Event,
+    ) -> dict[str, Any]:
+        # `create_chat_completion` takes no `stopping_criteria` (only
+        # `create_completion` does), but it forwards a `logits_processor`. Once
+        # the request is cancelled, leaving end-of-generation as the only
+        # possible token makes the very next sample end the decode.
+        if "logits_processor" not in _callable_parameter_names(getattr(client, "create_chat_completion", None)):
+            return {}
+        logits_processor_list = getattr(self._llama_cpp_module(), "LogitsProcessorList", None)
+        token_eos = getattr(client, "token_eos", None)
+        if logits_processor_list is None or not callable(token_eos):
+            return {}
+        eos_token_id = int(token_eos())
+
+        def end_when_cancelled(_input_ids: Any, scores: Any) -> Any:
+            if abandoned.is_set() or (cancellation_token is not None and cancellation_token.cancelled):
+                scores.fill(float("-inf"))
+                scores[eos_token_id] = 0.0
+            return scores
+
+        return {"logits_processor": logits_processor_list([end_when_cancelled])}
+
+    def count_prompt_tokens(self, model_id: str, messages: Sequence[GenerateMessage]) -> int | None:
+        """How many tokens `messages` become once this model's own chat template renders them.
+
+        This is the count llama.cpp checks against the context window. None when
+        the model is not loaded here or llama.cpp does not render its embedded
+        template, so the caller falls back to an estimate.
+        """
+
+        client = self._clients.get(model_id)
+        if client is None:
+            return None
+        formatter = self._chat_formatter(model_id, client)
+        if formatter is None:
+            return None
+        structured_tool_calls = _template_renders_tool_calls(client)
+        try:
+            rendered = formatter(
+                messages=[message.template_payload(structured_tool_calls=structured_tool_calls) for message in messages],
+            )
+            tokens = client.tokenize(
+                rendered.prompt.encode("utf-8"),
+                add_bos=not rendered.added_special,
+                special=True,
+            )
+        except Exception:
+            return None
+        return len(tokens)
+
+    def _chat_formatter(self, model_id: str, client: Any) -> Any | None:
+        """The Jinja formatter llama-cpp-python renders this model's prompts with, rebuilt the same way."""
+
+        if model_id in self._chat_formatters:
+            return self._chat_formatters[model_id]
+        formatter = None
+        chat_format = str(getattr(client, "chat_format", "") or "")
+        metadata = getattr(client, "metadata", None) or {}
+        template_key = "tokenizer.chat_template" if chat_format == "chat_template.default" else f"tokenizer.{chat_format}"
+        template = metadata.get(template_key)
+        if getattr(client, "chat_handler", None) is None and chat_format.startswith("chat_template.") and template:
+            try:
+                formatter_class = import_module("llama_cpp.llama_chat_format").Jinja2ChatFormatter
+                vocabulary = getattr(client, "_model", None)
+                formatter = formatter_class(
+                    template=template,
+                    eos_token=_special_token_text(vocabulary, client.token_eos()),
+                    bos_token=_special_token_text(vocabulary, client.token_bos()),
+                )
+            except Exception:
+                formatter = None
+        self._chat_formatters[model_id] = formatter
+        return formatter
+
+    def _client_lock(self, model_id: str) -> asyncio.Lock:
+        return self._client_locks.setdefault(model_id, asyncio.Lock())
 
     def supports_chunked_prefill(self, capability: CapabilityName) -> bool:
         return capability in {CapabilityName.CHAT, CapabilityName.STREAMING} and self._prefill_control_supported()
@@ -864,6 +1006,23 @@ class LlamaCppRuntime(ManagedTextRuntime):
                 "Installed llama.cpp bindings rejected the requested grammar for decode-time constrained decoding: "
                 f"{exc}",
             )
+
+    def _ram_prefix_cache_declined_reason(self, client: Any) -> str | None:
+        """Why LewLM will not attach `LlamaRAMCache` to this client, or None to attach it."""
+
+        policy = self._settings.llamacpp_ram_prefix_cache
+        if policy == "on":
+            return None
+        if policy == "off":
+            return "The RAM prefix cache is disabled by `llamacpp_ram_prefix_cache=off`."
+        sliding_window = _gguf_sliding_window(client)
+        if sliding_window is None:
+            return None
+        return (
+            f"Not attached: the model uses sliding-window attention (window {sliding_window}), and saving its "
+            "context state after every completion costs seconds per request. llama.cpp still reuses a matching "
+            "prompt prefix in the live KV cache. Set `llamacpp_ram_prefix_cache=on` to attach it anyway."
+        )
 
     def _build_prefix_cache_wrapper(
         self,
@@ -1687,6 +1846,82 @@ def _llamacpp_gpu_offload_capability(llama_cpp_module: Any) -> bool | None:
 
 def _normalized_model_path(source_path: str | Path) -> str:
     return str(Path(source_path).expanduser())
+
+
+def _special_token_text(vocabulary: Any, token_id: int) -> str:
+    if token_id == -1 or vocabulary is None:
+        return ""
+    return str(vocabulary.token_get_text(token_id))
+
+
+def _gguf_sliding_window(client: Any) -> int | None:
+    metadata = getattr(client, "metadata", None) or {}
+    architecture = metadata.get("general.architecture")
+    if not architecture:
+        return None
+    try:
+        window = int(metadata.get(f"{architecture}.attention.sliding_window", 0))
+    except (TypeError, ValueError):
+        return None
+    return window if window > 0 else None
+
+
+def _template_messages(request: GenerateRequest, client: Any) -> list[dict[str, Any]]:
+    structured_tool_calls = _template_renders_tool_calls(client)
+    return [message.template_payload(structured_tool_calls=structured_tool_calls) for message in request.messages]
+
+
+def _template_renders_tool_calls(client: Any) -> bool:
+    """Whether llama.cpp will render this model's own Jinja template, and that template reads `tool_calls`.
+
+    llama-cpp-python names the format `chat_template.*` only when it renders
+    the GGUF's embedded template; a built-in format or a custom chat handler
+    ignores structured calls, so those keep the calls in the text.
+    """
+
+    if getattr(client, "chat_handler", None) is not None:
+        return False
+    if not str(getattr(client, "chat_format", "") or "").startswith("chat_template."):
+        return False
+    metadata = getattr(client, "metadata", None) or {}
+    return "tool_calls" in str(metadata.get("tokenizer.chat_template", ""))
+
+
+# llama-cpp-python's refusal, raised after tokenizing and before any decode.
+_CONTEXT_OVERFLOW_PATTERN = re.compile(r"Requested tokens \((\d+)\) exceed context window of (\d+)")
+
+
+def _raise_if_context_overflow(exc: ValueError, request: GenerateRequest) -> None:
+    """Report llama.cpp's context-window refusal as a typed 400 rather than an internal error."""
+
+    match = _CONTEXT_OVERFLOW_PATTERN.search(str(exc))
+    if match is None:
+        return
+    prompt_tokens, context_window = int(match.group(1)), int(match.group(2))
+    raise ContextLengthExceededError(
+        f"The rendered prompt is {prompt_tokens} tokens, which does not fit the model's "
+        f"{context_window}-token context window. Shorten the conversation and retry.",
+        details={
+            "model_id": request.model_id,
+            "runtime": "llamacpp",
+            "prompt_tokens": prompt_tokens,
+            "context_window": context_window,
+            "max_tokens": request.max_tokens,
+        },
+    ) from exc
+
+
+def _raise_if_cancelled(cancellation_token: CancellationToken | None) -> None:
+    if cancellation_token is not None:
+        cancellation_token.raise_if_cancelled(stage="llamacpp.generate")
+
+
+async def _wait_through_cancellation(task: asyncio.Future[Any]) -> None:
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            continue
 
 
 @contextmanager

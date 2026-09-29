@@ -1076,3 +1076,39 @@ def _multimodal_manifest() -> ModelManifest:
             "text_only_runtime_reason": "Gemma-safe same-bundle text runtime.",
         },
     )
+
+
+def test_routing_counts_the_prompt_with_a_loaded_models_tokenizer(temp_settings, monkeypatch) -> None:
+    # Four characters per token refused a 12,101-token request as 17,099, and
+    # admitted 45,025 tokens of digits as 12,281.
+    counted: list[str] = []
+
+    class _CountingRuntime(FakeLlamaCppRuntime):
+        name = "counting_llamacpp"
+
+        def serving_context_tokens(self, manifest: ModelManifest) -> int | None:
+            return 16_384
+
+        def count_prompt_tokens(self, model_id: str, messages) -> int | None:
+            counted.append(model_id)
+            return 8_005 if model_id == "loaded" else None
+
+    router = ModelRouter(
+        model_registry=_StaticRegistry(
+            [
+                _manifest(model_id="loaded", display_name="loaded", estimated_memory_mb=256, context_length=131_072),
+                _manifest(model_id="cold", display_name="cold", estimated_memory_mb=256, context_length=131_072),
+            ],
+        ),
+        runtime_catalog=RuntimeCatalog({RuntimeAffinity.LLAMACPP: _CountingRuntime()}),
+        settings=temp_settings,
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 8_192)
+    messages = [GenerateMessage(role="user", content="Summarize: " + "ledger entry " * 4000)]
+
+    _, _, decision = router.route_chat("loaded", messages=messages, max_tokens=4_096)
+    assert "context fit 12101/16384 tokens" in decision.reason
+
+    with pytest.raises(RoutingError):
+        router.route_chat("cold", messages=messages, max_tokens=4_096)
+    assert counted == ["loaded", "cold"], "a model no runtime has loaded keeps the character estimate"

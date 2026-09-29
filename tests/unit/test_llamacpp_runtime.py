@@ -1288,3 +1288,301 @@ def _manifest(
         fingerprint="fingerprint",
         last_validation_result=ModelValidationResult(status=ValidationState.VALID, message="ok"),
     )
+
+
+class _LogitsProcessorList(list):
+    def __call__(self, input_ids, scores):
+        for processor in self:
+            scores = processor(input_ids, scores)
+        return scores
+
+
+class _Scores(list):
+    """The slice of numpy's API a logits processor uses on one row of logits."""
+
+    def fill(self, value: float) -> None:
+        self[:] = [value] * len(self)
+
+
+class _SlowDecodingLlama:
+    """Decodes one token per few milliseconds, ending on EOS the way llama.cpp does.
+
+    Its `create_chat_completion` takes only parameters the real one takes;
+    `test_slow_decoding_fake_matches_the_real_llama_signature` holds it to that.
+    """
+
+    decoded_tokens = 0
+    eos_token_id = 0
+
+    def __init__(self, **kwargs) -> None:
+        pass
+
+    def token_eos(self) -> int:
+        return self.eos_token_id
+
+    def create_chat_completion(self, *, messages, max_tokens, temperature, stream=False, logits_processor=None):
+        import time
+
+        type(self).decoded_tokens = 0
+        for _ in range(max_tokens):
+            scores = _Scores([0.0, 1.0, 0.5])
+            if logits_processor is not None:
+                scores = logits_processor([], scores)
+            if max(range(len(scores)), key=scores.__getitem__) == self.eos_token_id:
+                break
+            time.sleep(0.005)
+            type(self).decoded_tokens += 1
+        return {"choices": [{"message": {"content": "x" * type(self).decoded_tokens}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": type(self).decoded_tokens}}
+
+    def tokenize(self, payload: bytes) -> list[int]:
+        return list(payload)
+
+    def detokenize(self, tokens: list[int]) -> bytes:
+        return bytes(tokens)
+
+
+def test_slow_decoding_fake_matches_the_real_llama_signature() -> None:
+    # The first cancel fix passed against a fake that accepted `stopping_criteria`,
+    # which the real `create_chat_completion` does not take.
+    import inspect
+
+    llama_cpp = pytest.importorskip("llama_cpp")
+    real = set(inspect.signature(llama_cpp.Llama.create_chat_completion).parameters)
+    fake = set(inspect.signature(_SlowDecodingLlama.create_chat_completion).parameters)
+
+    assert fake <= real, f"the fake accepts parameters llama.cpp does not: {sorted(fake - real)}"
+
+
+def test_llamacpp_cancel_stops_a_nonstreaming_decode_promptly(monkeypatch, tmp_path: Path) -> None:
+    # The decode used to run on the event loop, so a cancel POST was not even
+    # read until max_tokens were generated, and then found the request finished.
+    from lewlm.core.errors import RequestCancelledError
+    from lewlm.runtime.cancellation import RequestCancellationRegistry, RequestCancellationState
+
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(Llama=_SlowDecodingLlama, LogitsProcessorList=_LogitsProcessorList)
+        if name == "llama_cpp" else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    asyncio.run(runtime.load_model(_manifest()))
+    registry = RequestCancellationRegistry(runtime_instance_id="test")
+    request = GenerateRequest(model_id="gguf-model", messages=[GenerateMessage(role="user", content="hi")],
+                              max_tokens=2000, temperature=0.0)
+
+    async def serve() -> None:
+        with registry.track("cx-1"):
+            await runtime.generate(request)
+
+    async def main():
+        serving = asyncio.create_task(serve())
+        await asyncio.sleep(0.05)
+        acknowledgement = registry.cancel("cx-1")
+        with pytest.raises(RequestCancelledError):
+            await asyncio.wait_for(serving, timeout=2)
+        return acknowledgement
+
+    acknowledgement = asyncio.run(main())
+
+    assert acknowledgement.state is RequestCancellationState.CANCELLING
+    assert _SlowDecodingLlama.decoded_tokens < 200
+    assert registry.cancel("cx-1").state is RequestCancellationState.CANCELLED
+
+
+def _tool_loop_messages() -> list[GenerateMessage]:
+    return [
+        GenerateMessage(role="user", content="What is the balance of account 1001?"),
+        GenerateMessage(
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "type": "function",
+                         "function": {"name": "get_balance", "arguments": '{"account": "1001"}'}}],
+        ),
+        GenerateMessage(role="tool", content='{"balance": 7341.29}', tool_call_id="call_1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("chat_format", "chat_template", "structured"),
+    [
+        ("chat_template.default", "{% if message['tool_calls'] %}...{% endif %}", True),
+        ("chat_template.default", "{{ message['content'] }}", False),
+        ("chatml", "{% if message['tool_calls'] %}...{% endif %}", False),
+    ],
+    ids=["template-renders-tool-calls", "template-ignores-tool-calls", "builtin-format"],
+)
+def test_llamacpp_passes_prior_tool_calls_structured_only_to_templates_that_render_them(
+    monkeypatch, tmp_path: Path, chat_format: str, chat_template: str, structured: bool,
+) -> None:
+    # Gemma 4's template renders a `tool` result only after a structured call;
+    # flattened into text, every result was silently dropped.
+    seen: list[list[dict]] = []
+
+    class TemplateLlama:
+        def __init__(self, **kwargs) -> None:
+            self.chat_format = chat_format
+            self.chat_handler = None
+            self.metadata = {"tokenizer.chat_template": chat_template}
+
+        def create_chat_completion(self, *, messages, max_tokens, temperature, stream=False):
+            seen.append(messages)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {}}
+
+        def tokenize(self, payload: bytes) -> list[int]:
+            return list(payload)
+
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(Llama=TemplateLlama) if name == "llama_cpp" else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    asyncio.run(runtime.load_model(_manifest()))
+
+    asyncio.run(runtime.generate(GenerateRequest(model_id="gguf-model", messages=_tool_loop_messages(),
+                                                 max_tokens=8, temperature=0.0)))
+
+    assistant, tool = seen[-1][1], seen[-1][2]
+    assert tool == {"role": "tool", "content": '{"balance": 7341.29}', "tool_call_id": "call_1"}
+    if structured:
+        assert assistant == {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "get_balance", "arguments": {"account": "1001"}}}],
+        }
+    else:
+        assert "tool_calls" not in assistant
+        assert '"get_balance"' in assistant["content"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "sliding_window", "attached"),
+    [("auto", None, True), ("auto", "512", False), ("on", "512", True), ("off", None, False)],
+    ids=["auto-full-attention", "auto-sliding-window", "forced-on", "forced-off"],
+)
+def test_llamacpp_ram_prefix_cache_skips_sliding_window_models_by_default(
+    monkeypatch, tmp_path: Path, policy: str, sliding_window: str | None, attached: bool,
+) -> None:
+    # With a RAM cache attached, llama-cpp-python saves the whole context state
+    # after every completion: ~5.5 s per request for Gemma 4 12B on a GPU.
+    metadata = {"general.architecture": "gemma4"}
+    if sliding_window is not None:
+        metadata["gemma4.attention.sliding_window"] = sliding_window
+
+    class FakeLlama:
+        def __init__(self, **kwargs) -> None:
+            self.metadata = metadata
+            self.cache = None
+
+        def set_cache(self, cache) -> None:
+            self.cache = cache
+
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(Llama=FakeLlama, LlamaRAMCache=dict)
+        if name == "llama_cpp" else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state", llamacpp_ram_prefix_cache=policy))
+
+    asyncio.run(runtime.load_model(_manifest()))
+
+    assert (runtime._clients["gguf-model"].cache is not None) is attached
+    report = runtime._request_runtime_load_report(model_id="gguf-model")["prefix_cache"]
+    assert report["supported"] is attached
+    if not attached:
+        assert "llamacpp_ram_prefix_cache" in report["reason"]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["nonstreaming", "streaming"])
+def test_llamacpp_context_overflow_is_a_typed_client_error(monkeypatch, tmp_path: Path, stream: bool) -> None:
+    # llama-cpp-python refuses an over-long prompt with a bare ValueError, which
+    # reached callers as `500 internal_error`: indistinguishable from a crash.
+    from lewlm.core.errors import ContextLengthExceededError
+
+    class OverflowingLlama:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def create_chat_completion(self, *, messages, max_tokens, temperature, stream=False):
+            def refuse():
+                raise ValueError("Requested tokens (21008) exceed context window of 16384")
+                yield  # pragma: no cover - makes this a generator, as llama.cpp's stream is
+
+            if stream:
+                return refuse()
+            raise ValueError("Requested tokens (21008) exceed context window of 16384")
+
+        def tokenize(self, payload: bytes) -> list[int]:
+            return list(payload)
+
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: SimpleNamespace(Llama=OverflowingLlama) if name == "llama_cpp" else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    asyncio.run(runtime.load_model(_manifest()))
+    request = GenerateRequest(model_id="gguf-model", messages=[GenerateMessage(role="user", content="hi")],
+                              max_tokens=400, temperature=0.0)
+
+    async def run() -> None:
+        if stream:
+            [chunk async for chunk in runtime.stream_generate(request)]
+        else:
+            await runtime.generate(request)
+
+    with pytest.raises(ContextLengthExceededError) as exc_info:
+        asyncio.run(run())
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "context_length_exceeded"
+    assert exc_info.value.details["prompt_tokens"] == 21008
+    assert exc_info.value.details["context_window"] == 16384
+
+
+def test_llamacpp_counts_the_prompt_its_own_template_renders(monkeypatch, tmp_path: Path) -> None:
+    rendered: list[dict] = []
+
+    class FakeFormatter:
+        def __init__(self, *, template, eos_token, bos_token) -> None:
+            self.bos_token = bos_token
+
+        def __call__(self, *, messages):
+            rendered.append({"messages": messages})
+            prompt = self.bos_token + "".join(f"<{m['role']}>{m['content']}" for m in messages)
+            return SimpleNamespace(prompt=prompt, added_special=True)
+
+    class TemplateLlama:
+        chat_handler = None
+        chat_format = "chat_template.default"
+        metadata = {"tokenizer.chat_template": "{{ messages }}"}
+        _model = SimpleNamespace(token_get_text=lambda token_id: {1: "<bos>", 2: "<eos>"}[token_id])
+
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def token_bos(self) -> int:
+            return 1
+
+        def token_eos(self) -> int:
+            return 2
+
+        def tokenize(self, payload: bytes, add_bos: bool = True, special: bool = False) -> list[int]:
+            assert add_bos is False and special is True, "the template already carries BOS, as llama.cpp tokenizes it"
+            return list(payload)
+
+    modules = {
+        "llama_cpp": SimpleNamespace(Llama=TemplateLlama),
+        "llama_cpp.llama_chat_format": SimpleNamespace(Jinja2ChatFormatter=FakeFormatter),
+    }
+    monkeypatch.setattr(
+        "lewlm.runtime.llamacpp.runtime.import_module",
+        lambda name: modules[name] if name in modules else (_ for _ in ()).throw(ImportError(name)),
+    )
+    runtime = LlamaCppRuntime(settings=LewLMSettings(data_dir=tmp_path / "state"))
+    assert runtime.count_prompt_tokens("gguf-model", [GenerateMessage(role="user", content="hi")]) is None, "not loaded"
+    asyncio.run(runtime.load_model(_manifest()))
+
+    count = runtime.count_prompt_tokens("gguf-model", [GenerateMessage(role="user", content="hi")])
+
+    assert count == len("<bos><user>hi")

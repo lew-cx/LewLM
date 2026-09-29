@@ -271,6 +271,22 @@ class RequestTooLargeError(LewLMError):
         )
 
 
+class ContextLengthExceededError(LewLMError):
+    """Raised when a prompt is longer than the context window the model was loaded with.
+
+    `details` carries `prompt_tokens` and `context_window`, so a caller can
+    shorten its history and retry instead of treating the failure as a crash.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(
+            message,
+            code="context_length_exceeded",
+            status_code=HTTPStatus.BAD_REQUEST,
+            details=details,
+        )
+
+
 class RateLimitError(LewLMError):
     """Raised when a client exceeds the configured request rate."""
 
@@ -477,6 +493,7 @@ _ERROR_CLASS_BY_CODE: dict[str, type[LewLMError]] = {
     "document_generation_error": DocumentGenerationError,
     "authentication_error": AuthenticationError,
     "request_too_large": RequestTooLargeError,
+    "context_length_exceeded": ContextLengthExceededError,
     "rate_limit_error": RateLimitError,
     "backpressure_error": BackpressureError,
     "unsupported_media_type": UnsupportedMediaTypeError,

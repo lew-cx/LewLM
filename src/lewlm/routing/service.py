@@ -41,7 +41,7 @@ from lewlm.core.contracts import (
     performance_core_evidence_mode_from_measured_status,
     runtime_support_path_for_affinity,
 )
-from lewlm.core.errors import ModelNotFoundError, RoutingError, RuntimeUnavailableError
+from lewlm.core.errors import LewLMError, ModelNotFoundError, RoutingError, RuntimeUnavailableError
 from lewlm.core.middleware import build_model_capability_evidence
 from lewlm.registry.service import ModelRegistry
 from lewlm.structured_output import GrammarResponseFormat, JSONSchemaResponseFormat
@@ -129,7 +129,7 @@ class ModelRouter:
             capability=CapabilityName.CHAT,
             requested_model_id=requested_model_id,
             required_modalities=chat_profile.required_modalities,
-            requested_context_tokens=self._estimate_chat_context_tokens(messages, max_tokens),
+            requested_context_tokens=self._estimate_chat_context_tokens(requested_model_id, messages, max_tokens),
             request_modality=chat_profile.request_modality,
             structured_output_requested=structured_output_requested,
         )
@@ -1889,11 +1889,42 @@ class ModelRouter:
             return False
         return Path(source_path).expanduser().resolve(strict=False).is_dir()
 
-    @staticmethod
-    def _estimate_chat_context_tokens(messages: list[GenerateMessage] | None, max_tokens: int) -> int | None:
+    def _estimate_chat_context_tokens(
+        self,
+        requested_model_id: str | None,
+        messages: list[GenerateMessage] | None,
+        max_tokens: int,
+    ) -> int | None:
         if messages is None:
             return max_tokens
-        return sum(_estimate_text_tokens(message.content) for message in messages) + max(0, max_tokens)
+        prompt_tokens = self._counted_prompt_tokens(requested_model_id, messages)
+        if prompt_tokens is None:
+            prompt_tokens = sum(_estimate_text_tokens(message.content) for message in messages)
+        return prompt_tokens + max(0, max_tokens)
+
+    def _counted_prompt_tokens(self, requested_model_id: str | None, messages: list[GenerateMessage]) -> int | None:
+        """Count the prompt with the model's own tokenizer and template when a runtime has it loaded.
+
+        Four characters per token is wrong in both directions: Gemma tokenizes
+        digits one at a time, so numeric tool results run far over it, while
+        repetitive prose runs well under it. The estimate remains only for a
+        model no runtime has loaded yet.
+        """
+
+        if requested_model_id is None:
+            return None
+        try:
+            model_id = self.model_registry.get_manifest(requested_model_id).model_id
+        except LewLMError:
+            return None
+        for runtime in self.runtime_catalog.all_runtimes():
+            count_prompt_tokens = getattr(runtime, "count_prompt_tokens", None)
+            if not callable(count_prompt_tokens):
+                continue
+            counted = count_prompt_tokens(model_id, messages)
+            if counted is not None:
+                return counted
+        return None
 
     @staticmethod
     def _estimate_embedding_context_tokens(inputs: list[str] | None) -> int | None:

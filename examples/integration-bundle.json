@@ -1948,6 +1948,7 @@
                 }
               ],
               "default": null,
+              "description": "LewLM's reference rendering of the compiled messages with `model_prompt_template`. Runtimes that apply the model's own chat template (llama.cpp and MLX render the template embedded in the model) decode a prompt that can differ from this text.",
               "title": "Serialized Model Prompt"
             },
             "message_count": {
@@ -3867,6 +3868,7 @@
                 }
               ],
               "default": null,
+              "description": "LewLM's reference rendering of the compiled messages with `model_prompt_template`. Runtimes that apply the model's own chat template (llama.cpp and MLX render the template embedded in the model) decode a prompt that can differ from this text.",
               "title": "Serialized Model Prompt"
             },
             "message_count": {
@@ -6847,6 +6849,7 @@
                 }
               ],
               "default": null,
+              "description": "LewLM's reference rendering of the compiled messages with `model_prompt_template`. Runtimes that apply the model's own chat template (llama.cpp and MLX render the template embedded in the model) decode a prompt that can differ from this text.",
               "title": "Serialized Model Prompt"
             },
             "message_count": {
@@ -8727,6 +8730,7 @@
                 }
               ],
               "default": null,
+              "description": "LewLM's reference rendering of the compiled messages with `model_prompt_template`. Runtimes that apply the model's own chat template (llama.cpp and MLX render the template embedded in the model) decode a prompt that can differ from this text.",
               "title": "Serialized Model Prompt"
             },
             "message_count": {
@@ -19070,6 +19074,12 @@
       "http_status": 400,
       "retryable": false,
       "description": "Raised when application settings are invalid."
+    },
+    {
+      "code": "context_length_exceeded",
+      "http_status": 400,
+      "retryable": false,
+      "description": "Raised when a prompt is longer than the context window the model was loaded with."
     },
     {
       "code": "conversion_error",
