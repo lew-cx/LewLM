@@ -10,6 +10,9 @@ from lewlm.core.contracts import ReasoningOutput, ReasoningVisibility
 _REASONING_TAGS: tuple[tuple[str, str], ...] = (
     ("<think>", "</think>"),
     ("<reasoning>", "</reasoning>"),
+    # Gemma 4's thinking channel. The channel name is part of the open tag so
+    # the `thought` label never lands in the reasoning text.
+    ("<|channel>thought", "<channel|>"),
 )
 
 

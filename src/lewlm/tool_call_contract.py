@@ -76,11 +76,38 @@ def render_prior_tool_calls(calls: list[dict[str, Any]]) -> str:
     rendered: list[dict[str, Any]] = []
     for call in calls:
         function = call.get("function") or {}
-        arguments: Any = function.get("arguments", "{}")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                pass
+        arguments = _decoded_arguments(function.get("arguments", "{}"))
         rendered.append({"id": call.get("id"), TOOL_CALL_NAME_KEY: function.get("name"), ARGUMENT_KEYS[0]: arguments})
     return json.dumps({TOOL_CALL_BATCH_KEY: rendered}, separators=(",", ":"))
+
+
+def template_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Calls an earlier assistant turn made, as a chat template that renders `tool_calls` takes them.
+
+    OpenAI's shape, except that `function.arguments` is an object: templates
+    follow the Hugging Face convention and iterate the arguments as a mapping.
+    """
+
+    structured: list[dict[str, Any]] = []
+    for call in calls:
+        function = call.get("function") or {}
+        structured.append(
+            {
+                "id": call.get("id"),
+                "type": call.get("type") or "function",
+                "function": {
+                    "name": function.get("name"),
+                    "arguments": _decoded_arguments(function.get("arguments", "{}")),
+                },
+            },
+        )
+    return structured
+
+
+def _decoded_arguments(arguments: Any) -> Any:
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments
+    return arguments

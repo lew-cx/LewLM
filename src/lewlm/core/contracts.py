@@ -10,7 +10,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from lewlm.structured_output import StructuredOutputRequest, StructuredOutputRuntimeStatus
-from lewlm.tool_call_contract import render_prior_tool_calls
+from lewlm.tool_call_contract import render_prior_tool_calls, template_tool_calls
 
 from lewlm.core.citations import GeneratedCitationReference
 
@@ -1582,15 +1582,25 @@ class GenerateMessage(BaseModel):
         content = self.content.strip()
         return f"{content}\n{rendered}" if content else rendered
 
-    def template_payload(self) -> dict[str, Any]:
+    def template_payload(self, *, structured_tool_calls: bool = False) -> dict[str, Any]:
         """This message as a model's own chat template takes it.
 
-        Packaged runtimes teach tool calling in the prompt, so a prior call is
-        rendered into the text rather than passed as `tool_calls` a template
-        may not know; `tool_call_id` rides along for templates that use it.
+        Packaged runtimes teach tool calling in the prompt, so by default a
+        prior call is rendered into the text rather than passed as `tool_calls`
+        a template may not know. A runtime whose template does render
+        `tool_calls` asks for them structured: some templates, Gemma 4's among
+        them, render a `tool` result only after a structured call, and drop it
+        otherwise. `tool_call_id` rides along for templates that use it.
         """
 
-        payload: dict[str, Any] = {"role": self.role, "content": self.template_text()}
+        if structured_tool_calls and self.tool_calls:
+            payload: dict[str, Any] = {
+                "role": self.role,
+                "content": self.content,
+                "tool_calls": template_tool_calls(self.tool_calls),
+            }
+        else:
+            payload = {"role": self.role, "content": self.template_text()}
         if self.tool_call_id:
             payload["tool_call_id"] = self.tool_call_id
         return payload

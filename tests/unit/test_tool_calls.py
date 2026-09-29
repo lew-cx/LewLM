@@ -178,3 +178,64 @@ def test_arguments_must_be_object() -> None:
 
     assert result.status == "failed"
     assert result.issues[0].code == "arguments_not_object"
+
+
+def test_parses_gemma_native_tool_calls_as_a_parallel_batch() -> None:
+    # Verbatim shape from gemma-4-12b-it: bare keys, JSON-quoted strings.
+    output = (
+        '<|tool_call>call:get_weather{city: "Oslo"}<tool_call|>'
+        '<|tool_call>call:get_weather{city: "Bergen", unit: "celsius"}<tool_call|>'
+    )
+
+    result = parse_tool_calls(output, tools=[_WEATHER_TOOL])
+
+    assert result.status == "parsed"
+    assert result.parallel is True
+    assert [(call.call_id, call.name, call.arguments) for call in result.tool_calls] == [
+        ("call_1", "get_weather", {"city": "Oslo"}),
+        ("call_2", "get_weather", {"city": "Bergen", "unit": "celsius"}),
+    ]
+    assert result.remaining_text == ""
+
+
+def test_parses_gemma_native_quote_token_and_nested_values() -> None:
+    # The e2b/e4b checkpoints delimit strings with Gemma's `<|"|>` token.
+    output = (
+        "Looking that up.\n"
+        '<|tool_call>call:search_notes{query:<|"|>trip, "summer"<|"|>}<tool_call|>'
+    )
+    nested_tool = PromptToolDefinition(
+        name="plan",
+        description="Nested arguments.",
+        input_schema={"type": "object"},
+    )
+
+    result = parse_tool_calls(output, tools=[_SEARCH_TOOL])
+    nested = parse_tool_calls(
+        '<|tool_call>call:plan{days: 3, ok: true, note: null, stops: [<|"|>a<|"|>, {"b": -1.5}]}<tool_call|>',
+        tools=[nested_tool],
+    )
+
+    assert result.status == "parsed"
+    assert result.tool_calls[0].arguments == {"query": 'trip, "summer"'}
+    assert result.remaining_text == "Looking that up."
+    assert nested.status == "parsed"
+    assert nested.tool_calls[0].arguments == {
+        "days": 3,
+        "ok": True,
+        "note": None,
+        "stops": ["a", {"b": -1.5}],
+    }
+
+
+def test_gemma_native_tool_call_is_still_validated_strictly() -> None:
+    output = (
+        '<|tool_call>call:get_weather{unit: "celsius"}<tool_call|>'
+        '<|tool_call>call:get_weather{city: Oslo}<tool_call|>'
+    )
+
+    result = parse_tool_calls(output, tools=[_WEATHER_TOOL])
+
+    assert result.status == "failed"
+    assert [issue.code for issue in result.issues] == ["schema_violation", "invalid_json"]
+    assert "Gemma native tool call" in result.issues[1].message

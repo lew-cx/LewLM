@@ -17,6 +17,11 @@ entire output text):
 ``"input"`` is accepted as an alias for ``"arguments"`` because prompt tool
 declarations advertise ``input_schema``.
 
+Gemma 4 checkpoints ignore that contract and emit their trained-in call syntax,
+``<|tool_call>call:NAME{key: value, ...}<tool_call|>``, with bare keys and
+``<|"|>`` string delimiters. That form is read as well, strictly: the argument
+object must parse completely, and it is then validated like any other call.
+
 The accepted keys live in :mod:`lewlm.tool_call_contract`, which the prompt
 compiler also uses to tell the model what to emit, so the two halves cannot
 drift apart.
@@ -48,6 +53,15 @@ STRICT_TOOL_PARSER_NAME = "lewlm_strict_tool_parser"
 _JSON_FENCE_PATTERN = re.compile(r"```(?P<language>[A-Za-z0-9_-]*)[ \t]*\r?\n(?P<body>.*?)```", re.DOTALL)
 
 _ARGUMENT_KEYS = ARGUMENT_KEYS
+
+_GEMMA_NATIVE_CALL_PATTERN = re.compile(
+    r"<\|tool_call>\s*call:(?P<name>[^\s{<]+)\s*(?P<arguments>\{.*?\})\s*<tool_call\|>",
+    re.DOTALL,
+)
+_GEMMA_STRING_DELIMITER = '<|"|>'
+_GEMMA_BARE_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+_GEMMA_SCALAR_PATTERN = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null")
+_GEMMA_SCALAR_LITERALS: dict[str, Any] = {"true": True, "false": False, "null": None}
 
 
 class ParsedToolCall(BaseModel):
@@ -97,20 +111,20 @@ def parse_tool_calls(
     """
 
     tool_index = {tool.name: tool for tool in tools}
-    candidates, remaining_text = _extract_candidates(output_text)
-    if not candidates:
+    native_candidates, text_without_native = _extract_gemma_native_candidates(output_text)
+    json_candidates, remaining_text = _extract_candidates(text_without_native)
+    decoded_candidates = native_candidates + [_decode_json_candidate(text) for text in json_candidates]
+    if not decoded_candidates:
         return ToolCallParseResult(status="no_tool_calls", remaining_text=output_text)
 
     tool_calls: list[ParsedToolCall] = []
     issues: list[ToolCallParseIssue] = []
-    for candidate_index, candidate_text in enumerate(candidates):
-        try:
-            payload = json.loads(candidate_text)
-        except json.JSONDecodeError as exc:
+    for candidate_index, (payload, decode_error) in enumerate(decoded_candidates):
+        if decode_error is not None:
             issues.append(
                 ToolCallParseIssue(
                     code="invalid_json",
-                    message=f"Candidate is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno}).",
+                    message=decode_error,
                     candidate_index=candidate_index,
                 ),
             )
@@ -172,6 +186,106 @@ def _extract_candidates(output_text: str) -> tuple[list[str], str]:
             return [stripped], ""
     remaining = _remove_spans(output_text, consumed_spans).strip()
     return candidates, remaining
+
+
+def _decode_json_candidate(candidate_text: str) -> tuple[Any, str | None]:
+    try:
+        return json.loads(candidate_text), None
+    except json.JSONDecodeError as exc:
+        return None, f"Candidate is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})."
+
+
+def _extract_gemma_native_candidates(output_text: str) -> tuple[list[tuple[Any, str | None]], str]:
+    """Decode Gemma 4 ``<|tool_call>call:NAME{...}<tool_call|>`` spans into call payloads."""
+
+    candidates: list[tuple[Any, str | None]] = []
+    consumed_spans: list[tuple[int, int]] = []
+    for match in _GEMMA_NATIVE_CALL_PATTERN.finditer(output_text):
+        consumed_spans.append(match.span())
+        name = match.group("name")
+        try:
+            arguments = _parse_gemma_native_arguments(match.group("arguments"))
+        except ValueError as exc:
+            candidates.append((None, f"Gemma native tool call `{name}` has unparseable arguments: {exc}"))
+            continue
+        candidates.append(({TOOL_CALL_NAME_KEY: name, _ARGUMENT_KEYS[0]: arguments}, None))
+    return candidates, _remove_spans(output_text, consumed_spans)
+
+
+def _parse_gemma_native_arguments(text: str) -> Any:
+    value, position = _parse_gemma_native_value(text, 0)
+    position = _skip_whitespace(text, position)
+    if position != len(text):
+        raise ValueError(f"unexpected trailing text at offset {position}.")
+    return value
+
+
+def _parse_gemma_native_value(text: str, position: int) -> tuple[Any, int]:
+    position = _skip_whitespace(text, position)
+    if text.startswith(_GEMMA_STRING_DELIMITER, position):
+        start = position + len(_GEMMA_STRING_DELIMITER)
+        end = text.find(_GEMMA_STRING_DELIMITER, start)
+        if end < 0:
+            raise ValueError(f"unterminated string at offset {position}.")
+        return text[start:end], end + len(_GEMMA_STRING_DELIMITER)
+    if text.startswith('"', position):
+        try:
+            return json.JSONDecoder().raw_decode(text, position)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid quoted string at offset {position}: {exc.msg}.") from exc
+    if text.startswith("{", position):
+        return _parse_gemma_native_container(text, position + 1, closing="}", keyed=True)
+    if text.startswith("[", position):
+        return _parse_gemma_native_container(text, position + 1, closing="]", keyed=False)
+    scalar = _GEMMA_SCALAR_PATTERN.match(text, position)
+    if scalar is None:
+        raise ValueError(f"unexpected value at offset {position}.")
+    literal = scalar.group(0)
+    if literal in _GEMMA_SCALAR_LITERALS:
+        return _GEMMA_SCALAR_LITERALS[literal], scalar.end()
+    return json.loads(literal), scalar.end()
+
+
+def _parse_gemma_native_container(text: str, position: int, *, closing: str, keyed: bool) -> tuple[Any, int]:
+    items: dict[str, Any] | list[Any] = {} if keyed else []
+    position = _skip_whitespace(text, position)
+    if text.startswith(closing, position):
+        return items, position + 1
+    while True:
+        if keyed:
+            key, position = _parse_gemma_native_key(text, position)
+            position = _skip_whitespace(text, position)
+            if not text.startswith(":", position):
+                raise ValueError(f"expected `:` after key `{key}` at offset {position}.")
+            value, position = _parse_gemma_native_value(text, position + 1)
+            items[key] = value  # type: ignore[index]
+        else:
+            value, position = _parse_gemma_native_value(text, position)
+            items.append(value)  # type: ignore[union-attr]
+        position = _skip_whitespace(text, position)
+        if text.startswith(",", position):
+            position = _skip_whitespace(text, position + 1)
+            continue
+        if text.startswith(closing, position):
+            return items, position + 1
+        raise ValueError(f"expected `,` or `{closing}` at offset {position}.")
+
+
+def _parse_gemma_native_key(text: str, position: int) -> tuple[str, int]:
+    position = _skip_whitespace(text, position)
+    if text.startswith(_GEMMA_STRING_DELIMITER, position) or text.startswith('"', position):
+        key, position = _parse_gemma_native_value(text, position)
+        return str(key), position
+    bare = _GEMMA_BARE_KEY_PATTERN.match(text, position)
+    if bare is None:
+        raise ValueError(f"expected a key at offset {position}.")
+    return bare.group(0), bare.end()
+
+
+def _skip_whitespace(text: str, position: int) -> int:
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
 
 
 def _looks_like_tool_call_json(text: str) -> bool:

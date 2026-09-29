@@ -47,3 +47,23 @@ def test_reasoning_stream_processor_handles_split_tags_and_raw_reasoning() -> No
     assert reasoning.visibility == ReasoningVisibility.RAW_MODEL_EMITTED
     assert reasoning.available is True
     assert reasoning.content == "Inspect the prompt before replying."
+
+
+def test_gemma4_thought_channel_is_reasoning_not_content() -> None:
+    # Gemma 4 opens every turn after a tool call with an (often empty) thought channel.
+    from lewlm.core.contracts import ReasoningVisibility
+    from lewlm.core.reasoning import ReasoningStreamProcessor, apply_reasoning_visibility
+
+    empty_text, empty = apply_reasoning_visibility(
+        "<|channel>thought\n<channel|>The balance of account 1001 is $7,341.29.",
+        ReasoningVisibility.RAW_MODEL_EMITTED,
+    )
+    processor = ReasoningStreamProcessor(ReasoningVisibility.RAW_MODEL_EMITTED)
+    for delta in ["<|chan", "nel>thou", "ght\nLook up 1001.<chan", "nel|>Done."]:
+        processor.consume(delta)
+    streamed = processor.finalize()
+
+    assert empty_text == "The balance of account 1001 is $7,341.29."
+    assert empty.available is True
+    assert processor.output_text == "Done."
+    assert streamed.content == "Look up 1001."
