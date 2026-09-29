@@ -53,6 +53,7 @@ def test_chat_completion_reports_parsed_tool_call(app_with_fake_runtime) -> None
     assert tool_calls["tool_calls"][0]["arguments"] == {"city": "Halifax"}
     assert tool_calls["issues"] == []
     assert tool_calls["parallel"] is False
+    assert body["choices"][0]["finish_reason"] == "tool_calls", "OpenAI clients branch on this"
 
 
 def test_chat_completion_omits_tool_calls_when_no_tools_declared(app_with_fake_runtime) -> None:
@@ -169,6 +170,7 @@ def test_streaming_chat_reports_tool_calls_on_final_chunk(app_with_fake_runtime)
     final = next(item for item in reversed(payloads) if item.get("tool_calls") is not None)
     assert final["tool_calls"]["status"] == "parsed"
     assert [call["name"] for call in final["tool_calls"]["tool_calls"]] == ["get_weather"]
+    assert final["choices"][0]["finish_reason"] == "tool_calls"
 
 
 def _compiled_system_text(app, **request_kwargs) -> str:

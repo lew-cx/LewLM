@@ -38,6 +38,7 @@ from lewlm.prompting import PromptCompilationRequest, PromptCompilationTrace
 from lewlm.runtime.cancellation import request_cancelled
 from lewlm.runtime.request_context import apply_body_correlation_id
 from lewlm.security.workspace import secure_workspace
+from lewlm.tool_calls import ToolCallParseResult
 
 
 router = APIRouter(tags=["chat"])
@@ -310,7 +311,7 @@ async def create_chat_completion(
                     content=execution.response.output_text,
                     reasoning=execution.response.reasoning,
                 ),
-                finish_reason=execution.response.finish_reason,
+                finish_reason=_chat_finish_reason(execution.response.finish_reason, execution.tool_calls),
             ),
         ],
         usage=_completion_usage(execution.response.usage),
@@ -654,7 +655,10 @@ async def _chat_completion_stream(stream_session, *, on_close=None, on_complete=
             choices=[
                 ChatCompletionChunkChoice(
                     delta=ChatCompletionDelta(reasoning=stream_session.reasoning),
-                    finish_reason=getattr(stream_session, "finish_reason", "stop"),
+                    finish_reason=_chat_finish_reason(
+                        getattr(stream_session, "finish_reason", "stop"),
+                        stream_session.tool_calls,
+                    ),
                 ),
             ],
             citations=stream_session.citations,
@@ -899,6 +903,14 @@ def _stream_prompt_trace(stream_session) -> PromptCompilationTrace | None:
     if not getattr(stream_session, "prompt_trace_requested", False):
         return None
     return getattr(stream_session, "prompt_trace", None)
+
+
+def _chat_finish_reason(finish_reason: str | None, tool_calls: ToolCallParseResult | None) -> str:
+    """OpenAI clients branch on `tool_calls`: a reply that ended by calling tools says so."""
+
+    if (finish_reason or "stop") == "stop" and tool_calls is not None and tool_calls.tool_calls:
+        return "tool_calls"
+    return finish_reason or "stop"
 
 
 def _completion_usage(raw_usage: dict[str, int]) -> CompletionUsage:
