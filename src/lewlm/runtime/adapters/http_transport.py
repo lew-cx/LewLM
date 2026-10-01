@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
@@ -153,24 +154,45 @@ class AsyncBridgeTransport:
         self._on_unreachable = on_unreachable
         self._secret_values: tuple[str, ...] = ()
         self._missing_api_key_env: str | None = None
-        self._client = httpx.AsyncClient(
-            base_url=server_root(endpoint.base_url),
+        self._limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+        )
+        self._client = self._build_client()
+        # The loop the pooled connections belong to; see `_live_client`.
+        self._client_loop: asyncio.AbstractEventLoop | None = None
+        self._closed = False
+
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=server_root(self.endpoint.base_url),
             timeout=httpx.Timeout(
-                connect=endpoint.connect_timeout_seconds,
-                read=endpoint.read_timeout_seconds,
-                write=endpoint.read_timeout_seconds,
-                pool=endpoint.pool_timeout_seconds,
+                connect=self.endpoint.connect_timeout_seconds,
+                read=self.endpoint.read_timeout_seconds,
+                write=self.endpoint.read_timeout_seconds,
+                pool=self.endpoint.pool_timeout_seconds,
             ),
-            limits=httpx.Limits(
-                max_connections=max_connections,
-                max_keepalive_connections=max_keepalive_connections,
-            ),
+            limits=self._limits,
             verify=_verified_ssl_context(),
             trust_env=False,
             follow_redirects=False,
             headers=self._authorization_headers(),
         )
-        self._closed = False
+
+    def _live_client(self) -> httpx.AsyncClient:
+        """Return a client whose pooled connections the running loop can use.
+
+        A kept-alive connection belongs to the event loop that opened it. The
+        CLI runs each step under its own `asyncio.run`, so once that loop has
+        closed its connections can be neither reused nor closed: both schedule
+        work on the dead loop. Drop that client and start a fresh pool.
+        """
+
+        loop = asyncio.get_running_loop()
+        if self._client_loop is not None and self._client_loop is not loop and self._client_loop.is_closed():
+            self._client = self._build_client()
+        self._client_loop = loop
+        return self._client
 
     @property
     def closed(self) -> bool:
@@ -180,6 +202,10 @@ class AsyncBridgeTransport:
         if self._closed:
             return
         self._closed = True
+        if self._client_loop is not None and self._client_loop.is_closed():
+            # Its connections died with their loop; there is nothing left to
+            # close gracefully, and trying raises "Event loop is closed".
+            return
         await self._client.aclose()
 
     async def request_json(
@@ -235,7 +261,7 @@ class AsyncBridgeTransport:
         # answered does.
         answered = False
         try:
-            async with self._client.stream(method, path, json=dict(payload), headers={"Accept": "text/event-stream"}) as response:
+            async with self._live_client().stream(method, path, json=dict(payload), headers={"Accept": "text/event-stream"}) as response:
                 answered = True
                 self._raise_for_response(response, path=path)
                 if announce_open:
@@ -288,7 +314,8 @@ class AsyncBridgeTransport:
         # the engine is unreachable, not one while its body was being read.
         answered = False
         try:
-            request = self._client.build_request(
+            client = self._live_client()
+            request = client.build_request(
                 method,
                 path,
                 json=dict(payload) if payload is not None else None,
@@ -296,7 +323,7 @@ class AsyncBridgeTransport:
                 data=data,
                 headers=headers,
             )
-            response = await self._client.send(request, stream=True)
+            response = await client.send(request, stream=True)
             answered = True
             try:
                 await response.aread()

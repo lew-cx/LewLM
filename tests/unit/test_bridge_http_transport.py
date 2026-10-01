@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import http.server
+import threading
 import json
 
 import httpx
@@ -494,3 +496,50 @@ def test_bridge_rejects_malformed_nonstreaming_choices(tmp_path, monkeypatch, ch
             await runtime.aclose()
 
     asyncio.run(run())
+
+
+class _JSONHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@pytest.fixture
+def keepalive_endpoint():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _JSONHandler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield ExternalEndpoint(
+            endpoint_id="keepalive",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}/v1",
+            connect_timeout_seconds=2,
+            read_timeout_seconds=2,
+            pool_timeout_seconds=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_transport_survives_the_loop_that_pooled_its_connections_closing(keepalive_endpoint) -> None:
+    # The CLI runs each step under its own `asyncio.run`, then closes services
+    # under another. A kept-alive connection belongs to the loop that opened it,
+    # so neither a later request nor shutdown may touch it once that loop is gone.
+    transport = AsyncBridgeTransport(endpoint=keepalive_endpoint, runtime_name="test-runtime")
+
+    assert asyncio.run(transport.request_json("GET", "/v1/models")) == {"ok": True}
+    assert asyncio.run(transport.request_json("GET", "/v1/models")) == {"ok": True}
+    asyncio.run(transport.aclose())
+
+    assert transport.closed is True
