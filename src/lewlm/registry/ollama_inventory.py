@@ -71,10 +71,17 @@ OFF_HOST = "off_host"
 _CLOUD_NAME_PATTERN = re.compile(r"(?::cloud$|-cloud(?::|$))", re.IGNORECASE)
 _REMOTE_RECORD_FIELDS = ("remote_host", "remote_model")
 
-_MODALITY_BY_CAPABILITY = {
-    "embedding": ModelModality.EMBEDDING,
-    "rerank": ModelModality.RERANK,
-    "vision": ModelModality.MULTIMODAL,
+# Ollama reports what a model can do as a list of standard capability names
+# (`/api/tags`, `/api/show`). Each one that implies an input or output kind adds
+# its modalities; the rest (`tools`, `thinking`, `insert`, and any name a newer
+# daemon introduces) are features of a modality already declared and add none.
+# The union is the model's modality, so a vision chat model is text *and*
+# vision, the same shape a converted multimodal bundle declares.
+_MODALITIES_BY_CAPABILITY: dict[str, tuple[ModelModality, ...]] = {
+    "completion": (ModelModality.TEXT,),
+    "vision": (ModelModality.VISION, ModelModality.MULTIMODAL),
+    "embedding": (ModelModality.EMBEDDING,),
+    "rerank": (ModelModality.RERANK,),
 }
 
 
@@ -246,19 +253,29 @@ def _capabilities(record: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _modality(capabilities: tuple[str, ...]) -> tuple[ModelModality, ...]:
-    """Map Ollama's capability list onto a LewLM modality.
+    """Map Ollama's capability list onto LewLM modalities.
 
-    This is load-bearing rather than cosmetic: the bridge refuses a capability
-    whose modality the manifest does not declare, so an embedding model that
-    arrived labelled `text` would have its working embeddings route rejected
-    before the endpoint was ever probed.
+    This is load-bearing rather than cosmetic, in both directions. The bridge
+    refuses a capability whose modality the manifest does not declare, so an
+    embedding model that arrived labelled `text` would have its working
+    embeddings route rejected before the endpoint was ever probed. And the
+    router requires every modality a request needs, so a vision chat model
+    labelled only `multimodal` would refuse plain text chat.
+
+    A daemon too old to report capabilities is assumed to serve text, which is
+    what every Ollama model did before capabilities were reported.
     """
 
-    for capability in capabilities:
-        modality = _MODALITY_BY_CAPABILITY.get(capability)
-        if modality is not None:
-            return (modality,)
-    return (ModelModality.TEXT,)
+    declared = {
+        modality
+        for capability in capabilities
+        for modality in _MODALITIES_BY_CAPABILITY.get(capability, ())
+    }
+    if not declared:
+        return (ModelModality.TEXT,)
+    # Enum order keeps the manifest stable across reads whatever order the
+    # daemon lists capabilities in.
+    return tuple(modality for modality in ModelModality if modality in declared)
 
 
 def _fingerprint(record: dict[str, Any], *, tag: str) -> str:

@@ -48,6 +48,21 @@ _EMBED_RECORD = {
     },
     "capabilities": ["embedding"],
 }
+# `gemma4:26b` as ollama reports it: a chat model that also takes images.
+_VISION_RECORD = {
+    "name": "gemma4:26b",
+    "model": "gemma4:26b",
+    "size": 18_731_025_629,
+    "digest": "001e5dafc3c77684c2307ebc6ab8e336e10c9b18eca52acf547d72fc83c3ca8c",
+    "details": {
+        "format": "gguf",
+        "family": "gemma4",
+        "parameter_size": "25.2B",
+        "quantization_level": "Q4_K_M",
+        "context_length": 262_144,
+    },
+    "capabilities": ["completion", "vision", "tools", "thinking"],
+}
 _CLOUD_RECORD = {
     "name": "gpt-oss:120b-cloud",
     "model": "gpt-oss:120b-cloud",
@@ -151,6 +166,91 @@ def test_ollama_manifests_carry_what_routing_and_the_bridge_need(tmp_path: Path,
     # embedding model labelled `text` would have a working route refused.
     assert by_name["nomic-embed-text:latest"].modality == (ModelModality.EMBEDDING,)
     assert llama.modality == (ModelModality.TEXT,)
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "expected"),
+    [
+        (["completion", "tools"], (ModelModality.TEXT,)),
+        (
+            ["completion", "vision", "tools", "thinking"],
+            (ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+        ),
+        # Listing order is the daemon's business; the manifest stays the same.
+        (
+            ["thinking", "vision", "completion"],
+            (ModelModality.TEXT, ModelModality.VISION, ModelModality.MULTIMODAL),
+        ),
+        (["embedding"], (ModelModality.EMBEDDING,)),
+        # Feature capabilities, and names a newer daemon may add, declare nothing
+        # on their own; with nothing declared the model is assumed to be text.
+        (["tools", "some-future-capability"], (ModelModality.TEXT,)),
+        ([], (ModelModality.TEXT,)),
+    ],
+)
+def test_modality_is_the_union_of_every_capability_ollama_reports(
+    tmp_path: Path,
+    monkeypatch,
+    capabilities: list[str],
+    expected: tuple[ModelModality, ...],
+) -> None:
+    _serve(monkeypatch, [{**_LLAMA_RECORD, "capabilities": capabilities}])
+
+    (manifest,) = discover_ollama_models(_settings(tmp_path)).manifests
+
+    assert manifest.modality == expected
+
+
+def test_a_vision_model_serves_plain_text_chat(tmp_path: Path, monkeypatch) -> None:
+    """A text-only chat to an Ollama vision model reaches the daemon.
+
+    Found from Portal Builder: `gemma4:26b` was registered as `multimodal`
+    alone, so `/v1/models` listed it chat-ready while the router refused every
+    text request with "does not support the required modalities".
+    """
+
+    from fastapi.testclient import TestClient
+
+    from lewlm.api.app import create_app
+    from lewlm.runtime.adapters.openai_compatible import LocalOpenAICompatibleAdapterRuntime
+
+    (tmp_path / "models").mkdir(parents=True, exist_ok=True)
+    _serve(monkeypatch, [_VISION_RECORD])
+    forwarded: list[str] = []
+
+    def fake_request_json(self, method: str, path: str, payload):
+        if method == "GET" and path == "/v1/models":
+            return {"data": [{"id": "gemma4:26b"}]}
+        if method == "POST" and path == "/v1/chat/completions":
+            forwarded.append(payload["model"])
+            return {
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+            }
+        raise AssertionError((method, path))
+
+    async def fake_request_json_async(self, method: str, path: str, payload):
+        return fake_request_json(self, method, path, payload)
+
+    monkeypatch.setattr(LocalOpenAICompatibleAdapterRuntime, "_request_json", fake_request_json)
+    monkeypatch.setattr(LocalOpenAICompatibleAdapterRuntime, "_request_json_async", fake_request_json_async)
+    services = bootstrap_services(_settings(tmp_path))
+    assert services.model_registry.scan().discovered_count == 1
+
+    with TestClient(create_app(services.settings, services=services)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "gemma4:26b", "messages": [{"role": "user", "content": "say hi"}], "max_tokens": 8},
+        )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["choices"][0]["message"]["content"] == "hi"
+    assert forwarded == ["gemma4:26b"]
 
 
 def test_cloud_models_stay_out_of_the_registry_until_explicitly_enabled(
