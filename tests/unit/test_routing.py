@@ -456,6 +456,46 @@ def test_model_router_can_route_gguf_text_models_through_external_adapter(temp_s
     assert readiness.available_runtime_names == ["local_external_adapter"]
 
 
+def test_model_router_leaves_external_engine_memory_to_the_engine(temp_settings, monkeypatch) -> None:
+    """LewLM's memory budget does not gate a model an external engine holds.
+
+    Found from Portal Builder: Ollama's `gemma4:26b` (17.9 GB) was refused for
+    exceeding the `balanced` budget of the Docker VM LewLM runs in, though
+    Ollama loads it on the host GPU, outside that VM.
+    """
+
+    manifest = _manifest(
+        model_id="ollama-large",
+        display_name="ollama-large",
+        estimated_memory_mb=17_864,
+        runtime_affinity=(RuntimeAffinity.EXTERNAL_ACCELERATOR,),
+    )
+    router = ModelRouter(
+        model_registry=_StaticRegistry([manifest]),
+        runtime_catalog=RuntimeCatalog(
+            {
+                RuntimeAffinity.EXTERNAL_ACCELERATOR: _FakeExternalTextBridgeRuntime(),
+            },
+        ),
+        settings=temp_settings.with_updates(runtime_policy="balanced"),
+    )
+    monkeypatch.setattr(router, "_host_memory_mb", lambda: 31_800)
+
+    explicit, _, _ = router.route_chat(
+        manifest.model_id,
+        messages=[GenerateMessage(role="user", content="hello")],
+        max_tokens=32,
+    )
+    automatic, _, decision = router.route_chat(
+        None,
+        messages=[GenerateMessage(role="user", content="hello")],
+        max_tokens=32,
+    )
+
+    assert explicit.model_id == automatic.model_id == manifest.model_id
+    assert not any("routing budget" in item for item in decision.alternatives)
+
+
 def test_model_router_can_route_semantic_models_through_external_adapter(temp_settings) -> None:
     embedding_manifest = _manifest(
         model_id="embed-demo",

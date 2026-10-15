@@ -1471,6 +1471,14 @@ class ModelRouter:
         if manifest.estimated_memory_mb is None:
             score -= 1.0
             reasons.append("memory estimate unavailable")
+        elif runtime.affinity == RuntimeAffinity.EXTERNAL_ACCELERATOR:
+            # The external engine (Ollama, TabbyAPI, a remote server) holds the
+            # weights in its own memory, often on other hardware than the one
+            # LewLM measures - in Docker, a VM that never sees the GPU. LewLM's
+            # budget says nothing about whether it fits there, and the engine
+            # reports its own failure if it does not. The estimate still ranks
+            # candidates below.
+            reasons.append(f"memory {manifest.estimated_memory_mb} MB held by the external engine")
         elif memory_budget_mb is not None:
             if routing_memory_mb is not None and routing_memory_mb > memory_budget_mb:
                 return (
